@@ -1,0 +1,57 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Config with credentials
+configs/config.yaml
+config.yaml
+
+# Vendor (if using go mod vendor)
+vendor/
+
+# Build
+dist/
+build/
+
+# Coverage
+coverage.out
+coverage.html
+
+# Temporary
+tmp/
+temp/
+
+# Node modules
+frontend/node_modules/
+
+# Go workspace
+go.work
+go.work.sum
