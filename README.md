@@ -24,12 +24,15 @@ KubePilot 是一个基于 Kubernetes 的生产级运维管理平台，采用 **G
 - 多集群统一管理
 - 集群健康检查
 - 节点资源概览
-- Namespace 管理
+- Namespace 管理（支持状态显示和自动刷新）
 
 ### 📦 工作负载
 - **Deployment** - 完整 CRUD、伸缩、回滚、企业级创建表单
 - **Pod** - 查看、日志、Web Terminal、删除
 - **Service** - 创建、编辑、删除，支持 NodePort 配置
+- **ConfigMap** - 创建、编辑、删除，支持键值对管理
+- **Secret** - 创建、编辑、删除，支持 Base64 编解码
+- **Ingress** - 创建、删除，支持域名和路径规则配置
 - **存储管理** - PV/PVC/StorageClass 管理
 
 ### 📊 监控告警
@@ -38,17 +41,20 @@ KubePilot 是一个基于 Kubernetes 的生产级运维管理平台，采用 **G
 - Pod 状态分布
 - Deployment 资源使用统计
 - 节点资源详情
+- 告警规则管理
+- 通知渠道配置
 
 ### 🔐 安全管理
 - JWT 用户认证
 - RBAC 权限控制（16种资源 × 6种操作）
 - 操作审计日志
 - 角色权限可视化管理
+- 用户管理（创建/编辑/删除/重置密码）
 
-### 🏪 应用商店
-- Helm Chart 仓库管理
-- 应用模板浏览
-- 一键部署
+### 📡 资源状态
+- **Terminating 状态显示** - 删除资源时显示终止状态
+- **自动刷新** - 检测到 Terminating 状态时每 3 秒自动刷新
+- **状态标签** - 统一的状态显示组件（Active/Running/Terminating/Pending/Failed）
 
 ## 🛠️ 技术栈
 
@@ -78,6 +84,8 @@ kubepilot/
 │   │   ├── audit.go       # 审计日志
 │   │   └── cors.go        # CORS 跨域
 │   ├── model/              # 数据模型
+│   │   ├── permission.go  # 权限模型
+│   │   └── ...
 │   ├── pkg/                # 工具包
 │   ├── repository/         # 数据访问层
 │   ├── router/             # 路由定义
@@ -86,6 +94,11 @@ kubepilot/
 │   ├── src/
 │   │   ├── api/           # API 封装
 │   │   ├── components/    # 组件
+│   │   │   ├── StatusTag.tsx      # 状态标签组件
+│   │   │   ├── PodTerminal.tsx    # Pod 终端
+│   │   │   └── ...
+│   │   ├── hooks/         # 自定义 Hooks
+│   │   │   └── usePolling.ts  # 自动轮询 Hook
 │   │   ├── pages/         # 页面
 │   │   └── stores/        # 状态管理
 ├── configs/                # 配置文件
@@ -197,6 +210,10 @@ GET    /api/v1/clusters/:id/workloads/deployments     - Deployment 列表
 POST   /api/v1/clusters/:id/workloads/deployments     - 创建 Deployment
 GET    /api/v1/clusters/:id/workloads/pods            - Pod 列表
 GET    /api/v1/clusters/:id/workloads/services        - Service 列表
+GET    /api/v1/clusters/:id/workloads/configmaps      - ConfigMap 列表
+GET    /api/v1/clusters/:id/workloads/secrets         - Secret 列表
+GET    /api/v1/clusters/:id/workloads/ingresses       - Ingress 列表
+GET    /api/v1/clusters/:id/workloads/namespaces      - 命名空间列表
 GET    /api/v1/clusters/:id/workloads/metrics/overview - 集群概览
 ```
 
@@ -232,6 +249,17 @@ clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespace
 ### 操作类型
 
 view, create, edit, delete, exec, admin
+
+## 📊 状态说明
+
+| 状态 | 颜色 | 说明 |
+|------|------|------|
+| Active | 🟢 绿色 | 正常运行 |
+| Running | 🟢 绿色 | 运行中 |
+| Terminating | 🟠 橙色 | 删除中（自动刷新） |
+| Updating | 🔵 蓝色 | 更新中 |
+| Pending | 🟠 橙色 | 等待中 |
+| Failed | 🔴 红色 | 失败 |
 
 ## 🤝 贡献
 

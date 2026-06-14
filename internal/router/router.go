@@ -154,9 +154,36 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 				// Namespaces
 				workloads.GET("/namespaces", workloadHandler.ListNamespaces)
+				workloads.GET("/namespaces/names", workloadHandler.ListNamespaceNames)
+				workloads.POST("/namespaces", workloadHandler.CreateNamespace)
+				workloads.GET("/namespaces/:name", workloadHandler.GetNamespaceDetail)
+				workloads.DELETE("/namespaces/:name", workloadHandler.DeleteNamespace)
+				workloads.GET("/namespaces/:name/quotas", workloadHandler.GetResourceQuota)
+				workloads.POST("/namespaces/:name/quotas", workloadHandler.CreateResourceQuota)
 
 				// Events
 				workloads.GET("/events", workloadHandler.ListEvents)
+
+				// ConfigMaps
+				workloads.GET("/configmaps", workloadHandler.ListConfigMaps)
+				workloads.POST("/configmaps", workloadHandler.CreateConfigMap)
+				workloads.GET("/configmaps/:ns/:name", workloadHandler.GetConfigMap)
+				workloads.PUT("/configmaps/:ns/:name", workloadHandler.UpdateConfigMap)
+				workloads.DELETE("/configmaps/:ns/:name", workloadHandler.DeleteConfigMap)
+
+				// Secrets
+				workloads.GET("/secrets", workloadHandler.ListSecrets)
+				workloads.POST("/secrets", workloadHandler.CreateSecret)
+				workloads.GET("/secrets/:ns/:name", workloadHandler.GetSecret)
+				workloads.PUT("/secrets/:ns/:name", workloadHandler.UpdateSecret)
+				workloads.DELETE("/secrets/:ns/:name", workloadHandler.DeleteSecret)
+
+				// Ingresses
+				workloads.GET("/ingresses", workloadHandler.ListIngresses)
+				workloads.POST("/ingresses", workloadHandler.CreateIngress)
+				workloads.GET("/ingresses/:ns/:name", workloadHandler.GetIngress)
+				workloads.PUT("/ingresses/:ns/:name", workloadHandler.UpdateIngress)
+				workloads.DELETE("/ingresses/:ns/:name", workloadHandler.DeleteIngress)
 
 				// PV
 				workloads.GET("/pvs", workloadHandler.ListPVs)

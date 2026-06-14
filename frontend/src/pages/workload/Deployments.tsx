@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Table, Tag, Button, Space, Typography, Select, Input, Tooltip, Modal, Form, message } from 'antd'
 import {
@@ -11,10 +11,12 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getDeployments, createDeployment, scaleDeployment, deleteDeployment, Deployment, getNamespaces } from '../../api/workload'
+import { getDeployments, createDeployment, scaleDeployment, deleteDeployment, Deployment, getNamespaceNames } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import EditDeploymentModal from '../../components/EditDeploymentModal'
 import DeploymentHistoryModal from '../../components/DeploymentHistoryModal'
+import StatusTag from '../../components/StatusTag'
+import { usePolling, hasTerminatingResource } from '../../hooks/usePolling'
 
 const { Title } = Typography
 
@@ -60,14 +62,14 @@ const WorkloadDeployments: React.FC = () => {
 
   const fetchNamespaces = async () => {
     try {
-      const res = await getNamespaces(selectedCluster)
+      const res = await getNamespaceNames(selectedCluster)
       setNamespaces(res.data || [])
     } catch (error) {
       console.error('Failed to fetch namespaces:', error)
     }
   }
 
-  const fetchDeployments = async () => {
+  const fetchDeployments = useCallback(async () => {
     setLoading(true)
     try {
       const res = await getDeployments(selectedCluster, selectedNamespace || undefined)
@@ -77,7 +79,10 @@ const WorkloadDeployments: React.FC = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedCluster, selectedNamespace])
+
+  // 自动轮询：当有 Terminating 状态的资源时自动刷新
+  usePolling(fetchDeployments, hasTerminatingResource(deployments), { interval: 3000 })
 
   const handleScale = (record: Deployment) => {
     setSelectedDeployment(record)
@@ -154,6 +159,12 @@ const WorkloadDeployments: React.FC = () => {
       title: '命名空间',
       dataIndex: 'namespace',
       key: 'namespace',
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status) => <StatusTag status={status || 'Active'} />,
     },
     {
       title: '就绪',

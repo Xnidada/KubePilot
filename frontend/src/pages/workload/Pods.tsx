@@ -1,17 +1,19 @@
-import { useEffect, useState } from 'react'
-import { Card, Table, Tag, Button, Space, Typography, Select, Input, Tooltip, Modal, Drawer, Form, message } from 'antd'
+import { useEffect, useState, useCallback } from 'react'
+import { Card, Table, Button, Space, Typography, Select, Input, Tooltip, Modal, Drawer, Form, message } from 'antd'
 import {
   SyncOutlined,
   DeleteOutlined,
   FileTextOutlined,
   CodeOutlined,
   SearchOutlined,
+  PlusOutlined,
 } from '@ant-design/icons'
-import { PlusOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getPods, createPod, getPodLogs, deletePod, Pod, getNamespaces } from '../../api/workload'
+import { getPods, createPod, getPodLogs, deletePod, Pod, getNamespaceNames } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import PodTerminal from '../../components/PodTerminal'
+import StatusTag from '../../components/StatusTag'
+import { usePolling, hasTerminatingResource } from '../../hooks/usePolling'
 
 const { Title, Text } = Typography
 
@@ -56,14 +58,14 @@ const WorkloadPods: React.FC = () => {
 
   const fetchNamespaces = async () => {
     try {
-      const res = await getNamespaces(selectedCluster)
+      const res = await getNamespaceNames(selectedCluster)
       setNamespaces(res.data || [])
     } catch (error) {
       console.error('Failed to fetch namespaces:', error)
     }
   }
 
-  const fetchPods = async () => {
+  const fetchPods = useCallback(async () => {
     setLoading(true)
     try {
       const res = await getPods(selectedCluster, selectedNamespace || undefined)
@@ -73,20 +75,10 @@ const WorkloadPods: React.FC = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedCluster, selectedNamespace])
 
-  const getStatusTag = (status: string) => {
-    const statusMap: Record<string, { color: string }> = {
-      Running: { color: 'success' },
-      Pending: { color: 'warning' },
-      Succeeded: { color: 'default' },
-      Failed: { color: 'error' },
-      CrashLoopBackOff: { color: 'error' },
-      Unknown: { color: 'default' },
-    }
-    const config = statusMap[status] || statusMap.Unknown
-    return <Tag color={config.color}>{status}</Tag>
-  }
+  // 自动轮询：当有 Terminating 状态的资源时自动刷新
+  usePolling(fetchPods, hasTerminatingResource(pods), { interval: 3000 })
 
   const handleViewLogs = async (record: Pod) => {
     setSelectedPod(record)
@@ -154,7 +146,7 @@ const WorkloadPods: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      render: (status) => getStatusTag(status),
+      render: (status) => <StatusTag status={status} />,
     },
     {
       title: '就绪',

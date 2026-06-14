@@ -369,8 +369,18 @@ export const getNodes = (clusterId: number) => {
 }
 
 // Namespaces
+export interface Namespace {
+  name: string
+  status: string
+  age: string
+}
+
 export const getNamespaces = (clusterId: number) => {
-  return get<{ code: number; data: string[] }>(`/clusters/${clusterId}/workloads/namespaces`)
+  return get<{ code: number; data: Namespace[] }>(`/clusters/${clusterId}/workloads/namespaces`)
+}
+
+export const getNamespaceNames = (clusterId: number) => {
+  return get<{ code: number; data: string[] }>(`/clusters/${clusterId}/workloads/namespaces/names`)
 }
 
 // Events

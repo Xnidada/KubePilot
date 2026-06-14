@@ -8,7 +8,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { getPVCs, createPVC, deletePVC, PVC, getStorageClasses, StorageClass } from '../../api/storage'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { getNamespaces } from '../../api/workload'
+import { getNamespaceNames } from '../../api/workload'
 
 const { Title } = Typography
 
@@ -49,7 +49,7 @@ const PersistentVolumeClaims: React.FC = () => {
 
   const fetchNamespaces = async () => {
     try {
-      const res = await getNamespaces(selectedCluster)
+      const res = await getNamespaceNames(selectedCluster)
       setNamespaces(res.data || [])
     } catch (error) {
       console.error('Failed to fetch namespaces:', error)

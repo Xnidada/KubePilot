@@ -47,6 +47,22 @@ const menuItems: MenuProps['items'] = [
         key: '/workloads/services',
         label: 'Service',
       },
+      {
+        key: '/workloads/configmaps',
+        label: 'ConfigMap',
+      },
+      {
+        key: '/workloads/secrets',
+        label: 'Secret',
+      },
+      {
+        key: '/workloads/ingresses',
+        label: 'Ingress',
+      },
+      {
+        key: '/workloads/namespaces',
+        label: '命名空间',
+      },
     ],
   },
   {

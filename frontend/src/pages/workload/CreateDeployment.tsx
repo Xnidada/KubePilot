@@ -22,7 +22,7 @@ import {
   SaveOutlined,
   ArrowLeftOutlined,
 } from '@ant-design/icons'
-import { createEnterpriseDeployment, getNamespaces, EnterpriseDeploymentRequest } from '../../api/workload'
+import { createEnterpriseDeployment, getNamespaceNames, EnterpriseDeploymentRequest } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getStorageClasses, StorageClass } from '../../api/storage'
 
@@ -63,7 +63,7 @@ const CreateDeployment: React.FC = () => {
 
   const fetchNamespaces = async () => {
     try {
-      const res = await getNamespaces(selectedCluster)
+      const res = await getNamespaceNames(selectedCluster)
       setNamespaces(res.data || [])
     } catch (error) {
       console.error('Failed to fetch namespaces:', error)

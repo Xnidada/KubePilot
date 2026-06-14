@@ -54,6 +54,7 @@ func (h *Handler) ListDeployments(c *gin.Context) {
 	type DeploymentInfo struct {
 		Name      string   `json:"name"`
 		Namespace string   `json:"namespace"`
+		Status    string   `json:"status"`
 		Ready     string   `json:"ready"`
 		UpToDate  int32    `json:"up_to_date"`
 		Available int32    `json:"available"`
@@ -71,9 +72,19 @@ func (h *Handler) ListDeployments(c *gin.Context) {
 		if d.Spec.Replicas != nil {
 			replicas = *d.Spec.Replicas
 		}
+
+		// 检查是否处于Terminating状态
+		status := "Active"
+		if d.DeletionTimestamp != nil {
+			status = "Terminating"
+		} else if d.Status.ReadyReplicas < replicas {
+			status = "Updating"
+		}
+
 		result = append(result, DeploymentInfo{
 			Name:      d.Name,
 			Namespace: d.Namespace,
+			Status:    status,
 			Ready:     strconv.Itoa(int(d.Status.ReadyReplicas)) + "/" + strconv.Itoa(int(replicas)),
 			UpToDate:  d.Status.UpdatedReplicas,
 			Available: d.Status.AvailableReplicas,
@@ -934,10 +945,16 @@ func (h *Handler) ListPods(c *gin.Context) {
 			restarts += cs.RestartCount
 		}
 
+		// 检查是否处于Terminating状态
+		status := string(p.Status.Phase)
+		if p.DeletionTimestamp != nil {
+			status = "Terminating"
+		}
+
 		result = append(result, PodInfo{
 			Name:      p.Name,
 			Namespace: p.Namespace,
-			Status:    string(p.Status.Phase),
+			Status:    status,
 			Ready:     strconv.Itoa(readyCount) + "/" + strconv.Itoa(totalCount),
 			Restarts:  restarts,
 			Age:       timeSince(p.CreationTimestamp.Time),
@@ -1126,6 +1143,7 @@ func (h *Handler) ListServices(c *gin.Context) {
 	type ServiceInfo struct {
 		Name       string `json:"name"`
 		Namespace  string `json:"namespace"`
+		Status     string `json:"status"`
 		Type       string `json:"type"`
 		ClusterIP  string `json:"cluster_ip"`
 		Ports      string `json:"ports"`
@@ -1145,9 +1163,16 @@ func (h *Handler) ListServices(c *gin.Context) {
 			}
 		}
 
+		// 检查是否处于Terminating状态
+		status := "Active"
+		if s.DeletionTimestamp != nil {
+			status = "Terminating"
+		}
+
 		result = append(result, ServiceInfo{
 			Name:      s.Name,
 			Namespace: s.Namespace,
+			Status:    status,
 			Type:      string(s.Spec.Type),
 			ClusterIP: s.Spec.ClusterIP,
 			Ports:     ports,
@@ -1573,9 +1598,54 @@ func (h *Handler) ListNamespaces(c *gin.Context) {
 		return
 	}
 
-	result := make([]string, len(namespaces.Items))
-	for i, ns := range namespaces.Items {
-		result[i] = ns.Name
+	type NamespaceInfo struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Age    string `json:"age"`
+	}
+
+	result := make([]NamespaceInfo, 0, len(namespaces.Items))
+	for _, ns := range namespaces.Items {
+		// 检查是否处于Terminating状态
+		status := string(ns.Status.Phase)
+		if ns.DeletionTimestamp != nil {
+			status = "Terminating"
+		}
+
+		result = append(result, NamespaceInfo{
+			Name:   ns.Name,
+			Status: status,
+			Age:    timeSince(ns.CreationTimestamp.Time),
+		})
+	}
+
+	response.Success(c, result)
+}
+
+// ListNamespaceNames 只返回命名空间名称列表（用于下拉选择）
+func (h *Handler) ListNamespaceNames(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	namespaces, err := client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	result := make([]string, 0, len(namespaces.Items))
+	for _, ns := range namespaces.Items {
+		result = append(result, ns.Name)
 	}
 
 	response.Success(c, result)

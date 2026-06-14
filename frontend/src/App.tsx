@@ -8,6 +8,10 @@ import WorkloadDeployments from './pages/workload/Deployments'
 import CreateDeployment from './pages/workload/CreateDeployment'
 import WorkloadPods from './pages/workload/Pods'
 import WorkloadServices from './pages/workload/Services'
+import ConfigMaps from './pages/workload/ConfigMaps'
+import Secrets from './pages/workload/Secrets'
+import Ingresses from './pages/workload/Ingresses'
+import Namespaces from './pages/workload/Namespaces'
 import PersistentVolumes from './pages/storage/PersistentVolumes'
 import PersistentVolumeClaims from './pages/storage/PersistentVolumeClaims'
 import MonitorOverview from './pages/monitor/Overview'
@@ -42,6 +46,10 @@ function App() {
         <Route path="workloads/deployments/create" element={<CreateDeployment />} />
         <Route path="workloads/pods" element={<WorkloadPods />} />
         <Route path="workloads/services" element={<WorkloadServices />} />
+        <Route path="workloads/configmaps" element={<ConfigMaps />} />
+        <Route path="workloads/secrets" element={<Secrets />} />
+        <Route path="workloads/ingresses" element={<Ingresses />} />
+        <Route path="workloads/namespaces" element={<Namespaces />} />
         <Route path="storage/pvs" element={<PersistentVolumes />} />
         <Route path="storage/pvcs" element={<PersistentVolumeClaims />} />
         <Route path="monitor" element={<MonitorOverview />} />

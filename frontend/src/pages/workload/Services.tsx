@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Card, Table, Tag, Button, Space, Typography, Select, Input, Tooltip, Modal, Form, message } from 'antd'
 import {
   PlusOutlined,
@@ -8,9 +8,11 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getServices, createService, deleteService, Service, getNamespaces } from '../../api/workload'
+import { getServices, createService, deleteService, Service, getNamespaceNames } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import EditServiceModal from '../../components/EditServiceModal'
+import StatusTag from '../../components/StatusTag'
+import { usePolling, hasTerminatingResource } from '../../hooks/usePolling'
 
 const { Title } = Typography
 
@@ -53,14 +55,14 @@ const WorkloadServices: React.FC = () => {
 
   const fetchNamespaces = async () => {
     try {
-      const res = await getNamespaces(selectedCluster)
+      const res = await getNamespaceNames(selectedCluster)
       setNamespaces(res.data || [])
     } catch (error) {
       console.error('Failed to fetch namespaces:', error)
     }
   }
 
-  const fetchServices = async () => {
+  const fetchServices = useCallback(async () => {
     setLoading(true)
     try {
       const res = await getServices(selectedCluster, selectedNamespace || undefined)
@@ -70,7 +72,10 @@ const WorkloadServices: React.FC = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedCluster, selectedNamespace])
+
+  // 自动轮询：当有 Terminating 状态的资源时自动刷新
+  usePolling(fetchServices, hasTerminatingResource(services), { interval: 3000 })
 
   const handleDelete = (record: Service) => {
     Modal.confirm({
@@ -155,6 +160,12 @@ const WorkloadServices: React.FC = () => {
       title: '命名空间',
       dataIndex: 'namespace',
       key: 'namespace',
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status) => <StatusTag status={status || 'Active'} />,
     },
     {
       title: '类型',
