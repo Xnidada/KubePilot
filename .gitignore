@@ -55,3 +55,19 @@ frontend/node_modules/
 # Go workspace
 go.work
 go.work.sum
+
+# 编译产物
+kubepilot
+server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 前端构建产物（保留 dist 目录但忽略 source map）
+web/*.map
+
+# 临时文件
+*.tmp
+*.log
