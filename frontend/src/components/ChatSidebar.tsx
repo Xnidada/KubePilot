@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Input, List, Popconfirm, Typography, Space } from 'antd'
+import { Button, Input, List, Popconfirm, Typography, Space, Tooltip } from 'antd'
 import {
   PlusOutlined,
   DeleteOutlined,
@@ -7,6 +7,8 @@ import {
   CheckOutlined,
   CloseOutlined,
   MessageOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons'
 
 const { Text } = Typography
@@ -26,6 +28,8 @@ interface ChatSidebarProps {
   onCreate: () => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
+  collapsed?: boolean
+  onToggleCollapse?: () => void
 }
 
 const ChatSidebar: React.FC<ChatSidebarProps> = ({
@@ -35,6 +39,8 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
   onCreate,
   onDelete,
   onRename,
+  collapsed = false,
+  onToggleCollapse,
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -69,27 +75,87 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
     return date.toLocaleDateString()
   }
 
+  if (collapsed) {
+    return (
+      <div
+        style={{
+          width: 48,
+          minWidth: 48,
+          background: '#f7f7f8',
+          borderRight: '1px solid #e5e5e5',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: '16px 0',
+          gap: 8,
+        }}
+      >
+        <Tooltip title="展开侧边栏" placement="right">
+          <Button
+            type="text"
+            icon={<MenuUnfoldOutlined />}
+            onClick={onToggleCollapse}
+            style={{ marginBottom: 8 }}
+          />
+        </Tooltip>
+        <Tooltip title="新建对话" placement="right">
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={onCreate}
+            style={{ borderRadius: 8 }}
+          />
+        </Tooltip>
+        {conversations.slice(0, 10).map((item) => (
+          <Tooltip key={item.id} title={item.title} placement="right">
+            <Button
+              type={activeId === item.id ? "primary" : "text"}
+              icon={<MessageOutlined />}
+              onClick={() => onSelect(item.id)}
+              style={{
+                width: 36,
+                height: 36,
+              }}
+            />
+          </Tooltip>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
         width: 280,
+        minWidth: 280,
+        maxWidth: 280,
         background: '#f7f7f8',
         borderRight: '1px solid #e5e5e5',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
+        overflow: 'hidden',
       }}
     >
-      <div style={{ padding: 16, borderBottom: '1px solid #e5e5e5' }}>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          block
-          onClick={onCreate}
-          style={{ borderRadius: 8 }}
-        >
-          新建对话
-        </Button>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid #e5e5e5', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={onCreate}
+            style={{ borderRadius: 8, flex: 1 }}
+          >
+            新建对话
+          </Button>
+          {onToggleCollapse && (
+            <Tooltip title="收起侧边栏">
+              <Button
+                icon={<MenuFoldOutlined />}
+                onClick={onToggleCollapse}
+              />
+            </Tooltip>
+          )}
+        </div>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto' }}>
@@ -116,8 +182,8 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                 }
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                   {editingId === item.id ? (
                     <Space size={4}>
                       <Input
@@ -143,8 +209,8 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                     </Space>
                   ) : (
                     <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <MessageOutlined style={{ color: '#666', fontSize: 14 }} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+                        <MessageOutlined style={{ color: '#666', fontSize: 14, flexShrink: 0 }} />
                         <Text
                           strong
                           style={{
@@ -161,7 +227,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         <Text type="secondary" style={{ fontSize: 12 }}>
                           {item.messageCount} 条消息
                         </Text>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
+                        <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
                           {formatTime(item.updatedAt)}
                         </Text>
                       </div>
@@ -170,7 +236,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                 </div>
 
                 {editingId !== item.id && (
-                  <Space size={2} style={{ opacity: activeId === item.id ? 1 : 0 }}>
+                  <Space size={2} style={{ opacity: activeId === item.id ? 1 : 0, flexShrink: 0 }}>
                     <Button
                       type="text"
                       size="small"

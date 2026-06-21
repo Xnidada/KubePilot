@@ -57,7 +57,7 @@ const Login: React.FC = () => {
         </div>
         <Form
           name="login"
-          initialValues={{ username: 'admin', password: 'admin123' }}
+          initialValues={{ username: 'admin', password: '*******' }}
           onFinish={onFinish}
           size="large"
         >
@@ -95,7 +95,7 @@ const Login: React.FC = () => {
         </Form>
         <div style={{ textAlign: 'center' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            默认账号: admin / admin123
+            默认账号: admin / *******
           </Text>
         </div>
       </Card>

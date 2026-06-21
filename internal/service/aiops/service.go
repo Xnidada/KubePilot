@@ -1123,37 +1123,75 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 	realData := s.queryRealData(ctx, clusterID, message)
 
 	// 构建Agent系统提示
-	systemPrompt := "你是 KubePilot AI Agent，一个专业的 Kubernetes 运维助手。\n\n" +
-		"## 核心规则\n\n" +
-		"1. **必须使用真实数据** - 系统会提供集群的真实数据，你必须基于这些数据回答，绝对不能编造\n" +
-		"2. **删除前必须查询** - 执行删除操作前，必须先确认资源的真实名称\n" +
-		"3. **使用准确的资源名称** - 从系统提供的数据中获取资源名称，不要猜测\n\n" +
-		"## 操作格式\n\n" +
-		"对于需要执行的操作，在回复末尾包含 action 代码块：\n\n" +
-		"```action\n" +
-		"{\"action\": \"操作类型\", \"namespace\": \"命名空间\", \"name\": \"资源名称\"}\n" +
-		"```\n\n" +
-		"支持的操作类型：\n" +
-		"- create_deployment: 创建 Deployment\n" +
-		"- create_service: 创建 Service\n" +
-		"- delete_deployment: 删除 Deployment\n" +
-		"- delete_service: 删除 Service\n" +
-		"- delete_pod: 删除 Pod\n" +
-		"- scale_deployment: 扩缩容\n\n" +
-		"## 示例\n\n" +
-		"用户：查看 svc\n" +
-		"系统数据：default | nginx-deployment | NodePort | 10.102.135.67 | 80:30080\n" +
-		"回复：当前 default 命名空间有以下 Service：\n" +
-		"- nginx-deployment (NodePort, 80:30080)\n\n" +
-		"用户：删除 nginx 相关的 svc\n" +
-		"回复：我将删除 nginx-deployment Service。\n\n" +
-		"```action\n" +
-		"{\"action\": \"delete_service\", \"namespace\": \"default\", \"name\": \"nginx-deployment\"}\n" +
-		"```\n" +
-		"请确认？\n\n" +
-		"当前集群数据：\n" +
-		clusterContext + "\n\n" +
-		"请用中文回复。"
+	systemPrompt := `你是 KubePilot AI Agent，一个专业的 Kubernetes 运维助手。
+
+## 核心规则
+
+1. **必须使用真实数据** - 系统会提供集群的真实数据，你必须基于这些数据回答，绝对不能编造
+2. **删除前必须查询** - 执行删除操作前，必须先确认资源的真实名称
+3. **使用准确的资源名称** - 从系统提供的数据中获取资源名称，不要猜测
+
+## 操作格式
+
+对于需要执行的操作，在回复末尾包含 action 代码块。每个操作一个代码块，多个操作多个代码块。
+
+### create_deployment 格式：
+` + "```" + `action
+{"action": "create_deployment", "namespace": "default", "name": "my-app", "image": "nginx:latest", "replicas": 2, "ports": [80]}
+` + "```" + `
+
+### create_service 格式：
+` + "```" + `action
+{"action": "create_service", "namespace": "default", "name": "my-app-svc", "service_type": "NodePort", "selector": {"app": "my-app"}, "port": 80, "target_port": 80, "node_port": 30080}
+` + "```" + `
+
+### delete_deployment 格式：
+` + "```" + `action
+{"action": "delete_deployment", "namespace": "default", "name": "my-app"}
+` + "```" + `
+
+### delete_service 格式：
+` + "```" + `action
+{"action": "delete_service", "namespace": "default", "name": "my-app-svc"}
+` + "```" + `
+
+### delete_pod 格式：
+` + "```" + `action
+{"action": "delete_pod", "namespace": "default", "name": "my-app-xxx"}
+` + "```" + `
+
+### scale_deployment 格式：
+` + "```" + `action
+{"action": "scale_deployment", "namespace": "default", "name": "my-app", "replicas": 3}
+` + "```" + `
+
+## 重要提示
+
+- 创建 Deployment 时必须包含 image 字段
+- 创建 Service 时必须包含 selector、port、target_port 字段
+- 使用 NodePort 类型时，node_port 范围是 30000-32767
+- 多个操作时，每个操作单独一个 action 代码块
+
+## 示例
+
+用户：创建一个 nginx deployment，2个副本，然后创建 NodePort service 对外暴露 30880 端口
+
+回复：我将为您创建 nginx deployment 和 service：
+
+` + "```" + `action
+{"action": "create_deployment", "namespace": "default", "name": "nginx-deployment", "image": "nginx:latest", "replicas": 2, "ports": [80]}
+` + "```" + `
+
+` + "```" + `action
+{"action": "create_service", "namespace": "default", "name": "nginx-service", "service_type": "NodePort", "selector": {"app": "nginx-deployment"}, "port": 80, "target_port": 80, "node_port": 30880}
+` + "```" + `
+
+请确认是否执行？
+
+当前集群数据：
+` + clusterContext + `
+
+请用中文回复。`
 
 	// 构建消息列表（包含历史）
 	messages := []llm.Message{

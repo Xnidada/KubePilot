@@ -45,6 +45,7 @@ const AIChat: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -251,6 +252,8 @@ const AIChat: React.FC = () => {
         onCreate={() => createConversation()}
         onDelete={(id) => deleteConversation(Number(id))}
         onRename={(id, title) => renameConversation(Number(id), title)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>

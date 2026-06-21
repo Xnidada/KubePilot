@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/config"
+	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
@@ -65,6 +66,22 @@ func main() {
 	dbAdapter := k8s.NewClusterDBAdapter(cfg.JWT.Secret)
 	k8s.InitClientManager(cfg.K8S.QPS, cfg.K8S.Burst, dbAdapter)
 	logger.Info("K8S client manager initialized")
+
+	// 启动 node-shell Pod 清理协程（每 30 分钟清理一次，删除 1 小时未使用的 Pod）
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			// 遍历所有集群进行清理
+			for _, clusterID := range k8s.Manager.ListClusters() {
+				client, err := k8s.Manager.GetClient(clusterID)
+				if err != nil {
+					continue
+				}
+				workload.CleanupNodeShellPods(client, 1*time.Hour)
+			}
+		}
+	}()
 
 	// Setup router
 	r := router.Setup(cfg, cacheInstance)

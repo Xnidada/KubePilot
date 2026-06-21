@@ -20,6 +20,47 @@
 
 KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观的 Web 界面来管理 K8S 集群。支持多集群管理、工作负载管理、AI 智能运维、实时终端等功能，帮助企业简化 K8S 运维操作。
 
+## 📸 功能截图
+
+### 仪表盘
+![仪表盘](images/00仪表盘.png)
+
+### 集群管理
+![集群管理](images/01集群管理.png)
+
+### Deployment 管理
+![Deployment](images/02deploy.png)
+
+### 创建 Deployment
+![创建Deployment](images/03create%20deply.png)
+
+### Pod 管理
+![Pod管理](images/04pod.png)
+
+### CRD 管理
+![CRD管理](images/05crd.png)
+
+### 资源监控
+![资源监控](images/06资源监控.png)
+
+### AI 助手
+![AI助手](images/07AI助手.png)
+
+### AI Agent
+![AI Agent](images/08AIAGENT.png)
+
+### 智能诊断
+![智能诊断](images/09智能诊断.png)
+
+### 日志问诊
+![日志问诊](images/10日志问诊.png)
+
+### 资源指南
+![资源指南](images/11资源指南.png)
+
+### 用户权限管理
+![用户权限管理](images/12用户权限管理.png)
+
 ## ✨ 核心功能
 
 ### 🖥️ 集群管理
@@ -205,6 +246,7 @@ KubePilot/
 ├── deploy/                  # 部署配置
 │   ├── k8s/                 # K8S YAML
 │   └── helm/                # Helm Chart
+├── images/                  # 项目截图
 ├── scripts/                 # 脚本工具
 ├── docker-compose.yml       # Docker Compose
 └── Dockerfile               # Docker 镜像

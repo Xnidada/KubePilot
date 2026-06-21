@@ -115,7 +115,7 @@ const SystemUsers: React.FC = () => {
   const handleResetPassword = async (_username: string, id: number) => {
     try {
       await resetPassword(id)
-      message.success(`密码已重置为默认密码: kubepilot123`)
+      message.success(`密码已重置，请联系管理员获取新密码`)
     } catch (error) {
       console.error('Failed:', error)
     }

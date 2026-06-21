@@ -121,6 +121,18 @@ func (cm *ClientManager) RemoveClient(clusterID uint) {
 	cm.mu.Unlock()
 }
 
+// ListClusters 返回所有已缓存的集群 ID
+func (cm *ClientManager) ListClusters() []uint {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	ids := make([]uint, 0, len(cm.clients))
+	for id := range cm.clients {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (cm *ClientManager) PingCluster(clusterID uint) error {
 	client, err := cm.GetClient(clusterID)
 	if err != nil {

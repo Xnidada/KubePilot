@@ -676,6 +676,23 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		req.Namespace = "default"
 	}
 
+	// 设置默认值
+	if req.Image == "" {
+		req.Image = "nginx:latest"
+	}
+	if req.Replicas == 0 {
+		req.Replicas = 1
+	}
+	if req.ServiceType == "" {
+		req.ServiceType = "ClusterIP"
+	}
+	if req.Port == 0 {
+		req.Port = 80
+	}
+	if req.TargetPort == 0 {
+		req.TargetPort = 80
+	}
+
 	var result *aiopsResult
 	var execErr error
 

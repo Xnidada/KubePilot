@@ -68,6 +68,7 @@ const AIAgent: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [chatMode, setChatMode] = useState<ChatMode>('agent')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -264,9 +265,22 @@ const AIAgent: React.FC = () => {
 
     for (const action of actions) {
       try {
+        // 构建请求，确保所有必需字段都有值
         const request: ExecuteRequest = {
           cluster_id: selectedCluster,
-          ...action,
+          action: action.action,
+          name: action.name || action.resource_name,
+          namespace: action.namespace || 'default',
+          // Deployment 相关
+          image: action.image || 'nginx:latest',
+          replicas: action.replicas || 1,
+          ports: action.ports || (action.container_port ? [action.container_port] : []),
+          // Service 相关
+          service_type: action.service_type || action.type || 'ClusterIP',
+          port: action.port || 80,
+          target_port: action.target_port || action.container_port || 80,
+          node_port: action.node_port || action.nodePort,
+          selector: action.selector || (action.name ? { app: action.name } : {}),
         }
 
         const res = await executeK8SOperation(request)
@@ -425,6 +439,8 @@ const AIAgent: React.FC = () => {
         onCreate={() => createConversation()}
         onDelete={(id) => deleteConversation(Number(id))}
         onRename={(id, title) => renameConversation(Number(id), title)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
