@@ -10,7 +10,7 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.24+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat&logo=postgresql)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis)](https://redis.io/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat)](LICENSE)
 
 </div>
 
@@ -335,7 +335,7 @@ clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespace
 
 ## 📄 许可证
 
-本项目采用 [MIT License](LICENSE) 许可证。
+本项目采用 [Apache License 2.0](LICENSE) 许可证。
 
 ## 🙏 致谢
 
