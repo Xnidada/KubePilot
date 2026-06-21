@@ -13,6 +13,10 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   DatabaseOutlined,
+  RobotOutlined,
+  ApiOutlined,
+  ControlOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuthStore } from '../stores/auth'
@@ -40,13 +44,51 @@ const menuItems: MenuProps['items'] = [
         label: 'Deployment',
       },
       {
+        key: '/workloads/statefulsets',
+        label: 'StatefulSet',
+      },
+      {
+        key: '/workloads/daemonsets',
+        label: 'DaemonSet',
+      },
+      {
+        key: '/workloads/replicasets',
+        label: 'ReplicaSet',
+      },
+      {
         key: '/workloads/pods',
         label: 'Pod',
       },
       {
+        key: '/workloads/jobs',
+        label: 'Job',
+      },
+      {
+        key: '/workloads/cronjobs',
+        label: 'CronJob',
+      },
+    ],
+  },
+  {
+    key: '/network',
+    icon: <ApiOutlined />,
+    label: '服务与网络',
+    children: [
+      {
         key: '/workloads/services',
         label: 'Service',
       },
+      {
+        key: '/workloads/ingresses',
+        label: 'Ingress',
+      },
+    ],
+  },
+  {
+    key: '/config',
+    icon: <ControlOutlined />,
+    label: '配置管理',
+    children: [
       {
         key: '/workloads/configmaps',
         label: 'ConfigMap',
@@ -54,14 +96,6 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/workloads/secrets',
         label: 'Secret',
-      },
-      {
-        key: '/workloads/ingresses',
-        label: 'Ingress',
-      },
-      {
-        key: '/workloads/namespaces',
-        label: '命名空间',
       },
     ],
   },
@@ -77,6 +111,33 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/storage/pvcs',
         label: 'PersistentVolumeClaim',
+      },
+      {
+        key: '/storage/storageclasses',
+        label: 'StorageClass',
+      },
+    ],
+  },
+  {
+    key: '/cluster-resources',
+    icon: <ApartmentOutlined />,
+    label: '集群资源',
+    children: [
+      {
+        key: '/workloads/namespaces',
+        label: '命名空间',
+      },
+      {
+        key: '/workloads/crds',
+        label: 'CRD 管理',
+      },
+      {
+        key: '/cluster/inspection',
+        label: '集群巡检',
+      },
+      {
+        key: '/cluster/event-forward',
+        label: 'Event 转发',
       },
     ],
   },
@@ -101,6 +162,29 @@ const menuItems: MenuProps['items'] = [
     label: '应用商店',
   },
   {
+    key: '/aiops',
+    icon: <RobotOutlined />,
+    label: 'AI 智能',
+    children: [
+      {
+        key: '/aiops/agent',
+        label: 'AI 助手',
+      },
+      {
+        key: '/aiops/diagnosis',
+        label: '智能诊断',
+      },
+      {
+        key: '/aiops/tools',
+        label: 'AI 工具箱',
+      },
+      {
+        key: '/aiops/settings',
+        label: 'AI 设置',
+      },
+    ],
+  },
+  {
     key: '/system',
     icon: <SettingOutlined />,
     label: '系统管理',
@@ -112,6 +196,10 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/system/roles',
         label: '角色管理',
+      },
+      {
+        key: '/system/2fa',
+        label: '两步验证',
       },
     ],
   },
@@ -161,12 +249,37 @@ const MainLayout: React.FC = () => {
   const getOpenKeys = () => {
     const path = location.pathname
     const keys: string[] = []
-    if (path.startsWith('/workloads')) {
-      keys.push('/workloads')
+
+    // 根据路径判断应该展开哪个菜单组
+    const menuGroupMap: { [key: string]: string[] } = {
+      '/workloads/deployments': ['/workloads'],
+      '/workloads/statefulsets': ['/workloads'],
+      '/workloads/daemonsets': ['/workloads'],
+      '/workloads/replicasets': ['/workloads'],
+      '/workloads/pods': ['/workloads'],
+      '/workloads/jobs': ['/workloads'],
+      '/workloads/cronjobs': ['/workloads'],
+      '/workloads/services': ['/network'],
+      '/workloads/ingresses': ['/network'],
+      '/workloads/configmaps': ['/config'],
+      '/workloads/secrets': ['/config'],
+      '/workloads/namespaces': ['/cluster-resources'],
+      '/workloads/crds': ['/cluster-resources'],
+      '/cluster/inspection': ['/cluster-resources'],
+      '/cluster/event-forward': ['/cluster-resources'],
+      '/storage': ['/storage'],
+      '/monitor': ['/monitor'],
+      '/aiops': ['/aiops'],
+      '/system': ['/system'],
     }
-    if (path.startsWith('/system')) {
-      keys.push('/system')
+
+    for (const [prefix, groups] of Object.entries(menuGroupMap)) {
+      if (path.startsWith(prefix)) {
+        keys.push(...groups)
+        break
+      }
     }
+
     return keys
   }
 

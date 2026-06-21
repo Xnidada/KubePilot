@@ -1,6 +1,7 @@
 package workload
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,12 +24,42 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		// 允许同源请求，生产环境应配置具体域名
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		// 允许 localhost 和请求来源一致
+		host := r.Host
+		return origin == "http://"+host || origin == "https://"+host
 	},
+}
+
+// validateWebSocketAuth 验证 WebSocket 连接的 JWT token
+func validateWebSocketAuth(c *gin.Context) bool {
+	// 从 query 参数或 header 获取 token
+	token := c.Query("token")
+	if token == "" {
+		authHeader := c.GetHeader("Authorization")
+		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+			token = authHeader[7:]
+		}
+	}
+	if token == "" {
+		return false
+	}
+	// token 会由中间件验证，这里只检查是否存在
+	return true
 }
 
 // PodTerminal Pod终端WebSocket连接
 func (h *Handler) PodTerminal(c *gin.Context) {
+	// 验证认证
+	if !validateWebSocketAuth(c) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cluster id"})
@@ -65,6 +96,46 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 	}
 	defer ws.Close()
 
+	// 尝试不同的shell
+	shells := []string{"/bin/sh", "/bin/bash", "/bin/ash", "sh", "bash"}
+	var shellCmd string
+	for _, shell := range shells {
+		// 测试shell是否可用
+		testReq := client.Clientset.CoreV1().RESTClient().Post().
+			Resource("pods").
+			Name(podName).
+			Namespace(namespace).
+			SubResource("exec").
+			VersionedParams(&corev1.PodExecOptions{
+				Container: containerName,
+				Command:   []string{shell, "-c", "echo ok"},
+				Stdin:     false,
+				Stdout:    true,
+				Stderr:    true,
+				TTY:       false,
+			}, scheme.ParameterCodec)
+
+		testExecutor, err := remotecommand.NewSPDYExecutor(client.Config, "POST", testReq.URL())
+		if err == nil {
+			var stdout, stderr bytes.Buffer
+			err = testExecutor.StreamWithContext(ctx, remotecommand.StreamOptions{
+				Stdout: &stdout,
+				Stderr: &stderr,
+			})
+			if err == nil && stdout.String() == "ok\n" {
+				shellCmd = shell
+				break
+			}
+		}
+	}
+
+	if shellCmd == "" {
+		ws.WriteMessage(websocket.TextMessage, []byte("错误: 容器中没有可用的shell (distroless镜像不支持终端连接)\r\n"))
+		ws.WriteMessage(websocket.TextMessage, []byte("提示: 此容器使用distroless基础镜像，不包含shell\r\n"))
+		ws.Close()
+		return
+	}
+
 	// 创建exec请求
 	req := client.Clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -73,7 +144,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"/bin/sh"},
+			Command:   []string{shellCmd},
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,

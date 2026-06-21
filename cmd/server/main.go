@@ -12,6 +12,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/config"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"github.com/kubepilot/kubepilot/internal/router"
 	"go.uber.org/zap"
@@ -35,10 +36,14 @@ func main() {
 	logger.Info("starting KubePilot server...")
 
 	// Initialize database
-	if err := model.InitDatabase(cfg.Database.DSN()); err != nil {
+	driver := cfg.Database.Driver
+	if driver == "" {
+		driver = "postgres"
+	}
+	if err := model.InitDatabase(driver, cfg.Database.DSN(), cfg.Database.MaxIdleConns, cfg.Database.MaxOpenConns); err != nil {
 		logger.Fatal("failed to connect to database", zap.Error(err))
 	}
-	logger.Info("database connected")
+	logger.Info("database connected", zap.String("driver", driver))
 
 	// Auto migrate
 	if err := model.AutoMigrate(); err != nil {
@@ -46,12 +51,23 @@ func main() {
 	}
 	logger.Info("database migrated")
 
-	// Initialize K8S client manager
-	k8s.InitClientManager(cfg.K8S.QPS, cfg.K8S.Burst)
+	// Initialize cache
+	cacheInstance := cache.New(cache.Config{
+		Type:     cfg.Cache.Type,
+		Addr:     cfg.Cache.Addr,
+		Password: cfg.Cache.Password,
+		DB:       cfg.Cache.DB,
+	})
+	defer cacheInstance.Close()
+	logger.Info("cache initialized", zap.String("type", cfg.Cache.Type))
+
+	// Initialize K8S client manager with database adapter
+	dbAdapter := k8s.NewClusterDBAdapter(cfg.JWT.Secret)
+	k8s.InitClientManager(cfg.K8S.QPS, cfg.K8S.Burst, dbAdapter)
 	logger.Info("K8S client manager initialized")
 
 	// Setup router
-	r := router.Setup(cfg)
+	r := router.Setup(cfg, cacheInstance)
 
 	// Create HTTP server
 	srv := &http.Server{

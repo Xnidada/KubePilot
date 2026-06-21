@@ -4,9 +4,10 @@ import {
   PlusOutlined,
   SyncOutlined,
   DeleteOutlined,
+  EditOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getPVs, createPV, deletePV, PV } from '../../api/storage'
+import { getPVs, createPV, updatePV, deletePV, PV } from '../../api/storage'
 import { getClusterList, Cluster } from '../../api/cluster'
 
 const { Title } = Typography
@@ -16,7 +17,8 @@ const PersistentVolumes: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
-  const [createModalVisible, setCreateModalVisible] = useState(false)
+  const [modalVisible, setModalVisible] = useState(false)
+  const [editingPV, setEditingPV] = useState<PV | null>(null)
   const [form] = Form.useForm()
 
   useEffect(() => {
@@ -69,22 +71,50 @@ const PersistentVolumes: React.FC = () => {
     })
   }
 
-  const handleCreate = async (values: any) => {
+  const handleEdit = (record: PV) => {
+    setEditingPV(record)
+    form.setFieldsValue({
+      name: record.name,
+      capacity: record.capacity,
+      access_modes: record.access_modes,
+      reclaim_policy: record.reclaim_policy,
+      storage_class: record.storage_class,
+    })
+    setModalVisible(true)
+  }
+
+  const handleCreate = () => {
+    setEditingPV(null)
+    form.resetFields()
+    setModalVisible(true)
+  }
+
+  const handleSubmit = async (values: any) => {
     try {
-      await createPV(selectedCluster, {
-        name: values.name,
-        capacity: values.capacity,
-        access_modes: values.access_modes.split(',').map((m: string) => m.trim()),
-        reclaim_policy: values.reclaim_policy || 'Retain',
-        storage_class: values.storage_class,
-        host_path: values.host_path,
-      })
-      message.success('创建成功')
-      setCreateModalVisible(false)
+      if (editingPV) {
+        await updatePV(selectedCluster, editingPV.name, {
+          capacity: values.capacity,
+          access_modes: values.access_modes ? values.access_modes.split(',').map((m: string) => m.trim()) : undefined,
+          reclaim_policy: values.reclaim_policy,
+          storage_class: values.storage_class,
+        })
+        message.success('更新成功')
+      } else {
+        await createPV(selectedCluster, {
+          name: values.name,
+          capacity: values.capacity,
+          access_modes: values.access_modes.split(',').map((m: string) => m.trim()),
+          reclaim_policy: values.reclaim_policy || 'Retain',
+          storage_class: values.storage_class,
+          host_path: values.host_path,
+        })
+        message.success('创建成功')
+      }
+      setModalVisible(false)
       form.resetFields()
       fetchPVs()
     } catch (error) {
-      console.error('Create failed:', error)
+      console.error('Operation failed:', error)
     }
   }
 
@@ -146,9 +176,12 @@ const PersistentVolumes: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 100,
+      width: 120,
       render: (_, record) => (
         <Space size="small">
+          <Tooltip title="编辑">
+            <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+          </Tooltip>
           <Tooltip title="删除">
             <Button type="link" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} />
           </Tooltip>
@@ -172,7 +205,7 @@ const PersistentVolumes: React.FC = () => {
           <Button icon={<SyncOutlined />} onClick={fetchPVs}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalVisible(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
             创建
           </Button>
         </Space>
@@ -183,34 +216,34 @@ const PersistentVolumes: React.FC = () => {
       </Card>
 
       <Modal
-        title="创建 PersistentVolume"
-        open={createModalVisible}
+        title={editingPV ? '编辑 PersistentVolume' : '创建 PersistentVolume'}
+        open={modalVisible}
         onCancel={() => {
-          setCreateModalVisible(false)
+          setModalVisible(false)
           form.resetFields()
         }}
         onOk={() => form.submit()}
         width={600}
       >
-        <Form form={form} layout="vertical" onFinish={handleCreate}>
+        <Form form={form} layout="vertical" onFinish={handleSubmit}>
           <Form.Item
             name="name"
             label="名称"
-            rules={[{ required: true, message: '请输入名称' }]}
+            rules={[{ required: !editingPV, message: '请输入名称' }]}
           >
-            <Input placeholder="请输入 PV 名称" />
+            <Input placeholder="请输入 PV 名称" disabled={!!editingPV} />
           </Form.Item>
           <Form.Item
             name="capacity"
             label="容量"
-            rules={[{ required: true, message: '请输入容量' }]}
+            rules={[{ required: !editingPV, message: '请输入容量' }]}
           >
             <Input placeholder="例如: 10Gi" />
           </Form.Item>
           <Form.Item
             name="access_modes"
             label="访问模式"
-            rules={[{ required: true, message: '请输入访问模式' }]}
+            rules={[{ required: !editingPV, message: '请输入访问模式' }]}
           >
             <Input placeholder="例如: ReadWriteOnce,ReadOnlyMany" />
           </Form.Item>
@@ -226,9 +259,11 @@ const PersistentVolumes: React.FC = () => {
           <Form.Item name="storage_class" label="StorageClass">
             <Input placeholder="请输入 StorageClass 名称" />
           </Form.Item>
-          <Form.Item name="host_path" label="HostPath">
-            <Input placeholder="例如: /data/pv" />
-          </Form.Item>
+          {!editingPV && (
+            <Form.Item name="host_path" label="HostPath">
+              <Input placeholder="例如: /data/pv" />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
     </div>

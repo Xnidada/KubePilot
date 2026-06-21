@@ -468,15 +468,6 @@ func (h *Handler) GetClusterOverview(c *gin.Context) {
 }
 
 // 辅助函数
-func isOwnedBy(refs []metav1.OwnerReference, name, kind string) bool {
-	for _, ref := range refs {
-		if ref.Kind == kind && ref.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 func getNodeIP(addresses []corev1.NodeAddress) string {
 	for _, addr := range addresses {
 		if addr.Type == "InternalIP" {

@@ -4,14 +4,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/service/auth"
+	"gorm.io/gorm"
 )
 
 type Handler struct {
 	service *auth.Service
+	db      *gorm.DB
 }
 
-func NewHandler(service *auth.Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *auth.Service, db *gorm.DB) *Handler {
+	return &Handler{service: service, db: db}
 }
 
 func (h *Handler) Login(c *gin.Context) {
@@ -24,6 +26,16 @@ func (h *Handler) Login(c *gin.Context) {
 	result, err := h.service.Login(&req)
 	if err != nil {
 		response.Unauthorized(c, err.Error())
+		return
+	}
+
+	// 检查是否需要两步验证
+	if CheckTwoFactorRequired(h.db, result.User.ID) {
+		response.Success(c, gin.H{
+			"require_2fa": true,
+			"user_id":     result.User.ID,
+			"message":     "需要两步验证",
+		})
 		return
 	}
 

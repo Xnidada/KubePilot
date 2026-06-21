@@ -75,7 +75,15 @@ export const createCluster = (data: CreateClusterRequest) => {
   return post('/clusters', data)
 }
 
-export const updateCluster = (id: number, data: Partial<Cluster>) => {
+export interface UpdateClusterRequest {
+  display_name?: string
+  description?: string
+  api_server?: string
+  kubeconfig?: string
+  tags?: string
+}
+
+export const updateCluster = (id: number, data: UpdateClusterRequest) => {
   return put(`/clusters/${id}`, data)
 }
 

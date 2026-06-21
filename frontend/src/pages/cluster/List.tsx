@@ -18,13 +18,14 @@ import {
   PlusOutlined,
   SyncOutlined,
   DeleteOutlined,
+  EditOutlined,
   EyeOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getClusterList, createCluster, deleteCluster, healthCheckCluster, Cluster } from '../../api/cluster'
+import { getClusterList, createCluster, updateCluster, deleteCluster, healthCheckCluster, Cluster } from '../../api/cluster'
 
 const { Title } = Typography
 const { TextArea } = Input
@@ -37,6 +38,7 @@ const ClusterList: React.FC = () => {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [modalVisible, setModalVisible] = useState(false)
+  const [editingCluster, setEditingCluster] = useState<Cluster | null>(null)
   const [form] = Form.useForm()
 
   useEffect(() => {
@@ -56,15 +58,44 @@ const ClusterList: React.FC = () => {
     }
   }
 
-  const handleCreate = async (values: any) => {
+  const handleCreate = () => {
+    setEditingCluster(null)
+    form.resetFields()
+    setModalVisible(true)
+  }
+
+  const handleEdit = (record: Cluster) => {
+    setEditingCluster(record)
+    form.setFieldsValue({
+      name: record.name,
+      display_name: record.display_name,
+      description: record.description,
+      api_server: record.api_server,
+      tags: record.tags,
+    })
+    setModalVisible(true)
+  }
+
+  const handleSubmit = async (values: any) => {
     try {
-      await createCluster(values)
-      message.success('集群添加成功')
+      if (editingCluster) {
+        await updateCluster(editingCluster.id, {
+          display_name: values.display_name,
+          description: values.description,
+          api_server: values.api_server,
+          kubeconfig: values.kubeconfig,
+          tags: values.tags,
+        })
+        message.success('集群更新成功')
+      } else {
+        await createCluster(values)
+        message.success('集群添加成功')
+      }
       setModalVisible(false)
       form.resetFields()
       fetchClusters()
     } catch (error) {
-      console.error('Failed to create cluster:', error)
+      console.error('Failed to save cluster:', error)
     }
   }
 
@@ -167,6 +198,13 @@ const ClusterList: React.FC = () => {
               onClick={() => navigate(`/clusters/${record.id}`)}
             />
           </Tooltip>
+          <Tooltip title="编辑">
+            <Button
+              type="link"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            />
+          </Tooltip>
           <Tooltip title="健康检查">
             <Button
               type="link"
@@ -197,7 +235,7 @@ const ClusterList: React.FC = () => {
           <Button icon={<SyncOutlined />} onClick={fetchClusters}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
             添加集群
           </Button>
         </Space>
@@ -225,7 +263,7 @@ const ClusterList: React.FC = () => {
       </Card>
 
       <Modal
-        title="添加集群"
+        title={editingCluster ? '编辑集群' : '添加集群'}
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false)
@@ -234,13 +272,13 @@ const ClusterList: React.FC = () => {
         onOk={() => form.submit()}
         width={600}
       >
-        <Form form={form} layout="vertical" onFinish={handleCreate}>
+        <Form form={form} layout="vertical" onFinish={handleSubmit}>
           <Form.Item
             name="name"
             label="集群名称"
-            rules={[{ required: true, message: '请输入集群名称' }]}
+            rules={[{ required: !editingCluster, message: '请输入集群名称' }]}
           >
-            <Input placeholder="请输入集群名称" />
+            <Input placeholder="请输入集群名称" disabled={!!editingCluster} />
           </Form.Item>
           <Form.Item name="display_name" label="显示名称">
             <Input placeholder="请输入显示名称" />
@@ -258,9 +296,9 @@ const ClusterList: React.FC = () => {
           <Form.Item
             name="kubeconfig"
             label="Kubeconfig"
-            rules={[{ required: true, message: '请粘贴 kubeconfig 内容' }]}
+            rules={[{ required: !editingCluster, message: '请粘贴 kubeconfig 内容' }]}
           >
-            <TextArea rows={8} placeholder="请粘贴 kubeconfig 文件内容" />
+            <TextArea rows={8} placeholder={editingCluster ? '留空则保持原有 kubeconfig 不变' : '请粘贴 kubeconfig 文件内容'} />
           </Form.Item>
           <Form.Item name="tags" label="标签">
             <Input placeholder="多个标签用逗号分隔" />

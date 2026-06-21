@@ -70,7 +70,7 @@ func main() {
 	result := model.DB.Where("username = ?", "admin").First(&adminUser)
 	if result.Error != nil {
 		// User doesn't exist, create it
-		hashedPassword, err := crypto.HashPassword("admin123")
+		hashedPassword, err := crypto.HashPassword("changeme")
 		if err != nil {
 			logger.Fatal("failed to hash password", zap.Error(err))
 		}
@@ -94,5 +94,5 @@ func main() {
 
 	fmt.Println("=== Initialization Complete ===")
 	fmt.Println("Username: admin")
-	fmt.Println("Password: admin123")
+	fmt.Println("Password: changeme")
 }

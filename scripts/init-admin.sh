@@ -2,7 +2,7 @@
 
 # Initialize admin user for KubePilot
 
-REMOTE_HOST="192.168.30.112"
+REMOTE_HOST="YOUR_SERVER_IP"
 REMOTE_USER="root"
 
 echo "Creating admin user..."
@@ -31,7 +31,7 @@ VALUES ('viewer', 'Viewer', '{}', false, NOW(), NOW())
 ON CONFLICT (name) DO NOTHING;
 \""
 
-# Note: The password hash below is for 'admin123' using bcrypt
+# Note: The password hash below is for 'changeme' using bcrypt
 # You may need to generate this hash using your application
 ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo -u postgres psql -d kubepilot -c \"
 INSERT INTO users (username, email, password, real_name, status, role_id, created_at, updated_at)
@@ -42,4 +42,4 @@ ON CONFLICT (username) DO NOTHING;
 
 echo "Admin user created successfully!"
 echo "Username: admin"
-echo "Password: admin123"
+echo "Password: changeme"

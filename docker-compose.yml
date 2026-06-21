@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: kubepilot-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: kubepilot
+      POSTGRES_PASSWORD: CHANGE_ME
+      POSTGRES_DB: kubepilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kubepilot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kubepilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: kubepilot-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kubepilot
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # KubePilot 应用
+  kubepilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kubepilot-app
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - KUBEPILOT_SERVER_HOST=0.0.0.0
+      - KUBEPILOT_SERVER_PORT=8080
+      - KUBEPILOT_SERVER_MODE=release
+      - KUBEPILOT_DATABASE_DRIVER=postgres
+      - KUBEPILOT_DATABASE_HOST=postgres
+      - KUBEPILOT_DATABASE_PORT=5432
+      - KUBEPILOT_DATABASE_USERNAME=kubepilot
+      - KUBEPILOT_DATABASE_PASSWORD=CHANGE_ME
+      - KUBEPILOT_DATABASE_DBNAME=kubepilot
+      - KUBEPILOT_DATABASE_SSLMODE=disable
+      - KUBEPILOT_CACHE_TYPE=redis
+      - KUBEPILOT_CACHE_ADDR=redis:6379
+      - KUBEPILOT_JWT_SECRET=CHANGE_YOUR_JWT_SECRET
+    volumes:
+      - ./configs:/app/configs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - kubepilot
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  kubepilot:
+    driver: bridge

@@ -19,8 +19,16 @@ func RBACMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 管理员角色(id=1)拥有所有权限
-		if roleID.(uint) == 1 {
+		// 加载角色信息
+		var role model.Role
+		if err := model.DB.First(&role, roleID).Error; err != nil {
+			response.Forbidden(c, "role not found")
+			c.Abort()
+			return
+		}
+
+		// 系统管理员角色拥有所有权限
+		if role.IsSystem || role.Name == "admin" {
 			c.Next()
 			return
 		}
@@ -35,14 +43,7 @@ func RBACMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 加载角色权限
-		var role model.Role
-		if err := model.DB.First(&role, roleID).Error; err != nil {
-			response.Forbidden(c, "role not found")
-			c.Abort()
-			return
-		}
-
+		// 解析权限
 		permissions, err := model.ParsePermissions(role.Permissions)
 		if err != nil {
 			response.Forbidden(c, "invalid permissions")
@@ -70,10 +71,56 @@ func RequirePermission(resource, action string) gin.HandlerFunc {
 	}
 }
 
+// AutoRBACMiddleware 自动RBAC权限检查中间件
+func AutoRBACMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 获取用户角色ID
+		roleID, exists := c.Get("role_id")
+		if !exists {
+			response.Forbidden(c, "no role found")
+			c.Abort()
+			return
+		}
+
+		// 加载角色信息
+		var role model.Role
+		if err := model.DB.First(&role, roleID).Error; err != nil {
+			response.Forbidden(c, "role not found")
+			c.Abort()
+			return
+		}
+
+		// 系统管理员角色拥有所有权限
+		if role.IsSystem || role.Name == "admin" {
+			c.Next()
+			return
+		}
+
+		// 自动提取资源和操作
+		resource := extractResourceFromPath(c.FullPath())
+		action := extractActionFromMethod(c.Request.Method)
+
+		// 解析权限
+		permissions, err := model.ParsePermissions(role.Permissions)
+		if err != nil {
+			response.Forbidden(c, "invalid permissions")
+			c.Abort()
+			return
+		}
+
+		// 检查权限
+		if !permissions.HasPermission(resource, action) {
+			response.Forbidden(c, "insufficient permissions")
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // extractResourceFromPath 从路径中提取资源类型
 func extractResourceFromPath(path string) string {
-	// 从API路径中提取资源类型
-	// 例如: /api/v1/clusters/:id/deployments -> deployments
 	resources := map[string]string{
 		"/clusters":     "clusters",
 		"/deployments":  "deployments",
@@ -114,52 +161,5 @@ func extractActionFromMethod(method string) string {
 		return "delete"
 	default:
 		return "view"
-	}
-}
-
-// AutoRBACMiddleware 自动RBAC权限检查中间件
-func AutoRBACMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 获取用户角色ID
-		roleID, exists := c.Get("role_id")
-		if !exists {
-			response.Forbidden(c, "no role found")
-			c.Abort()
-			return
-		}
-
-		// 管理员角色(id=1)拥有所有权限
-		if roleID.(uint) == 1 {
-			c.Next()
-			return
-		}
-
-		// 自动提取资源和操作
-		resource := extractResourceFromPath(c.FullPath())
-		action := extractActionFromMethod(c.Request.Method)
-
-		// 加载角色权限
-		var role model.Role
-		if err := model.DB.First(&role, roleID).Error; err != nil {
-			response.Forbidden(c, "role not found")
-			c.Abort()
-			return
-		}
-
-		permissions, err := model.ParsePermissions(role.Permissions)
-		if err != nil {
-			response.Forbidden(c, "invalid permissions")
-			c.Abort()
-			return
-		}
-
-		// 检查权限
-		if !permissions.HasPermission(resource, action) {
-			response.Forbidden(c, "insufficient permissions")
-			c.Abort()
-			return
-		}
-
-		c.Next()
 	}
 }

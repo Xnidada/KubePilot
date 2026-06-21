@@ -37,6 +37,8 @@ type CreateClusterRequest struct {
 type UpdateClusterRequest struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
+	APIServer   string `json:"api_server"`
+	Kubeconfig  string `json:"kubeconfig"`
 	Tags        string `json:"tags"`
 }
 
@@ -112,8 +114,23 @@ func (s *Service) Update(id uint, req *UpdateClusterRequest) (*ClusterResponse, 
 	if req.Description != "" {
 		cluster.Description = req.Description
 	}
+	if req.APIServer != "" {
+		cluster.APIServer = req.APIServer
+	}
 	if req.Tags != "" {
 		cluster.Tags = req.Tags
+	}
+
+	// 如果提供了新的 kubeconfig，加密后更新
+	if req.Kubeconfig != "" {
+		encrypted, err := crypto.Encrypt(req.Kubeconfig, s.encryptKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt kubeconfig: %w", err)
+		}
+		cluster.Kubeconfig = encrypted
+
+		// 移除旧的客户端缓存，下次使用时会重新创建
+		k8s.Manager.RemoveClient(cluster.ID)
 	}
 
 	if err := s.clusterRepo.Update(cluster); err != nil {

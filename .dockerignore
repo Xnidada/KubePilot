@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+kubepilot
+
+# Test
+*_test.go
+*.test
+
+# Documentation
+*.md
+docs/
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Kubernetes
+deploy/
+
+# Node modules
+frontend/node_modules/
+
+# Frontend source (we only need dist)
+frontend/src/
+frontend/public/
+frontend/*.json
+frontend/*.js
+frontend/*.ts

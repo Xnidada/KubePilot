@@ -1,6 +1,8 @@
 package system
 
 import (
+	"crypto/rand"
+	"math/big"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -259,8 +261,9 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	// 重置为默认密码
-	hashedPassword, err := crypto.HashPassword("kubepilot123")
+	// 生成随机临时密码
+	tempPassword := generateRandomPassword(12)
+	hashedPassword, err := crypto.HashPassword(tempPassword)
 	if err != nil {
 		response.InternalError(c, "failed to hash password")
 		return
@@ -271,7 +274,11 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	response.SuccessWithMessage(c, "password reset to default: kubepilot123", nil)
+	response.Success(c, gin.H{
+		"message":         "password reset successfully",
+		"temp_password":   tempPassword,
+		"warning":         "请立即通知用户修改此临时密码",
+	})
 }
 
 // ListRoles 获取角色列表
@@ -534,4 +541,16 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	}
 
 	response.PageSuccess(c, logs, total, page, size)
+}
+
+
+// generateRandomPassword 生成随机密码
+func generateRandomPassword(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	b := make([]byte, length)
+	for i := range b {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		b[i] = charset[n.Int64()]
+	}
+	return string(b)
 }

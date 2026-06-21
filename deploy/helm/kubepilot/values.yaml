@@ -44,7 +44,7 @@ database:
   host: "localhost"
   port: 5432
   username: "kubepilot"
-  password: "kubepilot"
+  password: "CHANGE_ME"
   dbname: "kubepilot"
 
 # Redis configuration
@@ -55,7 +55,7 @@ redis:
 
 # JWT configuration
 jwt:
-  secret: "change-me-in-production"
+  secret: "CHANGE_YOUR_JWT_SECRET"
   expireTime: "24h"
 
 # External PostgreSQL (if not using built-in)

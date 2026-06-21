@@ -12,15 +12,28 @@ import (
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-type Handler struct{}
+type KubectlExecutor interface {
+	ExecuteKubectl(ctx context.Context, clusterID uint, args []string) (bool, string, string, error)
+	ExecuteKubectlApply(ctx context.Context, clusterID uint, yamlContent string) (bool, string, string, error)
+	ExecuteKubectlDelete(ctx context.Context, clusterID uint, yamlContent string) (bool, string, string, error)
+}
+
+type Handler struct {
+	kubectlExecutor KubectlExecutor
+}
 
 func NewHandler() *Handler {
 	return &Handler{}
+}
+
+func (h *Handler) SetKubectlExecutor(executor KubectlExecutor) {
+	h.kubectlExecutor = executor
 }
 
 // Deployment handlers
@@ -1577,6 +1590,132 @@ func (h *Handler) ListNodes(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// GetNode 获取节点详情
+func (h *Handler) GetNode(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	node, err := client.Clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "node not found")
+		return
+	}
+
+	// 获取节点上的 Pod
+	pods, _ := client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + name,
+	})
+
+	podList := make([]map[string]interface{}, 0)
+	if pods != nil {
+		for _, pod := range pods.Items {
+			podList = append(podList, map[string]interface{}{
+				"name":      pod.Name,
+				"namespace": pod.Namespace,
+				"status":    string(pod.Status.Phase),
+			})
+		}
+	}
+
+	result := map[string]interface{}{
+		"name":       node.Name,
+		"labels":     node.Labels,
+		"annotations": node.Annotations,
+		"status":     node.Status.Conditions,
+		"capacity":   node.Status.Capacity,
+		"allocatable": node.Status.Allocatable,
+		"node_info":  node.Status.NodeInfo,
+		"pods":       podList,
+		"created_at": node.CreationTimestamp.Time,
+	}
+
+	response.Success(c, result)
+}
+
+// UpdateNode 更新节点（cordon/uncordon/label/taint）
+func (h *Handler) UpdateNode(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	var req struct {
+		Labels      map[string]string `json:"labels"`
+		Unschedulable *bool           `json:"unschedulable"` // cordon/uncordon
+		Taints      []struct {
+			Key    string `json:"key"`
+			Value  string `json:"value"`
+			Effect string `json:"effect"`
+		} `json:"taints"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	node, err := client.Clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "node not found")
+		return
+	}
+
+	// 更新标签
+	if req.Labels != nil {
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		for k, v := range req.Labels {
+			node.Labels[k] = v
+		}
+	}
+
+	// cordon/uncordon
+	if req.Unschedulable != nil {
+		node.Spec.Unschedulable = *req.Unschedulable
+	}
+
+	// 更新 taints
+	if req.Taints != nil {
+		taints := make([]corev1.Taint, 0)
+		for _, t := range req.Taints {
+			taints = append(taints, corev1.Taint{
+				Key:    t.Key,
+				Value:  t.Value,
+				Effect: corev1.TaintEffect(t.Effect),
+			})
+		}
+		node.Spec.Taints = taints
+	}
+
+	result, err := client.Clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
 // Namespace handlers
 func (h *Handler) ListNamespaces(c *gin.Context) {
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -2138,16 +2277,330 @@ func (h *Handler) ListStorageClasses(c *gin.Context) {
 			volumeBindingMode = string(*sc.VolumeBindingMode)
 		}
 
+		reclaimPolicy := "Delete"
+		if sc.ReclaimPolicy != nil {
+			reclaimPolicy = string(*sc.ReclaimPolicy)
+		}
+
 		result = append(result, SCInfo{
 			Name:              sc.Name,
 			Provisioner:       sc.Provisioner,
-			ReclaimPolicy:     string(*sc.ReclaimPolicy),
+			ReclaimPolicy:     reclaimPolicy,
 			VolumeBindingMode: volumeBindingMode,
 			Age:               timeSince(sc.CreationTimestamp.Time),
 		})
 	}
 
 	response.Success(c, result)
+}
+
+// UpdatePV 更新 PersistentVolume
+func (h *Handler) UpdatePV(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	var req struct {
+		Capacity      string   `json:"capacity"`
+		AccessModes   []string `json:"access_modes"`
+		ReclaimPolicy string   `json:"reclaim_policy"`
+		StorageClass  string   `json:"storage_class"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+
+	// 获取现有 PV
+	pv, err := client.Clientset.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "pv not found")
+		return
+	}
+
+	// 更新字段
+	if req.Capacity != "" {
+		capacity, err := resource.ParseQuantity(req.Capacity)
+		if err != nil {
+			response.BadRequest(c, "invalid capacity: "+err.Error())
+			return
+		}
+		pv.Spec.Capacity = corev1.ResourceList{
+			corev1.ResourceStorage: capacity,
+		}
+	}
+
+	if len(req.AccessModes) > 0 {
+		accessModes := make([]corev1.PersistentVolumeAccessMode, 0)
+		for _, mode := range req.AccessModes {
+			accessModes = append(accessModes, corev1.PersistentVolumeAccessMode(mode))
+		}
+		pv.Spec.AccessModes = accessModes
+	}
+
+	if req.ReclaimPolicy != "" {
+		pv.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimPolicy(req.ReclaimPolicy)
+	}
+
+	if req.StorageClass != "" {
+		pv.Spec.StorageClassName = req.StorageClass
+	}
+
+	result, err := client.Clientset.CoreV1().PersistentVolumes().Update(ctx, pv, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// UpdatePVC 更新 PersistentVolumeClaim
+func (h *Handler) UpdatePVC(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	namespace := c.Param("ns")
+	name := c.Param("name")
+
+	var req struct {
+		Capacity     string   `json:"capacity"`
+		AccessModes  []string `json:"access_modes"`
+		StorageClass string   `json:"storage_class"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+
+	// 获取现有 PVC
+	pvc, err := client.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "pvc not found")
+		return
+	}
+
+	// 更新字段
+	if req.Capacity != "" {
+		capacity, err := resource.ParseQuantity(req.Capacity)
+		if err != nil {
+			response.BadRequest(c, "invalid capacity: "+err.Error())
+			return
+		}
+		pvc.Spec.Resources = corev1.VolumeResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceStorage: capacity,
+			},
+		}
+	}
+
+	if len(req.AccessModes) > 0 {
+		accessModes := make([]corev1.PersistentVolumeAccessMode, 0)
+		for _, mode := range req.AccessModes {
+			accessModes = append(accessModes, corev1.PersistentVolumeAccessMode(mode))
+		}
+		pvc.Spec.AccessModes = accessModes
+	}
+
+	if req.StorageClass != "" {
+		pvc.Spec.StorageClassName = &req.StorageClass
+	}
+
+	result, err := client.Clientset.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, pvc, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// GetStorageClass 获取 StorageClass 详情
+func (h *Handler) GetStorageClass(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	sc, err := client.Clientset.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "storageclass not found")
+		return
+	}
+
+	response.Success(c, sc)
+}
+
+// CreateStorageClass 创建 StorageClass
+func (h *Handler) CreateStorageClass(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+
+	var req struct {
+		Name              string            `json:"name" binding:"required"`
+		Provisioner       string            `json:"provisioner" binding:"required"`
+		ReclaimPolicy     string            `json:"reclaim_policy"`
+		VolumeBindingMode string            `json:"volume_binding_mode"`
+		Parameters        map[string]string `json:"parameters"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if req.ReclaimPolicy == "" {
+		req.ReclaimPolicy = "Delete"
+	}
+
+	sc := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: req.Name,
+		},
+		Provisioner:   req.Provisioner,
+		ReclaimPolicy: func() *corev1.PersistentVolumeReclaimPolicy { p := corev1.PersistentVolumeReclaimPolicy(req.ReclaimPolicy); return &p }(),
+		Parameters:    req.Parameters,
+	}
+
+	if req.VolumeBindingMode != "" {
+		mode := storagev1.VolumeBindingMode(req.VolumeBindingMode)
+		sc.VolumeBindingMode = &mode
+	}
+
+	ctx := context.Background()
+	result, err := client.Clientset.StorageV1().StorageClasses().Create(ctx, sc, metav1.CreateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Created(c, result)
+}
+
+// UpdateStorageClass 更新 StorageClass
+func (h *Handler) UpdateStorageClass(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	var req struct {
+		Provisioner       string            `json:"provisioner"`
+		ReclaimPolicy     string            `json:"reclaim_policy"`
+		VolumeBindingMode string            `json:"volume_binding_mode"`
+		Parameters        map[string]string `json:"parameters"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+
+	// 获取现有 StorageClass
+	sc, err := client.Clientset.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "storageclass not found")
+		return
+	}
+
+	// 更新字段
+	if req.Provisioner != "" {
+		sc.Provisioner = req.Provisioner
+	}
+
+	if req.ReclaimPolicy != "" {
+		policy := corev1.PersistentVolumeReclaimPolicy(req.ReclaimPolicy)
+		sc.ReclaimPolicy = &policy
+	}
+
+	if req.VolumeBindingMode != "" {
+		mode := storagev1.VolumeBindingMode(req.VolumeBindingMode)
+		sc.VolumeBindingMode = &mode
+	}
+
+	if req.Parameters != nil {
+		sc.Parameters = req.Parameters
+	}
+
+	result, err := client.Clientset.StorageV1().StorageClasses().Update(ctx, sc, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// DeleteStorageClass 删除 StorageClass
+func (h *Handler) DeleteStorageClass(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	err = client.Clientset.StorageV1().StorageClasses().Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "storageclass deleted", nil)
 }
 
 // Helper function

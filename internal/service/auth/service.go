@@ -169,3 +169,32 @@ func (s *Service) ChangePassword(userID uint, oldPassword, newPassword string) e
 	user.Password = hashedPassword
 	return s.userRepo.Update(user)
 }
+
+// GenerateTokenForUser 为指定用户生成 JWT token（用于 2FA 验证后）
+func (s *Service) GenerateTokenForUser(userID uint) (*LoginResponse, error) {
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	token, err := s.jwtManager.GenerateToken(user.ID, user.Username, user.RoleID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update last login
+	s.userRepo.UpdateLastLogin(user.ID)
+
+	return &LoginResponse{
+		Token:     token,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		User: UserInfo{
+			ID:       user.ID,
+			Username: user.Username,
+			Email:    user.Email,
+			RealName: user.RealName,
+			RoleID:   user.RoleID,
+			RoleName: user.Role.Name,
+		},
+	}, nil
+}

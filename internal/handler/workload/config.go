@@ -873,6 +873,66 @@ func (h *Handler) DeleteNamespace(c *gin.Context) {
 	response.SuccessWithMessage(c, "namespace deleted", nil)
 }
 
+// UpdateNamespace 更新命名空间
+func (h *Handler) UpdateNamespace(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	var req struct {
+		Labels      map[string]string `json:"labels"`
+		Annotations map[string]string `json:"annotations"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	ns, err := client.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "namespace not found")
+		return
+	}
+
+	// 更新标签
+	if req.Labels != nil {
+		if ns.Labels == nil {
+			ns.Labels = make(map[string]string)
+		}
+		for k, v := range req.Labels {
+			ns.Labels[k] = v
+		}
+	}
+
+	// 更新注解
+	if req.Annotations != nil {
+		if ns.Annotations == nil {
+			ns.Annotations = make(map[string]string)
+		}
+		for k, v := range req.Annotations {
+			ns.Annotations[k] = v
+		}
+	}
+
+	result, err := client.Clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
 // GetNamespaceDetail 获取命名空间详情
 func (h *Handler) GetNamespaceDetail(c *gin.Context) {
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -1001,4 +1061,96 @@ func (h *Handler) CreateResourceQuota(c *gin.Context) {
 	}
 
 	response.Created(c, result)
+}
+
+// UpdateResourceQuota 更新资源配额
+func (h *Handler) UpdateResourceQuota(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+
+	var req struct {
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
+		Pods   string `json:"pods"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+
+	// 获取现有的 ResourceQuota
+	// 需要知道 namespace，从 URL 或 query 获取
+	namespace := c.Query("ns")
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	quota, err := client.Clientset.CoreV1().ResourceQuotas(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "resource quota not found")
+		return
+	}
+
+	// 更新配额
+	if quota.Spec.Hard == nil {
+		quota.Spec.Hard = corev1.ResourceList{}
+	}
+	if req.CPU != "" {
+		quota.Spec.Hard[corev1.ResourceRequestsCPU] = resource.MustParse(req.CPU)
+	}
+	if req.Memory != "" {
+		quota.Spec.Hard[corev1.ResourceRequestsMemory] = resource.MustParse(req.Memory)
+	}
+	if req.Pods != "" {
+		quota.Spec.Hard[corev1.ResourcePods] = resource.MustParse(req.Pods)
+	}
+
+	result, err := client.Clientset.CoreV1().ResourceQuotas(namespace).Update(ctx, quota, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// DeleteResourceQuota 删除资源配额
+func (h *Handler) DeleteResourceQuota(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	name := c.Param("name")
+	namespace := c.Query("ns")
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	err = client.Clientset.CoreV1().ResourceQuotas(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "resource quota deleted", nil)
 }

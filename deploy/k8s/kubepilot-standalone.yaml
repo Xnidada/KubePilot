@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubepilot-secret
+  namespace: kubepilot
+type: Opaque
+stringData:
+  JWT_SECRET: CHANGE_YOUR_JWT_SECRET
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubepilot-config
+  namespace: kubepilot
+data:
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 8080
+      mode: "release"
+      read_timeout: 30s
+      write_timeout: 30s
+
+    database:
+      driver: "postgres"
+      host: "postgres"
+      port: 5432
+      username: "kubepilot"
+      password: "CHANGE_ME"
+      dbname: "kubepilot"
+      sslmode: "disable"
+      max_idle_conns: 10
+      max_open_conns: 100
+
+    cache:
+      type: "redis"
+      addr: "redis:6379"
+      password: ""
+      db: 0
+
+    jwt:
+      secret: "CHANGE_YOUR_JWT_SECRET"
+      expire_time: 24h
+      issuer: "kubepilot"
+
+    log:
+      level: "info"
+      format: "json"
+      output: "stdout"
+
+    k8s:
+      default_namespace: "default"
+      qps: 50.0
+      burst: 100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubepilot
+  namespace: kubepilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubepilot
+  template:
+    metadata:
+      labels:
+        app: kubepilot
+    spec:
+      containers:
+        - name: kubepilot
+          image: alpine:3.19
+          command: ["/app/kubepilot"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: KUBEPILOT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kubepilot-secret
+                  key: JWT_SECRET
+          volumeMounts:
+            - name: app-binary
+              mountPath: /app/kubepilot
+              subPath: kubepilot
+            - name: app-web
+              mountPath: /app/web
+            - name: app-config
+              mountPath: /app/configs
+          workingDir: /app
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: app-binary
+          hostPath:
+            path: /opt/kubepilot/bin
+            type: Directory
+        - name: app-web
+          hostPath:
+            path: /opt/kubepilot/web
+            type: Directory
+        - name: app-config
+          configMap:
+            name: kubepilot-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubepilot
+  namespace: kubepilot
+spec:
+  selector:
+    app: kubepilot
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort

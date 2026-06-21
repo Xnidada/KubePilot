@@ -9,12 +9,14 @@ import {
   ColumnHeightOutlined,
   HistoryOutlined,
   SearchOutlined,
+  CodeOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getDeployments, createDeployment, scaleDeployment, deleteDeployment, Deployment, getNamespaceNames } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import EditDeploymentModal from '../../components/EditDeploymentModal'
 import DeploymentHistoryModal from '../../components/DeploymentHistoryModal'
+import YAMLEditor from '../../components/YAMLEditor'
 import StatusTag from '../../components/StatusTag'
 import { usePolling, hasTerminatingResource } from '../../hooks/usePolling'
 
@@ -32,6 +34,7 @@ const WorkloadDeployments: React.FC = () => {
   const [scaleModalVisible, setScaleModalVisible] = useState(false)
   const [editModalVisible, setEditModalVisible] = useState(false)
   const [historyModalVisible, setHistoryModalVisible] = useState(false)
+  const [yamlModalVisible, setYamlModalVisible] = useState(false)
   const [createModalVisible, setCreateModalVisible] = useState(false)
   const [selectedDeployment, setSelectedDeployment] = useState<Deployment | null>(null)
   const [form] = Form.useForm()
@@ -222,6 +225,9 @@ const WorkloadDeployments: React.FC = () => {
           <Tooltip title="编辑">
             <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           </Tooltip>
+          <Tooltip title="YAML">
+            <Button type="link" icon={<CodeOutlined />} onClick={() => { setSelectedDeployment(record); setYamlModalVisible(true) }} />
+          </Tooltip>
           <Tooltip title="删除">
             <Button type="link" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} />
           </Tooltip>
@@ -362,6 +368,21 @@ const WorkloadDeployments: React.FC = () => {
           clusterId={selectedCluster}
           namespace={selectedDeployment.namespace}
           name={selectedDeployment.name}
+        />
+      )}
+
+      {selectedDeployment && (
+        <YAMLEditor
+          visible={yamlModalVisible}
+          onClose={() => {
+            setYamlModalVisible(false)
+            setSelectedDeployment(null)
+          }}
+          onSuccess={fetchDeployments}
+          clusterId={selectedCluster}
+          resourceType="deployments"
+          namespace={selectedDeployment.namespace}
+          resourceName={selectedDeployment.name}
         />
       )}
     </div>

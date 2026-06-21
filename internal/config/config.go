@@ -14,6 +14,8 @@ type Config struct {
 	JWT      JWTConfig      `mapstructure:"jwt"`
 	Log      LogConfig      `mapstructure:"log"`
 	K8S      K8SConfig      `mapstructure:"k8s"`
+	LLM      LLMConfig      `mapstructure:"llm"`
+	Cache    CacheConfig    `mapstructure:"cache"`
 }
 
 type ServerConfig struct {
@@ -25,6 +27,7 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
+	Driver       string `mapstructure:"driver"` // postgres, mysql, sqlite
 	Host         string `mapstructure:"host"`
 	Port         int    `mapstructure:"port"`
 	Username     string `mapstructure:"username"`
@@ -60,6 +63,23 @@ type K8SConfig struct {
 	Burst            int     `mapstructure:"burst"`
 }
 
+type LLMConfig struct {
+	Provider    string  `mapstructure:"provider"`    // openai, anthropic
+	APIKey      string  `mapstructure:"api_key"`
+	BaseURL     string  `mapstructure:"base_url"`
+	Model       string  `mapstructure:"model"`
+	Temperature float64 `mapstructure:"temperature"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Timeout     int     `mapstructure:"timeout"`
+}
+
+type CacheConfig struct {
+	Type     string `mapstructure:"type"` // memory, redis
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
+
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -85,7 +105,34 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// 验证配置
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	return &cfg, nil
+}
+
+// Validate 验证配置
+func (c *Config) Validate() error {
+	// 检查 JWT 密钥是否为默认值
+	defaultSecrets := []string{
+		"kubepilot-secret-key",
+		"kubepilot-secret-key-change-me",
+		"",
+	}
+	for _, s := range defaultSecrets {
+		if c.JWT.Secret == s {
+			return fmt.Errorf("jwt.secret must be set to a non-default value for security")
+		}
+	}
+
+	// 检查数据库配置
+	if c.Database.Host == "" {
+		return fmt.Errorf("database.host is required")
+	}
+
+	return nil
 }
 
 func setDefaults() {
@@ -126,11 +173,30 @@ func setDefaults() {
 	viper.SetDefault("k8s.default_namespace", "default")
 	viper.SetDefault("k8s.qps", 50.0)
 	viper.SetDefault("k8s.burst", 100)
+
+	// Cache defaults
+	viper.SetDefault("cache.type", "memory")
+	viper.SetDefault("cache.addr", "localhost:6379")
+	viper.SetDefault("cache.password", "")
+	viper.SetDefault("cache.db", 0)
 }
 
 func (d *DatabaseConfig) DSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		d.Host, d.Port, d.Username, d.Password, d.DBName, d.SSLMode)
+	switch d.Driver {
+	case "mysql":
+		// MySQL DSN: user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+			d.Username, d.Password, d.Host, d.Port, d.DBName)
+	case "sqlite":
+		// SQLite uses DBName as file path
+		if d.DBName == "" {
+			return "kubepilot.db"
+		}
+		return d.DBName
+	default: // postgres
+		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			d.Host, d.Port, d.Username, d.Password, d.DBName, d.SSLMode)
+	}
 }
 
 func (r *RedisConfig) Addr() string {

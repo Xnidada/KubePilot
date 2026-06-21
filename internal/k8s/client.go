@@ -9,7 +9,6 @@ import (
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
@@ -23,26 +22,28 @@ type ClusterClient struct {
 	Clientset     kubernetes.Interface
 	MetricsClient metricsv.Interface
 	Discovery     discovery.DiscoveryInterface
-	RESTMapper    meta.RESTMapper
 	Config        *rest.Config
 	Namespace     string
+	LastUsed      time.Time
 }
 
 type ClientManager struct {
-	mu       sync.RWMutex
-	clients  map[uint]*ClusterClient // clusterID -> client
-	defaults *rest.Config
+	mu         sync.RWMutex
+	clients    map[uint]*ClusterClient
+	defaults   *rest.Config
+	db         interface{ QueryClusterKubeconfig(uint) (string, error) }
 }
 
 var Manager *ClientManager
 
-func InitClientManager(qps float32, burst int) {
+func InitClientManager(qps float32, burst int, db interface{ QueryClusterKubeconfig(uint) (string, error) }) {
 	Manager = &ClientManager{
 		clients: make(map[uint]*ClusterClient),
 		defaults: &rest.Config{
 			QPS:   qps,
 			Burst: burst,
 		},
+		db: db,
 	}
 }
 
@@ -52,9 +53,26 @@ func (cm *ClientManager) GetClient(clusterID uint) (*ClusterClient, error) {
 	cm.mu.RUnlock()
 
 	if exists {
+		client.LastUsed = time.Now()
 		return client, nil
 	}
-	return nil, fmt.Errorf("client not found for cluster %d", clusterID)
+
+	// 尝试自动连接
+	if cm.db != nil {
+		kubeconfig, err := cm.db.QueryClusterKubeconfig(clusterID)
+		if err == nil && kubeconfig != "" {
+			if regErr := cm.RegisterClient(clusterID, []byte(kubeconfig), "default"); regErr == nil {
+				cm.mu.RLock()
+				client = cm.clients[clusterID]
+				cm.mu.RUnlock()
+				if client != nil {
+					return client, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("cluster %d not connected. Please check cluster health", clusterID)
 }
 
 func (cm *ClientManager) RegisterClient(clusterID uint, kubeconfig []byte, namespace string) error {
@@ -87,6 +105,7 @@ func (cm *ClientManager) RegisterClient(clusterID uint, kubeconfig []byte, names
 		Discovery:     discoveryClient,
 		Config:        config,
 		Namespace:     namespace,
+		LastUsed:      time.Now(),
 	}
 
 	cm.mu.Lock()
@@ -111,12 +130,14 @@ func (cm *ClientManager) PingCluster(clusterID uint) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	_ = ctx
 	_, err = client.Clientset.Discovery().ServerVersion()
 	if err != nil {
+		// 连接失败，移除客户端以便下次重连
+		cm.RemoveClient(clusterID)
 		return fmt.Errorf("cluster ping failed: %w", err)
 	}
 
-	_ = ctx
 	return nil
 }
 
@@ -139,9 +160,9 @@ func (cm *ClientManager) GetClusterInfo(clusterID uint) (*ClusterInfo, error) {
 	}
 
 	info := &ClusterInfo{
-		Version:    version.GitVersion,
-		NodeCount:  len(nodes.Items),
-		Nodes:      make([]NodeInfo, 0, len(nodes.Items)),
+		Version:   version.GitVersion,
+		NodeCount: len(nodes.Items),
+		Nodes:     make([]NodeInfo, 0, len(nodes.Items)),
 	}
 
 	var totalCPU, totalMemory resource.Quantity
@@ -191,7 +212,7 @@ type ClusterInfo struct {
 	Version     string     `json:"version"`
 	NodeCount   int        `json:"node_count"`
 	CPUCapacity string     `json:"cpu_capacity"`
-	MemCapacity string     `json:"mem_capacity"`
+	MemCapacity string     `json:"memory_capacity"`
 	Nodes       []NodeInfo `json:"nodes"`
 }
 
@@ -199,7 +220,7 @@ type NodeInfo struct {
 	Name        string `json:"name"`
 	IP          string `json:"ip"`
 	CPUCapacity string `json:"cpu_capacity"`
-	MemCapacity string `json:"mem_capacity"`
+	MemCapacity string `json:"memory_capacity"`
 	OS          string `json:"os"`
 	Kernel      string `json:"kernel"`
 	ContainerRT string `json:"container_rt"`

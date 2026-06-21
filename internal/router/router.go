@@ -1,21 +1,30 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/config"
 	"github.com/kubepilot/kubepilot/internal/handler/alert"
+	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
+	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/cache"
+	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"github.com/kubepilot/kubepilot/internal/pkg/utils"
+	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	authService "github.com/kubepilot/kubepilot/internal/service/auth"
 	clusterService "github.com/kubepilot/kubepilot/internal/service/cluster"
+	"go.uber.org/zap"
 )
 
-func Setup(cfg *config.Config) *gin.Engine {
+func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	gin.SetMode(cfg.Server.Mode)
 
 	r := gin.New()
@@ -33,21 +42,53 @@ func Setup(cfg *config.Config) *gin.Engine {
 	authSvc := authService.NewService(model.DB, jwtManager)
 	clusterSvc := clusterService.NewService(model.DB, cfg.JWT.Secret)
 
+	// Initialize AIOps service
+	llmConfig := &llm.LLMConfig{
+		Provider:    llm.LLMProvider(cfg.LLM.Provider),
+		APIKey:      cfg.LLM.APIKey,
+		BaseURL:     cfg.LLM.BaseURL,
+		Model:       cfg.LLM.Model,
+		Temperature: cfg.LLM.Temperature,
+		MaxTokens:   cfg.LLM.MaxTokens,
+		Timeout:     cfg.LLM.Timeout,
+	}
+	aiopsSvc, err := aiopsService.NewService(model.DB, llmConfig, cfg.JWT.Secret, cacheInstance)
+	if err != nil {
+		// Log warning but continue - AI features will be unavailable
+		logger.Warn("failed to initialize AIOps service", zap.Error(err))
+	}
+
 	// Initialize handlers
-	authHandler := auth.NewHandler(authSvc)
+	authHandler := auth.NewHandler(authSvc, model.DB)
+	twoFactorHandler := auth.NewTwoFactorHandler(model.DB)
 	clusterHandler := cluster.NewHandler(clusterSvc)
 	workloadHandler := workload.NewHandler()
+	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(cfg.JWT.Secret))
 	systemHandler := system.NewHandler(model.DB)
 	alertHandler := alert.NewHandler(model.DB)
+	aiopsHandler := aiopsHandler.NewHandler(aiopsSvc, model.DB)
+	inspectionHandler := NewInspectionHandler(model.DB)
+	eventForwardHandler := NewEventForwardHandler(model.DB)
+	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
 
 	// API v1
 	v1 := r.Group("/api/v1")
 	{
-		// Auth routes (public)
+		// Auth routes (public) - with rate limiting
 		authGroup := v1.Group("/auth")
+		authGroup.Use(middleware.RateLimitMiddleware(10, time.Minute, cacheInstance)) // 10 requests per minute
 		{
 			authGroup.POST("/login", authHandler.Login)
 			authGroup.POST("/register", authHandler.Register)
+			authGroup.POST("/2fa/verify", twoFactorHandler.LoginVerify) // 2FA 登录验证
+		}
+
+		// OAuth routes (public)
+		oauthGroup := v1.Group("/oauth")
+		{
+			oauthGroup.GET("/providers", oauthHandler.ListProviders)
+			oauthGroup.GET("/:provider/login", oauthHandler.Login)
+			oauthGroup.GET("/:provider/callback", oauthHandler.Callback)
 		}
 
 		// Protected routes
@@ -58,6 +99,15 @@ func Setup(cfg *config.Config) *gin.Engine {
 			// User profile
 			protected.GET("/profile", authHandler.GetProfile)
 			protected.PUT("/profile/password", authHandler.ChangePassword)
+
+			// Two-Factor Authentication
+			twoFactorGroup := protected.Group("/2fa")
+			{
+				twoFactorGroup.GET("/status", twoFactorHandler.Status)
+				twoFactorGroup.POST("/setup", twoFactorHandler.Setup)
+				twoFactorGroup.POST("/verify-enable", twoFactorHandler.VerifyAndEnable)
+				twoFactorGroup.POST("/disable", twoFactorHandler.Disable)
+			}
 
 			// System management (Admin only)
 			systemGroup := protected.Group("/system")
@@ -151,15 +201,20 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 				// Nodes
 				workloads.GET("/nodes", workloadHandler.ListNodes)
+				workloads.GET("/nodes/:name", workloadHandler.GetNode)
+				workloads.PUT("/nodes/:name", workloadHandler.UpdateNode)
 
 				// Namespaces
 				workloads.GET("/namespaces", workloadHandler.ListNamespaces)
 				workloads.GET("/namespaces/names", workloadHandler.ListNamespaceNames)
 				workloads.POST("/namespaces", workloadHandler.CreateNamespace)
 				workloads.GET("/namespaces/:name", workloadHandler.GetNamespaceDetail)
+				workloads.PUT("/namespaces/:name", workloadHandler.UpdateNamespace)
 				workloads.DELETE("/namespaces/:name", workloadHandler.DeleteNamespace)
 				workloads.GET("/namespaces/:name/quotas", workloadHandler.GetResourceQuota)
 				workloads.POST("/namespaces/:name/quotas", workloadHandler.CreateResourceQuota)
+				workloads.PUT("/namespaces/:name/quotas", workloadHandler.UpdateResourceQuota)
+				workloads.DELETE("/namespaces/:name/quotas", workloadHandler.DeleteResourceQuota)
 
 				// Events
 				workloads.GET("/events", workloadHandler.ListEvents)
@@ -189,22 +244,170 @@ func Setup(cfg *config.Config) *gin.Engine {
 				workloads.GET("/pvs", workloadHandler.ListPVs)
 				workloads.POST("/pvs", workloadHandler.CreatePV)
 				workloads.GET("/pvs/:name", workloadHandler.GetPV)
+				workloads.PUT("/pvs/:name", workloadHandler.UpdatePV)
 				workloads.DELETE("/pvs/:name", workloadHandler.DeletePV)
 
 				// PVC
 				workloads.GET("/pvcs", workloadHandler.ListPVCs)
 				workloads.POST("/pvcs", workloadHandler.CreatePVC)
 				workloads.GET("/pvcs/:ns/:name", workloadHandler.GetPVC)
+				workloads.PUT("/pvcs/:ns/:name", workloadHandler.UpdatePVC)
 				workloads.DELETE("/pvcs/:ns/:name", workloadHandler.DeletePVC)
 
 				// StorageClass
 				workloads.GET("/storageclasses", workloadHandler.ListStorageClasses)
+				workloads.POST("/storageclasses", workloadHandler.CreateStorageClass)
+				workloads.GET("/storageclasses/:name", workloadHandler.GetStorageClass)
+				workloads.PUT("/storageclasses/:name", workloadHandler.UpdateStorageClass)
+				workloads.DELETE("/storageclasses/:name", workloadHandler.DeleteStorageClass)
 
 				// Metrics
 				workloads.GET("/metrics/pods", workloadHandler.GetPodMetrics)
 				workloads.GET("/metrics/deployments", workloadHandler.GetDeploymentMetrics)
 				workloads.GET("/metrics/nodes", workloadHandler.GetNodeMetrics)
 				workloads.GET("/metrics/overview", workloadHandler.GetClusterOverview)
+
+				// StatefulSets
+				workloads.GET("/statefulsets", workloadHandler.ListStatefulSets)
+				workloads.POST("/statefulsets", workloadHandler.CreateStatefulSet)
+				workloads.GET("/statefulsets/:ns/:name", workloadHandler.GetStatefulSet)
+				workloads.PUT("/statefulsets/:ns/:name", workloadHandler.UpdateStatefulSet)
+				workloads.DELETE("/statefulsets/:ns/:name", workloadHandler.DeleteStatefulSet)
+
+				// DaemonSets
+				workloads.GET("/daemonsets", workloadHandler.ListDaemonSets)
+				workloads.POST("/daemonsets", workloadHandler.CreateDaemonSet)
+				workloads.GET("/daemonsets/:ns/:name", workloadHandler.GetDaemonSet)
+				workloads.PUT("/daemonsets/:ns/:name", workloadHandler.UpdateDaemonSet)
+				workloads.DELETE("/daemonsets/:ns/:name", workloadHandler.DeleteDaemonSet)
+
+				// Jobs
+				workloads.GET("/jobs", workloadHandler.ListJobs)
+				workloads.POST("/jobs", workloadHandler.CreateJob)
+				workloads.GET("/jobs/:ns/:name", workloadHandler.GetJob)
+				workloads.DELETE("/jobs/:ns/:name", workloadHandler.DeleteJob)
+
+				// CronJobs
+				workloads.GET("/cronjobs", workloadHandler.ListCronJobs)
+				workloads.POST("/cronjobs", workloadHandler.CreateCronJob)
+				workloads.GET("/cronjobs/:ns/:name", workloadHandler.GetCronJob)
+				workloads.PUT("/cronjobs/:ns/:name", workloadHandler.UpdateCronJob)
+				workloads.DELETE("/cronjobs/:ns/:name", workloadHandler.DeleteCronJob)
+
+				// ReplicaSets
+				workloads.GET("/replicasets", workloadHandler.ListReplicaSets)
+				workloads.GET("/replicasets/:ns/:name", workloadHandler.GetReplicaSet)
+				workloads.POST("/replicasets/:ns/:name/scale", workloadHandler.ScaleReplicaSet)
+				workloads.DELETE("/replicasets/:ns/:name", workloadHandler.DeleteReplicaSet)
+
+				// Pods (Update not supported - Pod is immutable)
+				workloads.PUT("/pods/:ns/:name", workloadHandler.UpdatePod)
+
+				// CRDs
+				workloads.GET("/crds", workloadHandler.ListCRDs)
+
+				// Custom Resources (CRD instances)
+				workloads.GET("/crds/:group/:version/:resource", workloadHandler.ListCustomResources)
+				workloads.POST("/crds/:group/:version/:resource", workloadHandler.CreateCustomResource)
+				workloads.GET("/crds/:group/:version/:resource/:name", workloadHandler.GetCustomResource)
+				workloads.PUT("/crds/:group/:version/:resource/:name", workloadHandler.UpdateCustomResource)
+				workloads.DELETE("/crds/:group/:version/:resource/:name", workloadHandler.DeleteCustomResource)
+
+				// Cluster Events
+				workloads.GET("/cluster-events", workloadHandler.ListClusterEvents)
+
+				// Pod Files
+				workloads.GET("/pods/:ns/:name/files", workloadHandler.ListPodFiles)
+				workloads.GET("/pods/:ns/:name/files/read", workloadHandler.ReadPodFile)
+				workloads.POST("/pods/:ns/:name/files/write", workloadHandler.WritePodFile)
+				workloads.DELETE("/pods/:ns/:name/files", workloadHandler.DeletePodFile)
+				workloads.GET("/pods/:ns/:name/files/download", workloadHandler.DownloadPodFile)
+
+				// YAML Operations
+				workloads.GET("/yaml/:type/:ns/:name", workloadHandler.GetResourceYAML)
+				workloads.POST("/yaml/apply", workloadHandler.ApplyResourceYAML)
+				workloads.POST("/yaml/delete", workloadHandler.DeleteResourceYAML)
+
+				// Resource Events & Describe
+				workloads.GET("/events/:type/:ns/:name", workloadHandler.GetResourceEvents)
+				workloads.GET("/describe/:type/:ns/:name", workloadHandler.DescribeResource)
+			}
+
+			// AIOps routes
+			aiopsGroup := protected.Group("/aiops")
+			{
+				// LLM Config
+				aiopsGroup.GET("/configs", aiopsHandler.ListLLMConfigs)
+				aiopsGroup.POST("/configs", aiopsHandler.SaveLLMConfig)
+				aiopsGroup.GET("/configs/default", aiopsHandler.GetLLMConfig)
+				aiopsGroup.GET("/configs/:id", aiopsHandler.GetLLMConfigByID)
+				aiopsGroup.PUT("/configs/:id", aiopsHandler.UpdateLLMConfig)
+				aiopsGroup.DELETE("/configs/:id", aiopsHandler.DeleteLLMConfig)
+				aiopsGroup.POST("/configs/:id/set-default", aiopsHandler.SetDefaultLLMConfig)
+				aiopsGroup.POST("/configs/test", aiopsHandler.TestLLMConfig)
+
+				// Conversations
+				aiopsGroup.GET("/conversations", aiopsHandler.ListConversations)
+				aiopsGroup.POST("/conversations", aiopsHandler.CreateConversation)
+				aiopsGroup.GET("/conversations/:id", aiopsHandler.GetConversation)
+				aiopsGroup.PUT("/conversations/:id", aiopsHandler.UpdateConversation)
+				aiopsGroup.DELETE("/conversations/:id", aiopsHandler.DeleteConversation)
+				aiopsGroup.POST("/conversations/:id/clear", aiopsHandler.ClearConversation)
+
+				// Messages
+				aiopsGroup.GET("/conversations/:id/messages", aiopsHandler.ListMessages)
+				aiopsGroup.POST("/conversations/:id/messages", aiopsHandler.AddMessage)
+				aiopsGroup.DELETE("/conversations/:id/messages/:msgId", aiopsHandler.DeleteMessage)
+
+				// Chat
+				aiopsGroup.POST("/chat", aiopsHandler.Chat)
+				aiopsGroup.POST("/chat/stream", aiopsHandler.ChatStream)
+
+				// AI 驱动功能
+				aiopsGroup.POST("/explain", aiopsHandler.ExplainText)
+				aiopsGroup.POST("/explain/stream", aiopsHandler.ExplainTextStream)
+				aiopsGroup.POST("/resource-guide", aiopsHandler.GetResourceGuide)
+				aiopsGroup.POST("/translate-yaml", aiopsHandler.TranslateYAML)
+				aiopsGroup.POST("/analyze-describe", aiopsHandler.AnalyzeDescribe)
+				aiopsGroup.POST("/analyze-logs", aiopsHandler.AnalyzeLogs)
+
+				// Diagnosis
+				aiopsGroup.POST("/diagnose", aiopsHandler.Diagnose)
+
+				// Agent
+				aiopsGroup.POST("/agent", aiopsHandler.AgentChat)
+				aiopsGroup.POST("/agent/confirm/:actionId", aiopsHandler.AgentConfirmAction)
+				aiopsGroup.POST("/agent/execute", aiopsHandler.AgentExecute)
+
+				// Kubectl
+				aiopsGroup.POST("/kubectl", aiopsHandler.KubectlExecute)
+				aiopsGroup.GET("/kubectl/:id/query", aiopsHandler.KubectlQuery)
+			}
+
+			// Inspection routes
+			inspectionGroup := protected.Group("/inspection")
+			{
+				inspectionGroup.GET("/rules", inspectionHandler.ListRules)
+				inspectionGroup.POST("/rules", inspectionHandler.CreateRule)
+				inspectionGroup.GET("/rules/:id", inspectionHandler.GetRule)
+				inspectionGroup.PUT("/rules/:id", inspectionHandler.UpdateRule)
+				inspectionGroup.DELETE("/rules/:id", inspectionHandler.DeleteRule)
+				inspectionGroup.POST("/rules/:id/run", inspectionHandler.RunInspection)
+				inspectionGroup.GET("/reports", inspectionHandler.ListReports)
+				inspectionGroup.GET("/reports/:id", inspectionHandler.GetReport)
+				inspectionGroup.GET("/reports/:id/results", inspectionHandler.GetReportResults)
+			}
+
+			// Event Forward routes
+			eventForwardGroup := protected.Group("/event-forward")
+			{
+				eventForwardGroup.GET("/rules", eventForwardHandler.ListRules)
+				eventForwardGroup.POST("/rules", eventForwardHandler.CreateRule)
+				eventForwardGroup.GET("/rules/:id", eventForwardHandler.GetRule)
+				eventForwardGroup.PUT("/rules/:id", eventForwardHandler.UpdateRule)
+				eventForwardGroup.DELETE("/rules/:id", eventForwardHandler.DeleteRule)
+				eventForwardGroup.POST("/rules/:id/test", eventForwardHandler.TestRule)
+				eventForwardGroup.GET("/logs", eventForwardHandler.ListLogs)
 			}
 		}
 	}
@@ -216,6 +419,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 	// WebSocket terminal (需要认证)
 	r.GET("/api/v1/ws/terminal/:id/:ns/:name", workloadHandler.PodTerminal)
+	r.GET("/api/v1/ws/node-shell/:id/:name", workloadHandler.NodeShell)
 
 	// Serve frontend static files
 	r.Static("/assets", "./web/assets")

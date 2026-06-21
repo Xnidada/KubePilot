@@ -12,13 +12,28 @@ import ConfigMaps from './pages/workload/ConfigMaps'
 import Secrets from './pages/workload/Secrets'
 import Ingresses from './pages/workload/Ingresses'
 import Namespaces from './pages/workload/Namespaces'
+import StatefulSets from './pages/workload/StatefulSets'
+import DaemonSets from './pages/workload/DaemonSets'
+import Jobs from './pages/workload/Jobs'
+import CronJobs from './pages/workload/CronJobs'
+import ReplicaSets from './pages/workload/ReplicaSets'
+import CRDs from './pages/workload/CRDs'
 import PersistentVolumes from './pages/storage/PersistentVolumes'
 import PersistentVolumeClaims from './pages/storage/PersistentVolumeClaims'
+import StorageClasses from './pages/storage/StorageClasses'
 import MonitorOverview from './pages/monitor/Overview'
 import MonitorDashboard from './pages/monitor/Dashboard'
 import AppStoreList from './pages/appstore/List'
+import AIChat from './pages/aiops/Chat'
+import AIDiagnosis from './pages/aiops/Diagnosis'
+import AISettings from './pages/aiops/Settings'
+import AIAgent from './pages/aiops/Agent'
+import AITools from './pages/aiops/AITools'
 import SystemUsers from './pages/system/Users'
 import SystemRoles from './pages/system/Roles'
+import TwoFactorAuth from './pages/system/TwoFactorAuth'
+import Inspection from './pages/cluster/Inspection'
+import EventForward from './pages/cluster/EventForward'
 import { useAuthStore } from './stores/auth'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -50,13 +65,28 @@ function App() {
         <Route path="workloads/secrets" element={<Secrets />} />
         <Route path="workloads/ingresses" element={<Ingresses />} />
         <Route path="workloads/namespaces" element={<Namespaces />} />
+        <Route path="workloads/statefulsets" element={<StatefulSets />} />
+        <Route path="workloads/daemonsets" element={<DaemonSets />} />
+        <Route path="workloads/jobs" element={<Jobs />} />
+        <Route path="workloads/cronjobs" element={<CronJobs />} />
+        <Route path="workloads/replicasets" element={<ReplicaSets />} />
+        <Route path="workloads/crds" element={<CRDs />} />
         <Route path="storage/pvs" element={<PersistentVolumes />} />
         <Route path="storage/pvcs" element={<PersistentVolumeClaims />} />
+        <Route path="storage/storageclasses" element={<StorageClasses />} />
         <Route path="monitor" element={<MonitorOverview />} />
         <Route path="monitor/dashboard" element={<MonitorDashboard />} />
         <Route path="appstore" element={<AppStoreList />} />
+        <Route path="aiops/chat" element={<AIChat />} />
+        <Route path="aiops/agent" element={<AIAgent />} />
+        <Route path="aiops/diagnosis" element={<AIDiagnosis />} />
+        <Route path="aiops/tools" element={<AITools />} />
+        <Route path="aiops/settings" element={<AISettings />} />
         <Route path="system/users" element={<SystemUsers />} />
         <Route path="system/roles" element={<SystemRoles />} />
+        <Route path="system/2fa" element={<TwoFactorAuth />} />
+        <Route path="cluster/inspection" element={<Inspection />} />
+        <Route path="cluster/event-forward" element={<EventForward />} />
       </Route>
     </Routes>
   )

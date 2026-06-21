@@ -1,30 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Card,
-  Descriptions,
-  Table,
-  Tag,
-  Button,
-  Space,
-  Spin,
-  Typography,
-  Row,
-  Col,
-  Statistic,
-  Tabs,
-  message,
+  Card, Descriptions, Table, Tag, Button, Space, Spin, Typography, Row, Col, Statistic, Tabs, message, Tooltip
 } from 'antd'
 import {
-  ArrowLeftOutlined,
-  SyncOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  WarningOutlined,
-  CloudServerOutlined,
+  ArrowLeftOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  WarningOutlined, CloudServerOutlined, CodeOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterDetail, getClusterInfo, healthCheckCluster, Cluster, ClusterNode } from '../../api/cluster'
+import NodeShell from '../../components/NodeShell'
 
 const { Title } = Typography
 
@@ -35,6 +20,8 @@ const ClusterDetail: React.FC = () => {
   const [nodes, setNodes] = useState<ClusterNode[]>([])
   const [loading, setLoading] = useState(false)
   const [nodesLoading, setNodesLoading] = useState(false)
+  const [nodeShellVisible, setNodeShellVisible] = useState(false)
+  const [selectedNode, setSelectedNode] = useState<string>('')
 
   useEffect(() => {
     if (id) {
@@ -93,52 +80,34 @@ const ClusterDetail: React.FC = () => {
   }
 
   const nodeColumns: ColumnsType<ClusterNode> = [
+    { title: '节点名称', dataIndex: 'name', key: 'name' },
+    { title: 'IP', dataIndex: 'ip', key: 'ip' },
     {
-      title: '节点名称',
-      dataIndex: 'name',
-      key: 'name',
-    },
-    {
-      title: 'IP',
-      dataIndex: 'ip',
-      key: 'ip',
-    },
-    {
-      title: '状态',
-      dataIndex: 'ready',
-      key: 'ready',
+      title: '状态', dataIndex: 'ready', key: 'ready',
       render: (ready) => (
         <Tag color={ready ? 'success' : 'error'} icon={ready ? <CheckCircleOutlined /> : <CloseCircleOutlined />}>
           {ready ? 'Ready' : 'NotReady'}
         </Tag>
       ),
     },
+    { title: 'CPU', dataIndex: 'cpu_capacity', key: 'cpu_capacity' },
+    { title: '内存', dataIndex: 'mem_capacity', key: 'mem_capacity' },
+    { title: '操作系统', dataIndex: 'os', key: 'os', ellipsis: true },
+    { title: '容器运行时', dataIndex: 'container_rt', key: 'container_rt', ellipsis: true },
+    { title: 'Kubelet', dataIndex: 'kubelet_ver', key: 'kubelet_ver' },
     {
-      title: 'CPU',
-      dataIndex: 'cpu_capacity',
-      key: 'cpu_capacity',
-    },
-    {
-      title: '内存',
-      dataIndex: 'mem_capacity',
-      key: 'mem_capacity',
-    },
-    {
-      title: '操作系统',
-      dataIndex: 'os',
-      key: 'os',
-      ellipsis: true,
-    },
-    {
-      title: '容器运行时',
-      dataIndex: 'container_rt',
-      key: 'container_rt',
-      ellipsis: true,
-    },
-    {
-      title: 'Kubelet',
-      dataIndex: 'kubelet_ver',
-      key: 'kubelet_ver',
+      title: '操作', key: 'action', width: 100,
+      render: (_, record) => (
+        <Tooltip title="节点终端">
+          <Button
+            type="link"
+            icon={<CodeOutlined />}
+            onClick={() => { setSelectedNode(record.name); setNodeShellVisible(true) }}
+          >
+            Shell
+          </Button>
+        </Tooltip>
+      ),
     },
   ]
 
@@ -186,18 +155,12 @@ const ClusterDetail: React.FC = () => {
                     <Descriptions column={{ xs: 1, sm: 2 }} bordered>
                       <Descriptions.Item label="集群名称">{cluster.name}</Descriptions.Item>
                       <Descriptions.Item label="显示名称">{cluster.display_name || '-'}</Descriptions.Item>
-                      <Descriptions.Item label="API Server" span={2}>
-                        {cluster.api_server}
-                      </Descriptions.Item>
+                      <Descriptions.Item label="API Server" span={2}>{cluster.api_server}</Descriptions.Item>
                       <Descriptions.Item label="状态">{getStatusTag(cluster.status)}</Descriptions.Item>
                       <Descriptions.Item label="版本">{cluster.version || '-'}</Descriptions.Item>
                       <Descriptions.Item label="节点数">{cluster.node_count}</Descriptions.Item>
-                      <Descriptions.Item label="描述" span={2}>
-                        {cluster.description || '-'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="标签" span={2}>
-                        {cluster.tags || '-'}
-                      </Descriptions.Item>
+                      <Descriptions.Item label="描述" span={2}>{cluster.description || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="标签" span={2}>{cluster.tags || '-'}</Descriptions.Item>
                       <Descriptions.Item label="创建时间">{cluster.created_at}</Descriptions.Item>
                       <Descriptions.Item label="最后检查">{cluster.last_health_check || '-'}</Descriptions.Item>
                     </Descriptions>
@@ -206,11 +169,7 @@ const ClusterDetail: React.FC = () => {
                 <Col xs={24} lg={8}>
                   <Card title="资源概览">
                     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-                      <Statistic
-                        title="节点总数"
-                        value={cluster.node_count}
-                        prefix={<CloudServerOutlined />}
-                      />
+                      <Statistic title="节点总数" value={cluster.node_count} prefix={<CloudServerOutlined />} />
                       <Statistic title="CPU 容量" value={cluster.cpu_capacity || '-'} />
                       <Statistic title="内存容量" value={cluster.memory_capacity || '-'} />
                       <Statistic
@@ -242,6 +201,16 @@ const ClusterDetail: React.FC = () => {
           },
         ]}
       />
+
+      {/* Node Shell */}
+      {selectedNode && (
+        <NodeShell
+          visible={nodeShellVisible}
+          onClose={() => { setNodeShellVisible(false); setSelectedNode('') }}
+          clusterId={parseInt(id || '0')}
+          nodeName={selectedNode}
+        />
+      )}
     </div>
   )
 }
