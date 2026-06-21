@@ -140,8 +140,8 @@ kubectl apply -f deploy/k8s/postgres.yaml
 kubectl apply -f deploy/k8s/redis.yaml
 kubectl apply -f deploy/k8s/kubepilot.yaml
 
-# 访问
-kubectl port-forward -n kubepilot svc/kubepilot 8080:8080
+# 访问（NodePort 方式，端口 30080）
+open http://<NODE_IP>:30080
 ```
 
 ### 方式三：编译安装

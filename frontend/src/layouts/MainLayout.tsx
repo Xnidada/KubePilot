@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Layout, Menu, Avatar, Dropdown, Space, Button, theme } from 'antd'
+import { Layout, Menu, Avatar, Dropdown, Space, Button, theme, Tooltip } from 'antd'
 import {
   DashboardOutlined,
   ClusterOutlined,
@@ -17,6 +17,7 @@ import {
   ApiOutlined,
   ControlOutlined,
   ApartmentOutlined,
+  GithubOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuthStore } from '../stores/auth'
@@ -342,12 +343,23 @@ const MainLayout: React.FC = () => {
             onClick={() => setCollapsed(!collapsed)}
             style={{ fontSize: 16, width: 48, height: 48 }}
           />
-          <Dropdown menu={{ items: userMenu }} placement="bottomRight">
-            <Space style={{ cursor: 'pointer' }}>
-              <Avatar icon={<UserOutlined />} />
-              <span>{user?.real_name || user?.username || 'Admin'}</span>
-            </Space>
-          </Dropdown>
+          <Space size="middle">
+            <Tooltip title="GitHub">
+              <Button
+                type="text"
+                icon={<GithubOutlined />}
+                href="https://github.com/Xnidada/KubePilot"
+                target="_blank"
+                style={{ fontSize: 18 }}
+              />
+            </Tooltip>
+            <Dropdown menu={{ items: userMenu }} placement="bottomRight">
+              <Space style={{ cursor: 'pointer' }}>
+                <Avatar icon={<UserOutlined />} />
+                <span>{user?.real_name || user?.username || 'Admin'}</span>
+              </Space>
+            </Dropdown>
+          </Space>
         </Header>
         <Content
           style={{
