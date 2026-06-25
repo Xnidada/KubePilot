@@ -34,6 +34,8 @@ import SystemRoles from './pages/system/Roles'
 import TwoFactorAuth from './pages/system/TwoFactorAuth'
 import Inspection from './pages/cluster/Inspection'
 import EventForward from './pages/cluster/EventForward'
+import SchedulerTasks from './pages/scheduler/Tasks'
+import SchedulerQueues from './pages/scheduler/Queues'
 import { useAuthStore } from './stores/auth'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -87,6 +89,8 @@ function App() {
         <Route path="system/2fa" element={<TwoFactorAuth />} />
         <Route path="cluster/inspection" element={<Inspection />} />
         <Route path="cluster/event-forward" element={<EventForward />} />
+        <Route path="scheduler/tasks" element={<SchedulerTasks />} />
+        <Route path="scheduler/queues" element={<SchedulerQueues />} />
       </Route>
     </Routes>
   )

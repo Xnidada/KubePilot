@@ -89,6 +89,12 @@ func AutoMigrate() error {
 		// SSO/OAuth
 		&OAuthConfig{},
 		&OAuthUser{},
+		// 任务调度
+		&TaskQueue{},
+		&Task{},
+		&TaskLog{},
+		&ResourceReservation{},
+		&SchedulePolicy{},
 	)
 }
 

@@ -18,6 +18,7 @@ import {
   ControlOutlined,
   ApartmentOutlined,
   GithubOutlined,
+  ScheduleOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuthStore } from '../stores/auth'
@@ -163,6 +164,21 @@ const menuItems: MenuProps['items'] = [
     label: '应用商店',
   },
   {
+    key: '/scheduler',
+    icon: <ScheduleOutlined />,
+    label: '任务调度',
+    children: [
+      {
+        key: '/scheduler/tasks',
+        label: '任务管理',
+      },
+      {
+        key: '/scheduler/queues',
+        label: '队列管理',
+      },
+    ],
+  },
+  {
     key: '/aiops',
     icon: <RobotOutlined />,
     label: 'AI 智能',
@@ -271,6 +287,7 @@ const MainLayout: React.FC = () => {
       '/storage': ['/storage'],
       '/monitor': ['/monitor'],
       '/aiops': ['/aiops'],
+      '/scheduler': ['/scheduler'],
       '/system': ['/system'],
     }
 

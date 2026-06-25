@@ -9,6 +9,7 @@ import (
 	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
+	schedulerHandler "github.com/kubepilot/kubepilot/internal/handler/scheduler"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
@@ -70,6 +71,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	inspectionHandler := NewInspectionHandler(model.DB)
 	eventForwardHandler := NewEventForwardHandler(model.DB)
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
+	schedulerHandler := schedulerHandler.NewHandler(model.DB)
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -408,6 +410,30 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				eventForwardGroup.DELETE("/rules/:id", eventForwardHandler.DeleteRule)
 				eventForwardGroup.POST("/rules/:id/test", eventForwardHandler.TestRule)
 				eventForwardGroup.GET("/logs", eventForwardHandler.ListLogs)
+			}
+
+			// Scheduler routes
+			schedulerGroup := protected.Group("/scheduler")
+			{
+				// 队列管理
+				schedulerGroup.GET("/queues", schedulerHandler.ListQueues)
+				schedulerGroup.POST("/queues", schedulerHandler.CreateQueue)
+				schedulerGroup.GET("/queues/:id", schedulerHandler.GetQueue)
+				schedulerGroup.PUT("/queues/:id", schedulerHandler.UpdateQueue)
+				schedulerGroup.DELETE("/queues/:id", schedulerHandler.DeleteQueue)
+
+				// 任务管理
+				schedulerGroup.GET("/tasks", schedulerHandler.ListTasks)
+				schedulerGroup.POST("/tasks", schedulerHandler.CreateTask)
+				schedulerGroup.GET("/tasks/:id", schedulerHandler.GetTask)
+				schedulerGroup.POST("/tasks/:id/cancel", schedulerHandler.CancelTask)
+				schedulerGroup.POST("/tasks/:id/retry", schedulerHandler.RetryTask)
+				schedulerGroup.GET("/tasks/:id/logs", schedulerHandler.GetTaskLogs)
+
+				// 资源预留
+				schedulerGroup.GET("/reservations", schedulerHandler.ListReservations)
+				schedulerGroup.POST("/reservations", schedulerHandler.CreateReservation)
+				schedulerGroup.DELETE("/reservations/:id", schedulerHandler.DeleteReservation)
 			}
 		}
 	}
