@@ -166,6 +166,10 @@ const menuItems: MenuProps['items'] = [
         label: '资源监控',
       },
       {
+        key: '/monitor/node-pressure',
+        label: '节点压力',
+      },
+      {
         key: '/monitor',
         label: '事件告警',
       },
@@ -179,10 +183,6 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/ops/diagnosis',
         label: 'Pod 诊断',
-      },
-      {
-        key: '/ops/node-pressure',
-        label: '节点压力',
       },
       {
         key: '/ops/events',

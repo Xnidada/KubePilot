@@ -103,7 +103,7 @@ function App() {
         <Route path="workloads/batch" element={<BatchOps />} />
         <Route path="workloads/compare" element={<ResourceCompare />} />
         <Route path="ops/diagnosis" element={<PodDiagnosisPage />} />
-        <Route path="ops/node-pressure" element={<NodePressurePage />} />
+        <Route path="monitor/node-pressure" element={<NodePressurePage />} />
         <Route path="ops/events" element={<EventTimelinePage />} />
         <Route path="ops/resource-graph" element={<ResourceGraphPage />} />
         <Route path="ops/idle-resources" element={<IdleResourcesPage />} />
