@@ -26,10 +26,11 @@ import {
   BugOutlined,
   FileTextOutlined,
   SafetyOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons'
 import { diagnoseResource, DiagnosisResponse, analyzeLogs, AnalyzeLogsResponse } from '../../api/aiops'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { getNamespaceNames } from '../../api/workload'
+import { getNamespaceNames, getPods, getDeployments, getServices, getNodes } from '../../api/workload'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 
 const { Title, Text } = Typography
@@ -57,6 +58,10 @@ const AIDiagnosis: React.FC = () => {
   const [logResult, setLogResult] = useState<AnalyzeLogsResponse | null>(null)
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [namespaces, setNamespaces] = useState<string[]>([])
+  const [resourceNames, setResourceNames] = useState<string[]>([])
+  const [selectedCluster, setSelectedCluster] = useState<number>(0)
+  const [selectedResourceType, setSelectedResourceType] = useState<string>('pod')
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('')
 
   useEffect(() => {
     fetchClusters()
@@ -80,8 +85,51 @@ const AIDiagnosis: React.FC = () => {
     }
   }
 
+  const fetchResourceNames = async (clusterId: number, resourceType: string, namespace?: string) => {
+    try {
+      let names: string[] = []
+      switch (resourceType) {
+        case 'pod':
+          const podsRes = await getPods(clusterId, namespace)
+          names = (podsRes.data || []).map((p: any) => p.name)
+          break
+        case 'deployment':
+          const deploysRes = await getDeployments(clusterId, namespace)
+          names = (deploysRes.data || []).map((d: any) => d.name)
+          break
+        case 'service':
+          const svcsRes = await getServices(clusterId, namespace)
+          names = (svcsRes.data || []).map((s: any) => s.name)
+          break
+        case 'node':
+          const nodesRes = await getNodes(clusterId)
+          names = (nodesRes.data || []).map((n: any) => n.name)
+          break
+      }
+      setResourceNames(names)
+    } catch (error) {
+      console.error('Failed to fetch resource names:', error)
+    }
+  }
+
   const handleClusterChange = (clusterId: number) => {
+    setSelectedCluster(clusterId)
     fetchNamespaces(clusterId)
+    fetchResourceNames(clusterId, selectedResourceType, selectedNamespace)
+  }
+
+  const handleResourceTypeChange = (resourceType: string) => {
+    setSelectedResourceType(resourceType)
+    if (selectedCluster) {
+      fetchResourceNames(selectedCluster, resourceType, selectedNamespace)
+    }
+  }
+
+  const handleNamespaceChange = (namespace: string) => {
+    setSelectedNamespace(namespace)
+    if (selectedCluster) {
+      fetchResourceNames(selectedCluster, selectedResourceType, namespace)
+    }
   }
 
   // 问题诊断
@@ -96,7 +144,7 @@ const AIDiagnosis: React.FC = () => {
         resource_type: values.resource_type,
         resource_name: values.resource_name,
         namespace: values.namespace,
-        problem: values.problem,
+        problem: values.problem || '', // 问题描述可选
       })
 
       if (res.code === 0) {
@@ -397,56 +445,83 @@ const AIDiagnosis: React.FC = () => {
             layout="vertical"
             onFinish={handleSubmit}
           >
-            <Form.Item
-              name="cluster_id"
-              label="集群"
-              rules={[{ required: true, message: '请选择集群' }]}
-            >
-              <Select
-                placeholder="选择集群"
-                options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
-                onChange={handleClusterChange}
-              />
-            </Form.Item>
-
-            <Form.Item
-              name="resource_type"
-              label="资源类型"
-              rules={[{ required: true, message: '请选择资源类型' }]}
-            >
-              <Select
-                placeholder="选择资源类型"
-                options={resourceTypes}
-              />
-            </Form.Item>
+            <Row gutter={16}>
+              <Col span={8}>
+                <Form.Item
+                  name="cluster_id"
+                  label="集群"
+                  rules={[{ required: true, message: '请选择集群' }]}
+                >
+                  <Select
+                    placeholder="选择集群"
+                    options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
+                    onChange={handleClusterChange}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item
+                  name="resource_type"
+                  label="资源类型"
+                  rules={[{ required: true, message: '请选择资源类型' }]}
+                >
+                  <Select
+                    placeholder="选择资源类型"
+                    options={resourceTypes}
+                    onChange={handleResourceTypeChange}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item
+                  name="namespace"
+                  label="命名空间"
+                >
+                  <Select
+                    placeholder="选择命名空间（可选）"
+                    allowClear
+                    showSearch
+                    options={namespaces.map(ns => ({ label: ns, value: ns }))}
+                    onChange={handleNamespaceChange}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
 
             <Form.Item
               name="resource_name"
               label="资源名称"
               rules={[{ required: true, message: '请输入资源名称' }]}
             >
-              <Input placeholder="例如: my-pod, my-deployment" />
-            </Form.Item>
-
-            <Form.Item
-              name="namespace"
-              label="命名空间"
-            >
               <Select
-                placeholder="选择命名空间 (Node 级资源可不选)"
+                placeholder="输入或选择资源名称"
+                showSearch
                 allowClear
-                options={namespaces.map(ns => ({ label: ns, value: ns }))}
+                options={resourceNames.map(name => ({ label: name, value: name }))}
+                dropdownRender={(menu) => menu}
+                mode={undefined}
+                filterOption={(input, option) =>
+                  (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                }
               />
             </Form.Item>
 
+            <Alert
+              message="提示"
+              description="问题描述为可选项。如果不填写，AI 将自动获取资源的 describe 信息进行全面分析。"
+              type="info"
+              showIcon
+              icon={<InfoCircleOutlined />}
+              style={{ marginBottom: 16 }}
+            />
+
             <Form.Item
               name="problem"
-              label="问题描述"
-              rules={[{ required: true, message: '请描述问题' }]}
+              label="问题描述（可选）"
             >
               <TextArea
                 rows={4}
-                placeholder="请详细描述遇到的问题，例如：&#10;- Pod 一直 CrashLoopBackOff&#10;- Deployment 部署失败&#10;- 节点 NotReady"
+                placeholder="请详细描述遇到的问题，例如：&#10;- Pod 一直 CrashLoopBackOff&#10;- Deployment 部署失败&#10;- 节点 NotReady&#10;&#10;留空则 AI 自动分析资源状态"
               />
             </Form.Item>
 
@@ -493,7 +568,14 @@ const AIDiagnosis: React.FC = () => {
                   label="Pod 名称"
                   rules={[{ required: true, message: '请输入 Pod 名称' }]}
                 >
-                  <Input placeholder="输入 Pod 名称" />
+                  <Select
+                    placeholder="输入或选择 Pod 名称"
+                    showSearch
+                    options={resourceNames.map(name => ({ label: name, value: name }))}
+                    filterOption={(input, option) =>
+                      (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                    }
+                  />
                 </Form.Item>
               </Col>
               <Col span={8}>

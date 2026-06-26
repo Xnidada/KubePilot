@@ -416,7 +416,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				aiopsGroup.POST("/explain/stream", aiopsHandler.ExplainTextStream)
 				aiopsGroup.POST("/resource-guide", aiopsHandler.GetResourceGuide)
 				aiopsGroup.POST("/translate-yaml", aiopsHandler.TranslateYAML)
-				aiopsGroup.POST("/analyze-describe", aiopsHandler.AnalyzeDescribe)
 				aiopsGroup.POST("/analyze-logs", aiopsHandler.AnalyzeLogs)
 
 				// Diagnosis

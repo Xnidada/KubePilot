@@ -10,9 +10,10 @@ import {
   HistoryOutlined,
   SearchOutlined,
   CodeOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getDeployments, createDeployment, scaleDeployment, deleteDeployment, Deployment, getNamespaceNames } from '../../api/workload'
+import { getDeployments, createDeployment, scaleDeployment, deleteDeployment, Deployment, getNamespaceNames, batchOperation } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import EditDeploymentModal from '../../components/EditDeploymentModal'
 import DeploymentHistoryModal from '../../components/DeploymentHistoryModal'
@@ -20,7 +21,7 @@ import YAMLEditor from '../../components/YAMLEditor'
 import StatusTag from '../../components/StatusTag'
 import { usePolling, hasTerminatingResource } from '../../hooks/usePolling'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 const WorkloadDeployments: React.FC = () => {
   const navigate = useNavigate()
@@ -37,6 +38,7 @@ const WorkloadDeployments: React.FC = () => {
   const [yamlModalVisible, setYamlModalVisible] = useState(false)
   const [createModalVisible, setCreateModalVisible] = useState(false)
   const [selectedDeployment, setSelectedDeployment] = useState<Deployment | null>(null)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [form] = Form.useForm()
   const [createForm] = Form.useForm()
 
@@ -130,6 +132,59 @@ const WorkloadDeployments: React.FC = () => {
   const handleHistory = (record: Deployment) => {
     setSelectedDeployment(record)
     setHistoryModalVisible(true)
+  }
+
+  // 批量操作
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的 Deployment')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个 Deployment 吗？`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        const resources = selectedRowKeys.map(key => {
+          const [namespace, name] = key.split('/')
+          return { kind: 'Deployment', name, namespace }
+        })
+        try {
+          await batchOperation({ cluster_id: selectedCluster, resources, action: 'delete' })
+          message.success(`已删除 ${resources.length} 个 Deployment`)
+          setSelectedRowKeys([])
+          fetchDeployments()
+        } catch (e) {
+          message.error('批量删除失败')
+        }
+      },
+    })
+  }
+
+  const handleBatchRestart = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要重启的 Deployment')
+      return
+    }
+    Modal.confirm({
+      title: '批量重启',
+      content: `确定要重启选中的 ${selectedRowKeys.length} 个 Deployment 吗？`,
+      onOk: async () => {
+        const resources = selectedRowKeys.map(key => {
+          const [namespace, name] = key.split('/')
+          return { kind: 'Deployment', name, namespace }
+        })
+        try {
+          await batchOperation({ cluster_id: selectedCluster, resources, action: 'restart' })
+          message.success(`已重启 ${resources.length} 个 Deployment`)
+          setSelectedRowKeys([])
+          fetchDeployments()
+        } catch (e) {
+          message.error('批量重启失败')
+        }
+      },
+    })
   }
 
   const handleCreate = async (values: any) => {
@@ -272,8 +327,29 @@ const WorkloadDeployments: React.FC = () => {
         </Space>
       </div>
 
+      {/* 批量操作栏 */}
+      {selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <Space>
+            <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+            <Button icon={<ReloadOutlined />} onClick={handleBatchRestart}>批量重启</Button>
+            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>批量删除</Button>
+            <Button type="link" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          </Space>
+        </Card>
+      )}
+
       <Card>
-        <Table columns={columns} dataSource={deployments} rowKey="name" loading={loading} />
+        <Table
+          columns={columns}
+          dataSource={deployments}
+          rowKey={(r) => `${r.namespace}/${r.name}`}
+          loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys: any[]) => setSelectedRowKeys(keys),
+          }}
+        />
       </Card>
 
       <Modal

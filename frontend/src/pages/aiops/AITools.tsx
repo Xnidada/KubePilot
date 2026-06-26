@@ -8,7 +8,6 @@ import {
   Space,
   Typography,
   message,
-  Tag,
   List,
   Progress,
   Alert,
@@ -28,15 +27,14 @@ import {
   SafetyOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
+import { getNamespaceNames, getPods, getDeployments, getServices, getNodes } from '../../api/workload'
 import {
   explainText,
   getResourceGuide,
   translateYAML,
-  analyzeDescribe,
   ExplainResponse,
   ResourceGuideResponse,
   TranslateYAMLResponse,
-  AnalyzeDescribeResponse,
 } from '../../api/aiops'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 
@@ -151,6 +149,8 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
   const [resourceType, setResourceType] = useState('pod')
   const [resourceName, setResourceName] = useState('')
   const [namespace, setNamespace] = useState('')
+  const [namespaces, setNamespaces] = useState<string[]>([])
+  const [resourceNames, setResourceNames] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ResourceGuideResponse | null>(null)
 
@@ -163,6 +163,50 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
     { label: 'Secret', value: 'secret' },
     { label: 'Ingress', value: 'ingress' },
   ]
+
+  useEffect(() => {
+    if (clusterId) {
+      fetchNamespaces()
+    }
+  }, [clusterId])
+
+  useEffect(() => {
+    if (clusterId && resourceType) {
+      fetchResourceNames()
+    }
+  }, [clusterId, resourceType, namespace])
+
+  const fetchNamespaces = async () => {
+    try {
+      const res = await getNamespaceNames(clusterId)
+      setNamespaces(res.data || [])
+    } catch (e) { console.error(e) }
+  }
+
+  const fetchResourceNames = async () => {
+    try {
+      let names: string[] = []
+      switch (resourceType) {
+        case 'pod':
+          const podsRes = await getPods(clusterId, namespace || undefined)
+          names = (podsRes.data || []).map((p: any) => p.name)
+          break
+        case 'deployment':
+          const deploysRes = await getDeployments(clusterId, namespace || undefined)
+          names = (deploysRes.data || []).map((d: any) => d.name)
+          break
+        case 'service':
+          const svcsRes = await getServices(clusterId, namespace || undefined)
+          names = (svcsRes.data || []).map((s: any) => s.name)
+          break
+        case 'node':
+          const nodesRes = await getNodes(clusterId)
+          names = (nodesRes.data || []).map((n: any) => n.name)
+          break
+      }
+      setResourceNames(names)
+    } catch (e) { console.error(e) }
+  }
 
   const handleAnalyze = async () => {
     if (!clusterId) {
@@ -221,22 +265,28 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
             </Col>
             <Col span={8}>
               <Text strong>命名空间</Text>
-              <Input
+              <Select
                 value={namespace}
-                onChange={(e) => setNamespace(e.target.value)}
-                placeholder="默认命名空间"
-                style={{ marginTop: 8 }}
+                onChange={setNamespace}
+                style={{ width: '100%', marginTop: 8 }}
+                placeholder="选择或输入命名空间"
+                showSearch
+                allowClear
+                options={namespaces.map(ns => ({ label: ns, value: ns }))}
               />
             </Col>
           </Row>
           <Row gutter={16}>
             <Col span={16}>
               <Text strong>资源名称（可选，留空分析所有）</Text>
-              <Input
+              <Select
                 value={resourceName}
-                onChange={(e) => setResourceName(e.target.value)}
-                placeholder="输入资源名称..."
-                style={{ marginTop: 8 }}
+                onChange={setResourceName}
+                style={{ width: '100%', marginTop: 8 }}
+                placeholder="选择或输入资源名称"
+                showSearch
+                allowClear
+                options={resourceNames.map(name => ({ label: name, value: name }))}
               />
             </Col>
             <Col span={8} style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -464,200 +514,6 @@ spec:
   )
 }
 
-// Describe 解读组件
-const AnalyzeDescribeTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
-  const [clusterId, setClusterId] = useState<number>(0)
-  const [resourceType, setResourceType] = useState('pod')
-  const [resourceName, setResourceName] = useState('')
-  const [namespace, setNamespace] = useState('default')
-  const [describe, setDescribe] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<AnalyzeDescribeResponse | null>(null)
-
-  const resourceTypes = [
-    { label: 'Pod', value: 'pod' },
-    { label: 'Deployment', value: 'deployment' },
-    { label: 'Service', value: 'service' },
-    { label: 'Node', value: 'node' },
-    { label: 'StatefulSet', value: 'statefulset' },
-    { label: 'DaemonSet', value: 'daemonset' },
-  ]
-
-  const handleAnalyze = async () => {
-    if (!resourceName.trim()) {
-      message.warning('请输入资源名称')
-      return
-    }
-    setLoading(true)
-    try {
-      const res = await analyzeDescribe({
-        cluster_id: clusterId,
-        resource_type: resourceType,
-        resource_name: resourceName.trim(),
-        namespace: namespace,
-        describe: describe.trim(),
-      })
-      setResult(res.data)
-    } catch (error) {
-      message.error('分析失败')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div>
-      <Card title="Describe 解读" style={{ marginBottom: 16 }}>
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <Row gutter={16}>
-            <Col span={8}>
-              <Text strong>集群</Text>
-              <Select
-                value={clusterId}
-                onChange={setClusterId}
-                style={{ width: '100%', marginTop: 8 }}
-                placeholder="选择集群"
-                options={[
-                  { label: '不指定集群', value: 0 },
-                  ...clusters.map((c) => ({
-                    label: c.display_name || c.name,
-                    value: c.id,
-                  })),
-                ]}
-              />
-            </Col>
-            <Col span={8}>
-              <Text strong>资源类型</Text>
-              <Select
-                value={resourceType}
-                onChange={setResourceType}
-                style={{ width: '100%', marginTop: 8 }}
-                options={resourceTypes}
-              />
-            </Col>
-            <Col span={8}>
-              <Text strong>命名空间</Text>
-              <Input
-                value={namespace}
-                onChange={(e) => setNamespace(e.target.value)}
-                placeholder="default"
-                style={{ marginTop: 8 }}
-              />
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Text strong>资源名称</Text>
-              <Input
-                value={resourceName}
-                onChange={(e) => setResourceName(e.target.value)}
-                placeholder="输入资源名称..."
-                style={{ marginTop: 8 }}
-              />
-            </Col>
-            <Col span={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <Button
-                type="primary"
-                icon={<FileTextOutlined />}
-                onClick={handleAnalyze}
-                loading={loading}
-                block
-                style={{ marginTop: 8 }}
-              >
-                分析
-              </Button>
-            </Col>
-          </Row>
-          <div>
-            <Text strong>Describe 输出（可选，留空自动获取）</Text>
-            <TextArea
-              value={describe}
-              onChange={(e) => setDescribe(e.target.value)}
-              placeholder="粘贴 kubectl describe 输出..."
-              autoSize={{ minRows: 6, maxRows: 12 }}
-              style={{ marginTop: 8, fontFamily: 'monospace' }}
-            />
-          </div>
-        </Space>
-      </Card>
-
-      {result && (
-        <>
-          <Card title="分析结果" style={{ marginBottom: 16 }}>
-            <div className="markdown-body">
-              <MarkdownRenderer content={result.summary} />
-            </div>
-          </Card>
-
-          <Row gutter={16}>
-            <Col span={8}>
-              <Card title="关键信息" size="small">
-                <List
-                  size="small"
-                  dataSource={result.key_info}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Tag color="blue">{item}</Tag>
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
-            <Col span={8}>
-              <Card title="发现问题" size="small">
-                <List
-                  size="small"
-                  dataSource={result.issues}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Space>
-                        <WarningOutlined style={{ color: '#faad14' }} />
-                        {item}
-                      </Space>
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
-            <Col span={8}>
-              <Card title="优化建议" size="small">
-                <List
-                  size="small"
-                  dataSource={result.suggestions}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Space>
-                        <ThunderboltOutlined style={{ color: '#1890ff' }} />
-                        {item}
-                      </Space>
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
-          </Row>
-
-          {result.commands && result.commands.length > 0 && (
-            <Card title="相关命令" style={{ marginTop: 16 }}>
-              <List
-                size="small"
-                dataSource={result.commands}
-                renderItem={(item) => (
-                  <List.Item>
-                    <Text code copyable>
-                      {item}
-                    </Text>
-                  </List.Item>
-                )}
-              />
-            </Card>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
 // 主页面
 const AITools: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
@@ -705,16 +561,6 @@ const AITools: React.FC = () => {
         </span>
       ),
       children: <TranslateYAMLTab />,
-    },
-    {
-      key: 'analyze-describe',
-      label: (
-        <span>
-          <FileTextOutlined />
-          Describe 解读
-        </span>
-      ),
-      children: <AnalyzeDescribeTab clusters={clusters} />,
     },
   ]
 

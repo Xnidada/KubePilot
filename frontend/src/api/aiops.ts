@@ -208,14 +208,6 @@ export interface TranslateYAMLResponse {
   notes?: string
 }
 
-export interface AnalyzeDescribeResponse {
-  summary: string
-  key_info: string[]
-  issues: string[]
-  suggestions: string[]
-  commands: string[]
-}
-
 export interface AnalyzeLogsResponse {
   summary: string
   patterns: string[]
@@ -269,17 +261,6 @@ export const translateYAML = (data: {
   direction?: string
 }) => {
   return post<{ code: number; data: TranslateYAMLResponse }>('/aiops/translate-yaml', data)
-}
-
-// Describe 解读
-export const analyzeDescribe = (data: {
-  cluster_id?: number
-  resource_type: string
-  resource_name: string
-  namespace?: string
-  describe?: string
-}) => {
-  return post<{ code: number; data: AnalyzeDescribeResponse }>('/aiops/analyze-describe', data)
 }
 
 // 日志问诊

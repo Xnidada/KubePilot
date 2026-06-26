@@ -10,7 +10,7 @@ import {
   FolderOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getPods, createPod, deletePod, Pod, getNamespaceNames } from '../../api/workload'
+import { getPods, createPod, deletePod, Pod, getNamespaceNames, batchOperation } from '../../api/workload'
 import { getClusterList, Cluster } from '../../api/cluster'
 import StatusTag from '../../components/StatusTag'
 import LogViewer from '../../components/LogViewer'
@@ -34,6 +34,7 @@ const WorkloadPods: React.FC = () => {
   const [fileManagerVisible, setFileManagerVisible] = useState(false)
   const [terminalVisible, setTerminalVisible] = useState(false)
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [createForm] = Form.useForm()
 
   useEffect(() => { fetchClusters() }, [])
@@ -86,6 +87,33 @@ const WorkloadPods: React.FC = () => {
       message.success('删除成功')
       fetchPods()
     } catch (e) { console.error(e) }
+  }
+
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的 Pod')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个 Pod 吗？`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        const resources = selectedRowKeys.map(key => {
+          const [namespace, name] = key.split('/')
+          return { kind: 'Pod', name, namespace }
+        })
+        try {
+          await batchOperation({ cluster_id: selectedCluster, resources, action: 'delete' })
+          message.success(`已删除 ${resources.length} 个 Pod`)
+          setSelectedRowKeys([])
+          fetchPods()
+        } catch (e) {
+          message.error('批量删除失败')
+        }
+      },
+    })
   }
 
   const columns: ColumnsType<Pod> = [
@@ -141,8 +169,28 @@ const WorkloadPods: React.FC = () => {
         </Space>
       </div>
 
+      {/* 批量操作栏 */}
+      {selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <Space>
+            <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>批量删除</Button>
+            <Button type="link" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          </Space>
+        </Card>
+      )}
+
       <Card>
-        <Table columns={columns} dataSource={pods} rowKey={(r) => `${r.namespace}/${r.name}`} loading={loading} />
+        <Table
+          columns={columns}
+          dataSource={pods}
+          rowKey={(r) => `${r.namespace}/${r.name}`}
+          loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys: any[]) => setSelectedRowKeys(keys),
+          }}
+        />
       </Card>
 
       {/* Create Pod Modal */}

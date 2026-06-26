@@ -75,10 +75,6 @@ const menuItems: MenuProps['items'] = [
         label: 'HPA 自动伸缩',
       },
       {
-        key: '/workloads/batch',
-        label: '批量操作',
-      },
-      {
         key: '/workloads/compare',
         label: '资源对比',
       },
@@ -180,10 +176,6 @@ const menuItems: MenuProps['items'] = [
     icon: <ToolOutlined />,
     label: '运维工具',
     children: [
-      {
-        key: '/ops/diagnosis',
-        label: 'Pod 诊断',
-      },
       {
         key: '/ops/events',
         label: '事件时间线',

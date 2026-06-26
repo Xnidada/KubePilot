@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -211,26 +210,7 @@ func BuildMessages(history []Message, userMessage string) []Message {
 
 // BuildDiagnosisMessages 构建诊断消息
 func BuildDiagnosisMessages(resourceType, resourceName, namespace, problem string, context map[string]interface{}) []Message {
-	contextJSON, _ := json.Marshal(context)
-
-	prompt := fmt.Sprintf(`请诊断以下 Kubernetes 资源问题：
-
-## 资源信息
-- 类型: %s
-- 名称: %s
-- 命名空间: %s
-
-## 问题描述
-%s
-
-## 相关上下文
-%s
-
-请提供：
-1. 可能的原因分析
-2. 排查步骤
-3. 解决方案
-4. 预防措施`, resourceType, resourceName, namespace, problem, string(contextJSON))
+	prompt := fmt.Sprintf("诊断 K8S %s/%s (ns:%s): %s", resourceType, resourceName, namespace, problem)
 
 	return []Message{
 		{Role: "system", Content: SystemPrompt},

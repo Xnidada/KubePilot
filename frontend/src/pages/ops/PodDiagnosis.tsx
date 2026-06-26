@@ -114,11 +114,11 @@ const PodDiagnosisPage: React.FC = () => {
           </Card>
 
           {/* 问题和建议 */}
-          {diagnosis.problems.length > 0 && (
+          {diagnosis.problems && diagnosis.problems.length > 0 && (
             <Card title="⚠️ 发现问题" style={{ marginBottom: 16 }}>
               <List
                 dataSource={diagnosis.problems}
-                renderItem={(problem) => (
+                renderItem={(problem: string) => (
                   <List.Item>
                     <Space>
                       <WarningOutlined style={{ color: '#ff4d4f' }} />
@@ -130,11 +130,11 @@ const PodDiagnosisPage: React.FC = () => {
             </Card>
           )}
 
-          {diagnosis.suggestions.length > 0 && (
+          {diagnosis.suggestions && diagnosis.suggestions.length > 0 && (
             <Card title="💡 建议" style={{ marginBottom: 16 }}>
               <List
                 dataSource={diagnosis.suggestions}
-                renderItem={(suggestion) => (
+                renderItem={(suggestion: string) => (
                   <List.Item>
                     <Space>
                       <ThunderboltOutlined style={{ color: '#1890ff' }} />
@@ -207,8 +207,9 @@ const PodDiagnosisPage: React.FC = () => {
           <Card title="📅 事件" style={{ marginBottom: 16 }}>
             <List
               size="small"
-              dataSource={diagnosis.events}
-              renderItem={(event) => (
+              dataSource={diagnosis.events || []}
+              locale={{ emptyText: '暂无事件' }}
+              renderItem={(event: any) => (
                 <List.Item>
                   <Space style={{ width: '100%' }}>
                     <Tag color={event.type === 'Warning' ? 'warning' : 'default'}>{event.type}</Tag>

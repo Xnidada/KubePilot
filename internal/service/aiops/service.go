@@ -13,6 +13,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"gorm.io/gorm"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -238,7 +239,7 @@ type DiagnosisRequest struct {
 	ResourceType string `json:"resource_type" binding:"required"` // deployment, pod, node, etc.
 	ResourceName string `json:"resource_name" binding:"required"`
 	Namespace    string `json:"namespace"`
-	Problem      string `json:"problem" binding:"required"` // 问题描述
+	Problem      string `json:"problem"` // 问题描述（可选）
 }
 
 // DiagnosisResponse 诊断响应
@@ -256,26 +257,27 @@ func (s *Service) Diagnose(ctx context.Context, req *DiagnosisRequest) (*Diagnos
 		return nil, fmt.Errorf("LLM service not configured. Please set LLM API key in config")
 	}
 
-	// 获取资源上下文
-	resourceContext, err := s.getResourceContext(req.ClusterID, req.ResourceType, req.ResourceName, req.Namespace)
-	if err != nil {
-		resourceContext = map[string]interface{}{
-			"error": fmt.Sprintf("无法获取资源信息: %v", err),
+	problem := req.Problem
+
+	// 如果没有提供问题描述，自动获取资源的 describe 信息
+	if problem == "" {
+		describeInfo, err := s.getResourceDescribeInfo(ctx, req.ClusterID, req.ResourceType, req.ResourceName, req.Namespace)
+		if err == nil && describeInfo != "" {
+			problem = fmt.Sprintf("请分析以下 K8S 资源的 describe 信息，找出问题并给出解决方案：\n\n%s", describeInfo)
+		} else {
+			problem = fmt.Sprintf("请分析 %s 资源 %s 可能存在的问题", req.ResourceType, req.ResourceName)
 		}
 	}
 
-	// 构建诊断消息
-	messages := llm.BuildDiagnosisMessages(
-		req.ResourceType,
-		req.ResourceName,
-		req.Namespace,
-		req.Problem,
-		resourceContext,
-	)
+	messages := []llm.Message{
+		{Role: "system", Content: "你是 K8S 运维专家。请用中文回答，分析问题原因并给出解决方案和排查命令。回答要简洁明了。"},
+		{Role: "user", Content: problem},
+	}
 
 	// 调用LLM
 	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{
-		Messages: messages,
+		Messages:  messages,
+		MaxTokens: 1024,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM diagnosis failed: %w", err)
@@ -283,8 +285,238 @@ func (s *Service) Diagnose(ctx context.Context, req *DiagnosisRequest) (*Diagnos
 
 	// 解析响应
 	diagnosis := s.parseDiagnosisResponse(resp.Content)
-
 	return diagnosis, nil
+}
+
+// getResourceDescribeInfo 获取资源的 describe 信息
+func (s *Service) getResourceDescribeInfo(ctx context.Context, clusterID uint, resourceType, resourceName, namespace string) (string, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return "", err
+	}
+
+	var result string
+
+	switch resourceType {
+	case "pod":
+		pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result = formatPodDescribe(pod)
+
+	case "deployment":
+		deploy, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result = formatDeploymentDescribe(deploy)
+
+	case "service":
+		svc, err := client.Clientset.CoreV1().Services(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result = formatServiceDescribe(svc)
+
+	case "node":
+		node, err := client.Clientset.CoreV1().Nodes().Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result = formatNodeDescribe(node)
+
+	default:
+		return "", fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	return result, nil
+}
+
+// formatPodDescribe 格式化 Pod describe 信息
+func formatPodDescribe(pod *corev1.Pod) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Name: %s\n", pod.Name))
+	sb.WriteString(fmt.Sprintf("Namespace: %s\n", pod.Namespace))
+	sb.WriteString(fmt.Sprintf("Status: %s\n", pod.Status.Phase))
+	sb.WriteString(fmt.Sprintf("Node: %s\n", pod.Spec.NodeName))
+	sb.WriteString(fmt.Sprintf("IP: %s\n", pod.Status.PodIP))
+	sb.WriteString(fmt.Sprintf("Start Time: %s\n", pod.Status.StartTime))
+
+	// Labels
+	sb.WriteString("Labels:\n")
+	for k, v := range pod.Labels {
+		sb.WriteString(fmt.Sprintf("  %s=%s\n", k, v))
+	}
+
+	// Containers
+	sb.WriteString("Containers:\n")
+	for _, c := range pod.Spec.Containers {
+		sb.WriteString(fmt.Sprintf("  %s:\n", c.Name))
+		sb.WriteString(fmt.Sprintf("    Image: %s\n", c.Image))
+		if c.Resources.Requests != nil {
+			sb.WriteString(fmt.Sprintf("    Requests: cpu=%s, memory=%s\n",
+				c.Resources.Requests.Cpu().String(),
+				c.Resources.Requests.Memory().String()))
+		}
+		if c.Resources.Limits != nil {
+			sb.WriteString(fmt.Sprintf("    Limits: cpu=%s, memory=%s\n",
+				c.Resources.Limits.Cpu().String(),
+				c.Resources.Limits.Memory().String()))
+		}
+	}
+
+	// Container Statuses
+	sb.WriteString("Container Statuses:\n")
+	for _, cs := range pod.Status.ContainerStatuses {
+		sb.WriteString(fmt.Sprintf("  %s:\n", cs.Name))
+		sb.WriteString(fmt.Sprintf("    Ready: %v\n", cs.Ready))
+		sb.WriteString(fmt.Sprintf("    Restart Count: %d\n", cs.RestartCount))
+		if cs.State.Waiting != nil {
+			sb.WriteString(fmt.Sprintf("    Waiting: %s - %s\n", cs.State.Waiting.Reason, cs.State.Waiting.Message))
+		}
+		if cs.State.Terminated != nil {
+			sb.WriteString(fmt.Sprintf("    Terminated: %s (exit code %d)\n", cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+		}
+	}
+
+	// Conditions
+	sb.WriteString("Conditions:\n")
+	for _, cond := range pod.Status.Conditions {
+		sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", cond.Type, cond.Status, cond.Reason))
+	}
+
+	return sb.String()
+}
+
+// formatDeploymentDescribe 格式化 Deployment describe 信息
+func formatDeploymentDescribe(deploy *appsv1.Deployment) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Name: %s\n", deploy.Name))
+	sb.WriteString(fmt.Sprintf("Namespace: %s\n", deploy.Namespace))
+
+	replicas := int32(0)
+	if deploy.Spec.Replicas != nil {
+		replicas = *deploy.Spec.Replicas
+	}
+	sb.WriteString(fmt.Sprintf("Replicas: %d/%d\n", deploy.Status.ReadyReplicas, replicas))
+	sb.WriteString(fmt.Sprintf("Strategy: %s\n", deploy.Spec.Strategy.Type))
+
+	sb.WriteString("Selector:\n")
+	for k, v := range deploy.Spec.Selector.MatchLabels {
+		sb.WriteString(fmt.Sprintf("  %s=%s\n", k, v))
+	}
+
+	sb.WriteString("Containers:\n")
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", c.Name, c.Image))
+	}
+
+	sb.WriteString("Conditions:\n")
+	for _, cond := range deploy.Status.Conditions {
+		sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", cond.Type, cond.Status, cond.Reason))
+	}
+
+	return sb.String()
+}
+
+// formatServiceDescribe 格式化 Service describe 信息
+func formatServiceDescribe(svc *corev1.Service) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Name: %s\n", svc.Name))
+	sb.WriteString(fmt.Sprintf("Namespace: %s\n", svc.Namespace))
+	sb.WriteString(fmt.Sprintf("Type: %s\n", svc.Spec.Type))
+	sb.WriteString(fmt.Sprintf("ClusterIP: %s\n", svc.Spec.ClusterIP))
+
+	sb.WriteString("Ports:\n")
+	for _, p := range svc.Spec.Ports {
+		sb.WriteString(fmt.Sprintf("  %d -> %d (%s)\n", p.Port, p.TargetPort.IntValue(), p.Protocol))
+	}
+
+	sb.WriteString("Selector:\n")
+	for k, v := range svc.Spec.Selector {
+		sb.WriteString(fmt.Sprintf("  %s=%s\n", k, v))
+	}
+
+	return sb.String()
+}
+
+// formatNodeDescribe 格式化 Node describe 信息
+func formatNodeDescribe(node *corev1.Node) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Name: %s\n", node.Name))
+	sb.WriteString(fmt.Sprintf("CPU: %s\n", node.Status.Capacity.Cpu().String()))
+	sb.WriteString(fmt.Sprintf("Memory: %s\n", node.Status.Capacity.Memory().String()))
+
+	sb.WriteString("Conditions:\n")
+	for _, cond := range node.Status.Conditions {
+		sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", cond.Type, cond.Status, cond.Reason))
+	}
+
+	sb.WriteString("Addresses:\n")
+	for _, addr := range node.Status.Addresses {
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", addr.Type, addr.Address))
+	}
+
+	return sb.String()
+}
+
+// getResourceDescribe 获取资源的 describe 信息（极简版，避免超时）
+func (s *Service) getResourceDescribe(ctx context.Context, clusterID uint, resourceType, resourceName, namespace string) (string, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return "", err
+	}
+
+	var result strings.Builder
+
+	switch resourceType {
+	case "pod":
+		pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result.WriteString(fmt.Sprintf("Pod: %s/%s\n", pod.Namespace, pod.Name))
+		result.WriteString(fmt.Sprintf("Status: %s\n", pod.Status.Phase))
+		result.WriteString(fmt.Sprintf("Node: %s\n", pod.Spec.NodeName))
+		for _, cs := range pod.Status.ContainerStatuses {
+			result.WriteString(fmt.Sprintf("Container %s: ready=%v restarts=%d\n", cs.Name, cs.Ready, cs.RestartCount))
+		}
+
+	case "deployment":
+		deploy, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		replicas := int32(0)
+		if deploy.Spec.Replicas != nil {
+			replicas = *deploy.Spec.Replicas
+		}
+		result.WriteString(fmt.Sprintf("Deployment: %s/%s\n", deploy.Namespace, deploy.Name))
+		result.WriteString(fmt.Sprintf("Replicas: %d/%d\n", deploy.Status.ReadyReplicas, replicas))
+
+	case "service":
+		svc, err := client.Clientset.CoreV1().Services(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result.WriteString(fmt.Sprintf("Service: %s/%s\n", svc.Namespace, svc.Name))
+		result.WriteString(fmt.Sprintf("Type: %s ClusterIP: %s\n", svc.Spec.Type, svc.Spec.ClusterIP))
+
+	case "node":
+		node, err := client.Clientset.CoreV1().Nodes().Get(ctx, resourceName, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		result.WriteString(fmt.Sprintf("Node: %s\n", node.Name))
+		for _, c := range node.Status.Conditions {
+			if c.Type == "Ready" {
+				result.WriteString(fmt.Sprintf("Ready: %s\n", c.Status))
+			}
+		}
+	}
+
+	return result.String(), nil
 }
 
 // getClusterContext 获取集群上下文
@@ -339,7 +571,7 @@ Pod总数: %d (运行中: %d, 等待中: %d, 失败: %d)`,
 	return context, nil
 }
 
-// getResourceContext 获取资源上下文
+// getResourceContext 获取资源上下文（简化版，避免超时）
 func (s *Service) getResourceContext(clusterID uint, resourceType, resourceName, namespace string) (map[string]interface{}, error) {
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
@@ -362,49 +594,32 @@ func (s *Service) getResourceContext(clusterID uint, resourceType, resourceName,
 		for _, cs := range pod.Status.ContainerStatuses {
 			result["restarts"] = result["restarts"].(int) + int(cs.RestartCount)
 		}
-		result["labels"] = pod.Labels
-		result["conditions"] = pod.Status.Conditions
-
-		// 获取最近的事件
-		events, _ := client.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s", resourceName),
-		})
-		if events != nil && len(events.Items) > 0 {
-			recentEvents := make([]map[string]string, 0)
-			for i, e := range events.Items {
-				if i >= 5 {
-					break
-				}
-				recentEvents = append(recentEvents, map[string]string{
-					"type":    e.Type,
-					"reason":  e.Reason,
-					"message": e.Message,
-					"time":    e.LastTimestamp.Format(time.RFC3339),
-				})
-			}
-			result["recent_events"] = recentEvents
-		}
 
 	case "deployment":
 		deploy, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
-		result["replicas"] = *deploy.Spec.Replicas
+		replicas := int32(0)
+		if deploy.Spec.Replicas != nil {
+			replicas = *deploy.Spec.Replicas
+		}
+		result["replicas"] = replicas
 		result["ready"] = deploy.Status.ReadyReplicas
 		result["available"] = deploy.Status.AvailableReplicas
-		result["labels"] = deploy.Labels
-		result["selector"] = deploy.Spec.Selector.MatchLabels
 
 	case "node":
 		node, err := client.Clientset.CoreV1().Nodes().Get(ctx, resourceName, metav1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
-		result["status"] = node.Status.Conditions
-		result["capacity"] = node.Status.Capacity
-		result["allocatable"] = node.Status.Allocatable
-		result["node_info"] = node.Status.NodeInfo
+		for _, c := range node.Status.Conditions {
+			if c.Type == "Ready" {
+				result["ready"] = c.Status
+			}
+		}
+		result["cpu"] = node.Status.Capacity.Cpu().String()
+		result["memory"] = node.Status.Capacity.Memory().String()
 	}
 
 	return result, nil
