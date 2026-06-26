@@ -307,6 +307,12 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				// Pods (Update not supported - Pod is immutable)
 				workloads.PUT("/pods/:ns/:name", workloadHandler.UpdatePod)
 
+				// NetworkPolicy
+				workloads.GET("/networkpolicies", workloadHandler.ListNetworkPolicies)
+				workloads.POST("/networkpolicies", workloadHandler.CreateNetworkPolicy)
+				workloads.GET("/networkpolicies/:ns/:name", workloadHandler.GetNetworkPolicy)
+				workloads.DELETE("/networkpolicies/:ns/:name", workloadHandler.DeleteNetworkPolicy)
+
 				// CRDs
 				workloads.GET("/crds", workloadHandler.ListCRDs)
 

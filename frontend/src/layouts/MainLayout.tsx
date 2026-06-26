@@ -78,6 +78,18 @@ const menuItems: MenuProps['items'] = [
         key: '/workloads/compare',
         label: '资源对比',
       },
+      {
+        key: '/workloads/gpu',
+        label: 'GPU 调度',
+      },
+      {
+        key: '/workloads/yaml-diff',
+        label: 'YAML Diff',
+      },
+      {
+        key: '/workloads/env-clone',
+        label: '环境克隆',
+      },
     ],
   },
   {
@@ -92,6 +104,10 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/workloads/ingresses',
         label: 'Ingress',
+      },
+      {
+        key: '/workloads/networkpolicies',
+        label: 'NetworkPolicy',
       },
     ],
   },
@@ -164,6 +180,10 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/monitor/node-pressure',
         label: '节点压力',
+      },
+      {
+        key: '/monitor/cost',
+        label: '资源成本',
       },
       {
         key: '/monitor',
@@ -312,6 +332,11 @@ const MainLayout: React.FC = () => {
       '/workloads/hpas': ['/workloads'],
       '/workloads/batch': ['/workloads'],
       '/workloads/compare': ['/workloads'],
+      '/workloads/gpu': ['/workloads'],
+      '/workloads/yaml-diff': ['/workloads'],
+      '/workloads/env-clone': ['/workloads'],
+      '/workloads/networkpolicies': ['/network'],
+      '/monitor/cost': ['/monitor'],
       '/workloads/services': ['/network'],
       '/workloads/ingresses': ['/network'],
       '/workloads/configmaps': ['/config'],
