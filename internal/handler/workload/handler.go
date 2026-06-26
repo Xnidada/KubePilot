@@ -2,6 +2,7 @@ package workload
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -2622,4 +2624,621 @@ func timeSince(t time.Time) string {
 		return strconv.Itoa(int(duration.Minutes())) + "m"
 	}
 	return strconv.Itoa(int(duration.Seconds())) + "s"
+}
+
+// ==================== HPA 管理 ====================
+
+// ListHPAs 获取 HPA 列表
+func (h *Handler) ListHPAs(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	namespace := c.Query("ns")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	var hpas *autoscalingv2.HorizontalPodAutoscalerList
+	if namespace == "" {
+		hpas, err = client.Clientset.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
+	} else {
+		hpas, err = client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})
+	}
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	type HPAInfo struct {
+		Name           string `json:"name"`
+		Namespace      string `json:"namespace"`
+		ScaleTargetRef string `json:"scale_target_ref"`
+		MinReplicas    *int32 `json:"min_replicas"`
+		MaxReplicas    int32  `json:"max_replicas"`
+		CurrentCPU     string `json:"current_cpu"`
+		TargetCPU      string `json:"target_cpu"`
+		CurrentMemory  string `json:"current_memory"`
+		TargetMemory   string `json:"target_memory"`
+		CurrentReplicas int32 `json:"current_replicas"`
+		DesiredReplicas int32 `json:"desired_replicas"`
+		Age            string `json:"age"`
+	}
+
+	result := make([]HPAInfo, 0, len(hpas.Items))
+	for _, hpa := range hpas.Items {
+		info := HPAInfo{
+			Name:      hpa.Name,
+			Namespace: hpa.Namespace,
+			ScaleTargetRef: fmt.Sprintf("%s/%s",
+				hpa.Spec.ScaleTargetRef.Kind,
+				hpa.Spec.ScaleTargetRef.Name),
+			MinReplicas:     hpa.Spec.MinReplicas,
+			MaxReplicas:     hpa.Spec.MaxReplicas,
+			CurrentReplicas: hpa.Status.CurrentReplicas,
+			DesiredReplicas: hpa.Status.DesiredReplicas,
+			Age:             timeSince(hpa.CreationTimestamp.Time),
+		}
+
+		// 解析指标
+		for _, metric := range hpa.Spec.Metrics {
+			if metric.Type == autoscalingv2.ResourceMetricSourceType {
+				if metric.Resource != nil {
+					switch metric.Resource.Name {
+					case corev1.ResourceCPU:
+						if metric.Resource.Target.AverageUtilization != nil {
+							info.TargetCPU = fmt.Sprintf("%d%%", *metric.Resource.Target.AverageUtilization)
+						}
+					case corev1.ResourceMemory:
+						if metric.Resource.Target.AverageUtilization != nil {
+							info.TargetMemory = fmt.Sprintf("%d%%", *metric.Resource.Target.AverageUtilization)
+						}
+					}
+				}
+			}
+		}
+
+		// 当前指标
+		for _, metric := range hpa.Status.CurrentMetrics {
+			if metric.Type == autoscalingv2.ResourceMetricSourceType {
+				if metric.Resource != nil && metric.Resource.Current.AverageUtilization != nil {
+					switch metric.Resource.Name {
+					case corev1.ResourceCPU:
+						info.CurrentCPU = fmt.Sprintf("%d%%", *metric.Resource.Current.AverageUtilization)
+					case corev1.ResourceMemory:
+						info.CurrentMemory = fmt.Sprintf("%d%%", *metric.Resource.Current.AverageUtilization)
+					}
+				}
+			}
+		}
+
+		result = append(result, info)
+	}
+
+	response.Success(c, result)
+}
+
+// CreateHPA 创建 HPA
+func (h *Handler) CreateHPA(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+
+	var req struct {
+		Name           string `json:"name" binding:"required"`
+		Namespace      string `json:"namespace" binding:"required"`
+		TargetKind     string `json:"target_kind" binding:"required"`
+		TargetName     string `json:"target_name" binding:"required"`
+		MinReplicas    int32  `json:"min_replicas"`
+		MaxReplicas    int32  `json:"max_replicas" binding:"required"`
+		CPUUtilization *int32 `json:"cpu_utilization"`
+		MemUtilization *int32 `json:"mem_utilization"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	if req.MinReplicas == 0 {
+		req.MinReplicas = 1
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	// 构建指标
+	metrics := make([]autoscalingv2.MetricSpec, 0)
+	if req.CPUUtilization != nil {
+		metrics = append(metrics, autoscalingv2.MetricSpec{
+			Type: autoscalingv2.ResourceMetricSourceType,
+			Resource: &autoscalingv2.ResourceMetricSource{
+				Name: corev1.ResourceCPU,
+				Target: autoscalingv2.MetricTarget{
+					Type:               autoscalingv2.UtilizationMetricType,
+					AverageUtilization: req.CPUUtilization,
+				},
+			},
+		})
+	}
+	if req.MemUtilization != nil {
+		metrics = append(metrics, autoscalingv2.MetricSpec{
+			Type: autoscalingv2.ResourceMetricSourceType,
+			Resource: &autoscalingv2.ResourceMetricSource{
+				Name: corev1.ResourceMemory,
+				Target: autoscalingv2.MetricTarget{
+					Type:               autoscalingv2.UtilizationMetricType,
+					AverageUtilization: req.MemUtilization,
+				},
+			},
+		})
+	}
+
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      req.Name,
+			Namespace: req.Namespace,
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind:       req.TargetKind,
+				Name:       req.TargetName,
+				APIVersion: "apps/v1",
+			},
+			MinReplicas: &req.MinReplicas,
+			MaxReplicas: req.MaxReplicas,
+			Metrics:     metrics,
+		},
+	}
+
+	ctx := context.Background()
+	result, err := client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(req.Namespace).Create(ctx, hpa, metav1.CreateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Created(c, result)
+}
+
+// DeleteHPA 删除 HPA
+func (h *Handler) DeleteHPA(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	namespace := c.Param("ns")
+	name := c.Param("name")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	err = client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "hpa deleted", nil)
+}
+
+// ==================== 批量操作 ====================
+
+// BatchOperationRequest 批量操作请求
+type BatchOperationRequest struct {
+	ClusterID uint     `json:"cluster_id" binding:"required"`
+	Resources []ResourceRef `json:"resources" binding:"required"`
+	Action    string   `json:"action" binding:"required"`
+	Labels    map[string]string `json:"labels,omitempty"` // 用于批量标签
+}
+
+// ResourceRef 资源引用
+type ResourceRef struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+// BatchOperation 批量操作
+func (h *Handler) BatchOperation(c *gin.Context) {
+	var req BatchOperationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(req.ClusterID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	results := make([]map[string]interface{}, 0)
+	successCount := 0
+	failCount := 0
+
+	for _, res := range req.Resources {
+		result := map[string]interface{}{
+			"kind": res.Kind,
+			"name": res.Name,
+			"ns":   res.Namespace,
+		}
+
+		var execErr error
+
+		switch req.Action {
+		case "delete":
+			execErr = h.batchDelete(ctx, client, res)
+		case "restart":
+			execErr = h.batchRestart(ctx, client, res)
+		case "label":
+			execErr = h.batchLabel(ctx, client, res, req.Labels)
+		default:
+			execErr = fmt.Errorf("unsupported action: %s", req.Action)
+		}
+
+		if execErr != nil {
+			result["status"] = "failed"
+			result["error"] = execErr.Error()
+			failCount++
+		} else {
+			result["status"] = "success"
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	response.Success(c, gin.H{
+		"total":   len(req.Resources),
+		"success": successCount,
+		"failed":  failCount,
+		"results": results,
+	})
+}
+
+// batchDelete 批量删除
+func (h *Handler) batchDelete(ctx context.Context, client *k8s.ClusterClient, res ResourceRef) error {
+	switch strings.ToLower(res.Kind) {
+	case "pod":
+		return client.Clientset.CoreV1().Pods(res.Namespace).Delete(ctx, res.Name, metav1.DeleteOptions{})
+	case "deployment":
+		return client.Clientset.AppsV1().Deployments(res.Namespace).Delete(ctx, res.Name, metav1.DeleteOptions{})
+	case "service":
+		return client.Clientset.CoreV1().Services(res.Namespace).Delete(ctx, res.Name, metav1.DeleteOptions{})
+	case "configmap":
+		return client.Clientset.CoreV1().ConfigMaps(res.Namespace).Delete(ctx, res.Name, metav1.DeleteOptions{})
+	case "secret":
+		return client.Clientset.CoreV1().Secrets(res.Namespace).Delete(ctx, res.Name, metav1.DeleteOptions{})
+	default:
+		return fmt.Errorf("unsupported resource kind: %s", res.Kind)
+	}
+}
+
+// batchRestart 批量重启（通过更新 annotation 触发）
+func (h *Handler) batchRestart(ctx context.Context, client *k8s.ClusterClient, res ResourceRef) error {
+	switch strings.ToLower(res.Kind) {
+	case "deployment":
+		deploy, err := client.Clientset.AppsV1().Deployments(res.Namespace).Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = make(map[string]string)
+		}
+		deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+		_, err = client.Clientset.AppsV1().Deployments(res.Namespace).Update(ctx, deploy, metav1.UpdateOptions{})
+		return err
+	case "statefulset":
+		sts, err := client.Clientset.AppsV1().StatefulSets(res.Namespace).Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if sts.Spec.Template.Annotations == nil {
+			sts.Spec.Template.Annotations = make(map[string]string)
+		}
+		sts.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+		_, err = client.Clientset.AppsV1().StatefulSets(res.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
+		return err
+	case "daemonset":
+		ds, err := client.Clientset.AppsV1().DaemonSets(res.Namespace).Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if ds.Spec.Template.Annotations == nil {
+			ds.Spec.Template.Annotations = make(map[string]string)
+		}
+		ds.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+		_, err = client.Clientset.AppsV1().DaemonSets(res.Namespace).Update(ctx, ds, metav1.UpdateOptions{})
+		return err
+	default:
+		return fmt.Errorf("restart not supported for kind: %s", res.Kind)
+	}
+}
+
+// batchLabel 批量标签
+func (h *Handler) batchLabel(ctx context.Context, client *k8s.ClusterClient, res ResourceRef, labels map[string]string) error {
+	switch strings.ToLower(res.Kind) {
+	case "pod":
+		pod, err := client.Clientset.CoreV1().Pods(res.Namespace).Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		for k, v := range labels {
+			pod.Labels[k] = v
+		}
+		_, err = client.Clientset.CoreV1().Pods(res.Namespace).Update(ctx, pod, metav1.UpdateOptions{})
+		return err
+	case "deployment":
+		deploy, err := client.Clientset.AppsV1().Deployments(res.Namespace).Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if deploy.Labels == nil {
+			deploy.Labels = make(map[string]string)
+		}
+		for k, v := range labels {
+			deploy.Labels[k] = v
+		}
+		_, err = client.Clientset.AppsV1().Deployments(res.Namespace).Update(ctx, deploy, metav1.UpdateOptions{})
+		return err
+	case "node":
+		node, err := client.Clientset.CoreV1().Nodes().Get(ctx, res.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		for k, v := range labels {
+			node.Labels[k] = v
+		}
+		_, err = client.Clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		return err
+	default:
+		return fmt.Errorf("label not supported for kind: %s", res.Kind)
+	}
+}
+
+// ==================== 资源对比 ====================
+
+// CompareResources 资源对比
+func (h *Handler) CompareResources(c *gin.Context) {
+	var req struct {
+		ClusterA uint   `json:"cluster_a" binding:"required"`
+		ClusterB uint   `json:"cluster_b" binding:"required"`
+		ResourceType string `json:"resource_type" binding:"required"`
+		NamespaceA string `json:"namespace_a"`
+		NamespaceB string `json:"namespace_b"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	clientA, err := k8s.Manager.GetClient(req.ClusterA)
+	if err != nil {
+		response.BadRequest(c, "cluster A not connected")
+		return
+	}
+
+	clientB, err := k8s.Manager.GetClient(req.ClusterB)
+	if err != nil {
+		response.BadRequest(c, "cluster B not connected")
+		return
+	}
+
+	ctx := context.Background()
+
+	// 获取两个集群的资源
+	resourcesA, err := h.getResources(ctx, clientA, req.ResourceType, req.NamespaceA)
+	if err != nil {
+		response.InternalError(c, "failed to get resources from cluster A: "+err.Error())
+		return
+	}
+
+	resourcesB, err := h.getResources(ctx, clientB, req.ResourceType, req.NamespaceB)
+	if err != nil {
+		response.InternalError(c, "failed to get resources from cluster B: "+err.Error())
+		return
+	}
+
+	// 对比
+	onlyInA := make([]string, 0)
+	onlyInB := make([]string, 0)
+	inBoth := make([]string, 0)
+
+	setA := make(map[string]bool)
+	for _, r := range resourcesA {
+		setA[r] = true
+	}
+
+	setB := make(map[string]bool)
+	for _, r := range resourcesB {
+		setB[r] = true
+		if !setA[r] {
+			onlyInB = append(onlyInB, r)
+		}
+	}
+
+	for _, r := range resourcesA {
+		if setB[r] {
+			inBoth = append(inBoth, r)
+		} else {
+			onlyInA = append(onlyInA, r)
+		}
+	}
+
+	response.Success(c, gin.H{
+		"resource_type": req.ResourceType,
+		"cluster_a":     req.ClusterA,
+		"cluster_b":     req.ClusterB,
+		"only_in_a":     onlyInA,
+		"only_in_b":     onlyInB,
+		"in_both":       inBoth,
+		"count_a":       len(resourcesA),
+		"count_b":       len(resourcesB),
+	})
+}
+
+// getResources 获取资源列表
+func (h *Handler) getResources(ctx context.Context, client *k8s.ClusterClient, resourceType, namespace string) ([]string, error) {
+	switch strings.ToLower(resourceType) {
+	case "pod":
+		pods, err := client.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		result := make([]string, 0, len(pods.Items))
+		for _, p := range pods.Items {
+			result = append(result, fmt.Sprintf("%s/%s", p.Namespace, p.Name))
+		}
+		return result, nil
+	case "deployment":
+		deploys, err := client.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		result := make([]string, 0, len(deploys.Items))
+		for _, d := range deploys.Items {
+			result = append(result, fmt.Sprintf("%s/%s", d.Namespace, d.Name))
+		}
+		return result, nil
+	case "service":
+		svcs, err := client.Clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		result := make([]string, 0, len(svcs.Items))
+		for _, s := range svcs.Items {
+			result = append(result, fmt.Sprintf("%s/%s", s.Namespace, s.Name))
+		}
+		return result, nil
+	case "configmap":
+		cms, err := client.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		result := make([]string, 0, len(cms.Items))
+		for _, cm := range cms.Items {
+			result = append(result, fmt.Sprintf("%s/%s", cm.Namespace, cm.Name))
+		}
+		return result, nil
+	case "namespace":
+		nss, err := client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		result := make([]string, 0, len(nss.Items))
+		for _, ns := range nss.Items {
+			result = append(result, ns.Name)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+}
+
+// ==================== Pod 亲和性管理 ====================
+
+// GetPodAffinity 获取 Pod 亲和性配置
+func (h *Handler) GetPodAffinity(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	namespace := c.Param("ns")
+	name := c.Param("name")
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	deploy, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "deployment not found")
+		return
+	}
+
+	affinity := deploy.Spec.Template.Spec.Affinity
+	if affinity == nil {
+		response.Success(c, gin.H{
+			"affinity": nil,
+			"message":  "no affinity configured",
+		})
+		return
+	}
+
+	// 序列化为 JSON
+	affinityJSON, _ := json.MarshalIndent(affinity, "", "  ")
+
+	response.Success(c, gin.H{
+		"affinity": affinity,
+		"yaml":     string(affinityJSON),
+	})
+}
+
+// UpdatePodAffinity 更新 Pod 亲和性配置
+func (h *Handler) UpdatePodAffinity(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	namespace := c.Param("ns")
+	name := c.Param("name")
+
+	var req struct {
+		Affinity *corev1.Affinity `json:"affinity"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	client, err := k8s.Manager.GetClient(uint(clusterID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	deploy, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		response.NotFound(c, "deployment not found")
+		return
+	}
+
+	// 更新亲和性
+	deploy.Spec.Template.Spec.Affinity = req.Affinity
+
+	_, err = client.Clientset.AppsV1().Deployments(namespace).Update(ctx, deploy, metav1.UpdateOptions{})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "affinity updated", nil)
 }

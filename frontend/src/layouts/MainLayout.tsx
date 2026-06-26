@@ -69,6 +69,18 @@ const menuItems: MenuProps['items'] = [
         key: '/workloads/cronjobs',
         label: 'CronJob',
       },
+      {
+        key: '/workloads/hpas',
+        label: 'HPA 自动伸缩',
+      },
+      {
+        key: '/workloads/batch',
+        label: '批量操作',
+      },
+      {
+        key: '/workloads/compare',
+        label: '资源对比',
+      },
     ],
   },
   {
@@ -276,6 +288,9 @@ const MainLayout: React.FC = () => {
       '/workloads/pods': ['/workloads'],
       '/workloads/jobs': ['/workloads'],
       '/workloads/cronjobs': ['/workloads'],
+      '/workloads/hpas': ['/workloads'],
+      '/workloads/batch': ['/workloads'],
+      '/workloads/compare': ['/workloads'],
       '/workloads/services': ['/network'],
       '/workloads/ingresses': ['/network'],
       '/workloads/configmaps': ['/config'],

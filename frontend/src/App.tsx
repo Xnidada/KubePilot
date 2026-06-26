@@ -36,6 +36,9 @@ import Inspection from './pages/cluster/Inspection'
 import EventForward from './pages/cluster/EventForward'
 import SchedulerTasks from './pages/scheduler/Tasks'
 import SchedulerQueues from './pages/scheduler/Queues'
+import HPAs from './pages/workload/HPAs'
+import BatchOps from './pages/workload/BatchOps'
+import ResourceCompare from './pages/workload/ResourceCompare'
 import { useAuthStore } from './stores/auth'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -91,6 +94,9 @@ function App() {
         <Route path="cluster/event-forward" element={<EventForward />} />
         <Route path="scheduler/tasks" element={<SchedulerTasks />} />
         <Route path="scheduler/queues" element={<SchedulerQueues />} />
+        <Route path="workloads/hpas" element={<HPAs />} />
+        <Route path="workloads/batch" element={<BatchOps />} />
+        <Route path="workloads/compare" element={<ResourceCompare />} />
       </Route>
     </Routes>
   )

@@ -333,6 +333,21 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				// Resource Events & Describe
 				workloads.GET("/events/:type/:ns/:name", workloadHandler.GetResourceEvents)
 				workloads.GET("/describe/:type/:ns/:name", workloadHandler.DescribeResource)
+
+				// HPA 管理
+				workloads.GET("/hpas", workloadHandler.ListHPAs)
+				workloads.POST("/hpas", workloadHandler.CreateHPA)
+				workloads.DELETE("/hpas/:ns/:name", workloadHandler.DeleteHPA)
+
+				// 批量操作
+				workloads.POST("/batch", workloadHandler.BatchOperation)
+
+				// 资源对比
+				workloads.POST("/compare", workloadHandler.CompareResources)
+
+				// Pod 亲和性
+				workloads.GET("/deployments/:ns/:name/affinity", workloadHandler.GetPodAffinity)
+				workloads.PUT("/deployments/:ns/:name/affinity", workloadHandler.UpdatePodAffinity)
 			}
 
 			// AIOps routes

@@ -388,3 +388,111 @@ export const getEvents = (clusterId: number, namespace?: string) => {
   const params = namespace ? { ns: namespace } : {}
   return get<{ code: number; data: Event[] }>(`/clusters/${clusterId}/workloads/events`, { params })
 }
+
+// ==================== HPA ====================
+
+export interface HPA {
+  name: string
+  namespace: string
+  scale_target_ref: string
+  min_replicas: number
+  max_replicas: number
+  current_cpu: string
+  target_cpu: string
+  current_memory: string
+  target_memory: string
+  current_replicas: number
+  desired_replicas: number
+  age: string
+}
+
+export const getHPAs = (clusterId: number, namespace?: string) => {
+  const params = namespace ? { ns: namespace } : {}
+  return get<{ code: number; data: HPA[] }>(`/clusters/${clusterId}/workloads/hpas`, { params })
+}
+
+export const createHPA = (clusterId: number, data: {
+  name: string
+  namespace: string
+  target_kind: string
+  target_name: string
+  min_replicas?: number
+  max_replicas: number
+  cpu_utilization?: number
+  mem_utilization?: number
+}) => {
+  return post(`/clusters/${clusterId}/workloads/hpas`, data)
+}
+
+export const deleteHPA = (clusterId: number, namespace: string, name: string) => {
+  return del(`/clusters/${clusterId}/workloads/hpas/${namespace}/${name}`)
+}
+
+// ==================== 批量操作 ====================
+
+export interface ResourceRef {
+  kind: string
+  name: string
+  namespace: string
+}
+
+export interface BatchOperationRequest {
+  cluster_id: number
+  resources: ResourceRef[]
+  action: 'delete' | 'restart' | 'label'
+  labels?: Record<string, string>
+}
+
+export interface BatchResult {
+  total: number
+  success: number
+  failed: number
+  results: Array<{
+    kind: string
+    name: string
+    ns: string
+    status: string
+    error?: string
+  }>
+}
+
+export const batchOperation = (data: BatchOperationRequest) => {
+  return post<{ code: number; data: BatchResult }>(`/clusters/${data.cluster_id}/workloads/batch`, data)
+}
+
+// ==================== 资源对比 ====================
+
+export interface CompareRequest {
+  cluster_a: number
+  cluster_b: number
+  resource_type: string
+  namespace_a?: string
+  namespace_b?: string
+}
+
+export interface CompareResult {
+  resource_type: string
+  cluster_a: number
+  cluster_b: number
+  only_in_a: string[]
+  only_in_b: string[]
+  in_both: string[]
+  count_a: number
+  count_b: number
+}
+
+export const compareResources = (data: CompareRequest) => {
+  return post<{ code: number; data: CompareResult }>('/clusters/0/workloads/compare', data)
+}
+
+// ==================== Pod 亲和性 ====================
+
+export const getPodAffinity = (clusterId: number, namespace: string, name: string) => {
+  return get<{ code: number; data: { affinity: any; yaml?: string; message?: string } }>(
+    `/clusters/${clusterId}/workloads/deployments/${namespace}/${name}/affinity`
+  )
+}
+
+export const updatePodAffinity = (clusterId: number, namespace: string, name: string, affinity: any) => {
+  return put(`/clusters/${clusterId}/workloads/deployments/${namespace}/${name}/affinity`, { affinity })
+}
