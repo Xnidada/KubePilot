@@ -57,9 +57,9 @@ const Login: React.FC = () => {
         </div>
         <Form
           name="login"
-          initialValues={{ username: 'admin', password: '*******' }}
           onFinish={onFinish}
           size="large"
+          autoComplete="off"
         >
           <Form.Item
             name="username"
@@ -68,7 +68,7 @@ const Login: React.FC = () => {
             <Input
               prefix={<UserOutlined />}
               placeholder="用户名"
-              autoComplete="username"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item
@@ -78,7 +78,7 @@ const Login: React.FC = () => {
             <Input.Password
               prefix={<LockOutlined />}
               placeholder="密码"
-              autoComplete="current-password"
+              autoComplete="new-password"
             />
           </Form.Item>
           <Form.Item>
@@ -93,11 +93,6 @@ const Login: React.FC = () => {
             </Button>
           </Form.Item>
         </Form>
-        <div style={{ textAlign: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            默认账号: admin / *******
-          </Text>
-        </div>
       </Card>
     </div>
   )

@@ -160,6 +160,8 @@ docker-compose up -d
 open http://localhost:8080
 ```
 
+**默认管理员账号**：`admin` / `admin123`（首次登录后请立即修改密码）
+
 ### 方式二：Kubernetes
 
 ```bash
