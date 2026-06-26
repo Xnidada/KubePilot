@@ -19,6 +19,7 @@ import {
   ApartmentOutlined,
   GithubOutlined,
   ScheduleOutlined,
+  ToolOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuthStore } from '../stores/auth'
@@ -171,6 +172,33 @@ const menuItems: MenuProps['items'] = [
     ],
   },
   {
+    key: '/ops',
+    icon: <ToolOutlined />,
+    label: '运维工具',
+    children: [
+      {
+        key: '/ops/diagnosis',
+        label: 'Pod 诊断',
+      },
+      {
+        key: '/ops/node-pressure',
+        label: '节点压力',
+      },
+      {
+        key: '/ops/events',
+        label: '事件时间线',
+      },
+      {
+        key: '/ops/resource-graph',
+        label: '资源依赖图',
+      },
+      {
+        key: '/ops/idle-resources',
+        label: '闲置资源清理',
+      },
+    ],
+  },
+  {
     key: '/appstore',
     icon: <AppstoreOutlined />,
     label: '应用商店',
@@ -303,6 +331,7 @@ const MainLayout: React.FC = () => {
       '/monitor': ['/monitor'],
       '/aiops': ['/aiops'],
       '/scheduler': ['/scheduler'],
+      '/ops': ['/ops'],
       '/system': ['/system'],
     }
 

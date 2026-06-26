@@ -9,6 +9,7 @@ import (
 	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
+	opsHandler "github.com/kubepilot/kubepilot/internal/handler/ops"
 	schedulerHandler "github.com/kubepilot/kubepilot/internal/handler/scheduler"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
@@ -72,6 +73,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	eventForwardHandler := NewEventForwardHandler(model.DB)
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
 	schedulerHandler := schedulerHandler.NewHandler(model.DB)
+	opsHandler := opsHandler.NewHandler()
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -348,6 +350,35 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				// Pod 亲和性
 				workloads.GET("/deployments/:ns/:name/affinity", workloadHandler.GetPodAffinity)
 				workloads.PUT("/deployments/:ns/:name/affinity", workloadHandler.UpdatePodAffinity)
+			}
+
+			// 运维工具路由
+			opsGroup := protected.Group("/ops/:id")
+			{
+				// P0: Pod 诊断面板
+				opsGroup.GET("/diagnose/pod/:ns/:name", opsHandler.DiagnosePod)
+
+				// P0: 资源使用趋势
+				opsGroup.GET("/metrics/trend", opsHandler.GetResourceTrend)
+
+				// P0: 事件时间线
+				opsGroup.GET("/events/timeline", opsHandler.GetEventTimeline)
+
+				// P0: 节点压力可视化
+				opsGroup.GET("/nodes/pressure", opsHandler.GetNodePressure)
+
+				// P0: 一键回滚
+				opsGroup.POST("/rollback/deployment/:ns/:name", opsHandler.RollbackDeployment)
+
+				// P1: 资源依赖图
+				opsGroup.GET("/resource-graph", opsHandler.GetResourceGraph)
+
+				// P1: RBAC 可视化
+				opsGroup.GET("/rbac", opsHandler.GetRBACVisualization)
+
+				// P1: 闲置资源清理
+				opsGroup.GET("/idle-resources", opsHandler.FindIdleResources)
+				opsGroup.POST("/idle-resources/clean", opsHandler.CleanIdleResource)
 			}
 
 			// AIOps routes

@@ -39,6 +39,11 @@ import SchedulerQueues from './pages/scheduler/Queues'
 import HPAs from './pages/workload/HPAs'
 import BatchOps from './pages/workload/BatchOps'
 import ResourceCompare from './pages/workload/ResourceCompare'
+import PodDiagnosisPage from './pages/ops/PodDiagnosis'
+import NodePressurePage from './pages/ops/NodePressure'
+import EventTimelinePage from './pages/ops/EventTimeline'
+import ResourceGraphPage from './pages/ops/ResourceGraph'
+import IdleResourcesPage from './pages/ops/IdleResources'
 import { useAuthStore } from './stores/auth'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -97,6 +102,11 @@ function App() {
         <Route path="workloads/hpas" element={<HPAs />} />
         <Route path="workloads/batch" element={<BatchOps />} />
         <Route path="workloads/compare" element={<ResourceCompare />} />
+        <Route path="ops/diagnosis" element={<PodDiagnosisPage />} />
+        <Route path="ops/node-pressure" element={<NodePressurePage />} />
+        <Route path="ops/events" element={<EventTimelinePage />} />
+        <Route path="ops/resource-graph" element={<ResourceGraphPage />} />
+        <Route path="ops/idle-resources" element={<IdleResourcesPage />} />
       </Route>
     </Routes>
   )
