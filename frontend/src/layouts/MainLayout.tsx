@@ -283,6 +283,7 @@ const MainLayout: React.FC = () => {
       key: 'profile',
       icon: <UserOutlined />,
       label: '个人中心',
+      onClick: () => navigate('/profile'),
     },
     {
       type: 'divider',

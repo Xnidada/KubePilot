@@ -112,10 +112,27 @@ const SystemUsers: React.FC = () => {
     }
   }
 
-  const handleResetPassword = async (_username: string, id: number) => {
+  const [resetPasswordVisible, setResetPasswordVisible] = useState(false)
+  const [resetPasswordUserId, setResetPasswordUserId] = useState<number>(0)
+  const [resetPasswordUsername, setResetPasswordUsername] = useState('')
+  const [resetPasswordForm] = Form.useForm()
+
+  const handleResetPassword = (username: string, id: number) => {
+    setResetPasswordUserId(id)
+    setResetPasswordUsername(username)
+    resetPasswordForm.resetFields()
+    setResetPasswordVisible(true)
+  }
+
+  const handleConfirmResetPassword = async (values: any) => {
+    if (values.new_password !== values.confirm_password) {
+      message.error('两次输入的密码不一致')
+      return
+    }
     try {
-      await resetPassword(id)
-      message.success(`密码已重置，请联系管理员获取新密码`)
+      await resetPassword(resetPasswordUserId, values.new_password)
+      message.success(`用户 ${resetPasswordUsername} 密码已重置`)
+      setResetPasswordVisible(false)
     } catch (error) {
       console.error('Failed:', error)
     }
@@ -301,6 +318,32 @@ const SystemUsers: React.FC = () => {
               placeholder="请选择角色"
               options={roles.map(r => ({ label: r.description || r.name, value: r.id }))}
             />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 重置密码弹窗 */}
+      <Modal
+        title={`重置密码 - ${resetPasswordUsername}`}
+        open={resetPasswordVisible}
+        onCancel={() => setResetPasswordVisible(false)}
+        onOk={() => resetPasswordForm.submit()}
+        width={400}
+      >
+        <Form form={resetPasswordForm} layout="vertical" onFinish={handleConfirmResetPassword}>
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            rules={[{ required: true, message: '请输入新密码' }, { min: 6, message: '密码至少6位' }]}
+          >
+            <Input.Password placeholder="请输入新密码" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label="确认新密码"
+            rules={[{ required: true, message: '请确认新密码' }]}
+          >
+            <Input.Password placeholder="请再次输入新密码" />
           </Form.Item>
         </Form>
       </Modal>

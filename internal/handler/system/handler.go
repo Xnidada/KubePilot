@@ -261,9 +261,23 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	// 生成随机临时密码
-	tempPassword := generateRandomPassword(12)
-	hashedPassword, err := crypto.HashPassword(tempPassword)
+	// 解析请求体中的新密码
+	var req struct {
+		NewPassword string `json:"new_password"`
+	}
+
+	// 尝试解析请求体，如果没有则生成随机密码
+	newPassword := ""
+	if err := c.ShouldBindJSON(&req); err == nil && req.NewPassword != "" {
+		newPassword = req.NewPassword
+	}
+
+	if newPassword == "" {
+		// 生成随机临时密码
+		newPassword = generateRandomPassword(12)
+	}
+
+	hashedPassword, err := crypto.HashPassword(newPassword)
 	if err != nil {
 		response.InternalError(c, "failed to hash password")
 		return
@@ -275,9 +289,7 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"message":         "password reset successfully",
-		"temp_password":   tempPassword,
-		"warning":         "请立即通知用户修改此临时密码",
+		"message": "password reset successfully",
 	})
 }
 

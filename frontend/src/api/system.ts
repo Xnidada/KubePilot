@@ -72,8 +72,8 @@ export const deleteUser = (id: number) => {
   return del(`/system/users/${id}`)
 }
 
-export const resetPassword = (id: number) => {
-  return post(`/system/users/${id}/reset-password`)
+export const resetPassword = (id: number, newPassword?: string) => {
+  return post(`/system/users/${id}/reset-password`, { new_password: newPassword })
 }
 
 // Roles
