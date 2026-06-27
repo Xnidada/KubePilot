@@ -41,6 +41,7 @@ const AIChat: React.FC = () => {
     activeId,
     createConversation,
     selectConversation,
+    fetchConversations,
     deleteConversation,
     renameConversation,
     clearConversation,
@@ -263,6 +264,9 @@ const AIChat: React.FC = () => {
     } finally {
       setLoading(false)
       abortControllerRef.current = null
+      // 不调用 selectConversation，保持本地消息状态
+      // 只刷新侧边栏列表
+      fetchConversations()
     }
   }
 

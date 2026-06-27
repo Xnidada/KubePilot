@@ -441,7 +441,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 
 				// Agent
 				aiopsGroup.POST("/agent", aiopsHandler.AgentChat)
-				aiopsGroup.POST("/agent/stream", aiopsHandler.AgentChatStream)
 				aiopsGroup.POST("/agent/confirm/:actionId", aiopsHandler.AgentConfirmAction)
 				aiopsGroup.POST("/agent/execute", aiopsHandler.AgentExecute)
 

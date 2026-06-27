@@ -1440,43 +1440,6 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 	}, nil
 }
 
-// AgentChatStream Agent 流式对话
-func (s *Service) AgentChatStream(ctx context.Context, userID uint, clusterID uint, message string, conversationID uint) (<-chan llm.StreamChunk, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
-	}
-
-	// 获取集群上下文
-	clusterContext, _ := s.getClusterContext(clusterID)
-
-	// 获取对话历史
-	historyMessages := s.getConversationHistory(conversationID, 20)
-
-	// 构建简化版 Agent 系统提示（流式模式不执行操作，只对话）
-	systemPrompt := `你是 KubePilot AI Agent，一个专业的 Kubernetes 运维助手。
-请用中文回复，使用 Markdown 格式。
-当前集群信息：
-` + clusterContext
-
-	// 构建消息列表
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-	}
-	messages = append(messages, historyMessages...)
-	messages = append(messages, llm.Message{Role: "user", Content: message})
-
-	// 使用流式 API
-	ch, err := s.llmClient.ChatStream(ctx, &llm.ChatRequest{
-		Messages: messages,
-		Stream:   true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("LLM stream failed: %w", err)
-	}
-
-	return ch, nil
-}
-
 // queryRealData 根据用户查询获取真实数据
 func (s *Service) queryRealData(ctx context.Context, clusterID uint, message string) string {
 	client, err := k8s.Manager.GetClient(clusterID)

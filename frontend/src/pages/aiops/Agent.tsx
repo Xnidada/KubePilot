@@ -16,6 +16,7 @@ import {
   UserOutlined,
   ThunderboltOutlined,
   StopOutlined,
+  DeleteOutlined,
   RobotOutlined,
   QuestionCircleOutlined,
   ToolOutlined,
@@ -23,28 +24,28 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
+import { executeK8SOperation, ExecuteRequest } from '../../api/agent'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
-import { addMessage as addMessageApi } from '../../api/conversation'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
 
 type ChatMode = 'chat' | 'agent'
 
-interface LocalMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  created_at: string
-  isStreaming?: boolean
-}
-
 // 检测是否包含确认提示或 action 块
 const hasConfirmationPrompt = (text: string): boolean => {
+  // 检测 action JSON 块
   if (text.includes('```action')) return true
-  const keywords = ['请确认是否执行', '是否执行此操作', '确认执行', '请确认', '确认吗']
+  // 检测确认关键词
+  const keywords = [
+    '请确认是否执行',
+    '是否执行此操作',
+    '确认执行',
+    '请确认',
+    '确认吗',
+  ]
   return keywords.some(kw => text.includes(kw))
 }
 
@@ -55,6 +56,9 @@ const AIAgent: React.FC = () => {
     activeId,
     createConversation,
     selectConversation,
+    addMessage,
+    updateLastMessage,
+    deleteMessagePair,
     deleteConversation,
     renameConversation,
   } = useConversations()
@@ -65,33 +69,27 @@ const AIAgent: React.FC = () => {
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [chatMode, setChatMode] = useState<ChatMode>('agent')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [localMessages, setLocalMessages] = useState<LocalMessage[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  useEffect(() => { fetchClusters() }, [])
-  useEffect(() => { scrollToBottom() }, [localMessages])
-
-  // 当对话切换时，加载消息
   useEffect(() => {
-    if (activeConversation?.messages) {
-      setLocalMessages(activeConversation.messages.map((m: any) => ({
-        id: String(m.id),
-        role: m.role,
-        content: m.content,
-        created_at: m.created_at,
-      })))
-    } else {
-      setLocalMessages([])
-    }
-  }, [activeConversation])
+    fetchClusters()
+  }, [])
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [activeConversation?.messages])
 
   const fetchClusters = async () => {
     try {
       const res = await getClusterList(1, 100)
       setClusters(res.data || [])
-      if (res.data?.length > 0) setSelectedCluster(res.data[0].id)
-    } catch (e) { console.error(e) }
+      if (res.data && res.data.length > 0) {
+        setSelectedCluster(res.data[0].id)
+      }
+    } catch (error) {
+      console.error('Failed to fetch clusters:', error)
+    }
   }
 
   const scrollToBottom = () => {
@@ -105,7 +103,6 @@ const AIAgent: React.FC = () => {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
       setLoading(false)
-      setLocalMessages(prev => prev.filter(m => !m.isStreaming))
       message.info('已停止生成')
     }
   }
@@ -124,33 +121,17 @@ const AIAgent: React.FC = () => {
       setInputValue('')
     }
 
+    // 保存用户消息到后端
+    await addMessage(currentId, 'user', sendContent)
+
     setLoading(true)
-
-    // 添加用户消息到本地
-    const userMsg: LocalMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: sendContent,
-      created_at: new Date().toISOString(),
-    }
-    setLocalMessages(prev => [...prev, userMsg])
-
-    // 添加 AI 占位消息
-    const aiMsg: LocalMessage = {
-      id: `ai-${Date.now()}`,
-      role: 'assistant',
-      content: '',
-      created_at: new Date().toISOString(),
-      isStreaming: true,
-    }
-    setLocalMessages(prev => [...prev, aiMsg])
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
 
     try {
       const token = getAuthToken()
-      const apiUrl = chatMode === 'agent' ? '/api/v1/aiops/agent/stream' : '/api/v1/aiops/chat/stream'
+      const apiUrl = chatMode === 'agent' ? '/api/v1/aiops/agent' : '/api/v1/aiops/chat/stream'
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -166,114 +147,167 @@ const AIAgent: React.FC = () => {
         signal: abortController.signal,
       })
 
-      if (!response.ok) throw new Error('Stream request failed')
-
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error('No reader available')
-
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let fullContent = ''
-      let lastUpdateTime = 0
-      const UPDATE_INTERVAL = 50
-
-      const updateAIContent = (content: string) => {
-        const now = Date.now()
-        if (now - lastUpdateTime >= UPDATE_INTERVAL) {
-          setLocalMessages(prev => {
-            const updated = [...prev]
-            const lastIdx = updated.length - 1
-            if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
-              updated[lastIdx] = { ...updated[lastIdx], content }
-            }
-            return updated
-          })
-          lastUpdateTime = now
+      if (chatMode === 'agent') {
+        const res = await response.json()
+        if (res.code === 0) {
+          await addMessage(currentId, 'assistant', res.data.content)
+        } else {
+          await addMessage(currentId, 'assistant', '❌ 请求失败: ' + (res.message || '未知错误'))
         }
-      }
+      } else {
+        // 流式响应
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error('No reader available')
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let fullContent = ''
 
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() || ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-        for (const part of parts) {
-          const lines = part.split('\n')
+          buffer += decoder.decode(value, { stream: true })
+          const parts = buffer.split('\n\n')
+          buffer = parts.pop() || ''
+
+          for (const part of parts) {
+            const lines = part.split('\n')
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const jsonStr = line.slice(6).trim()
+                if (jsonStr === '[DONE]') continue
+                try {
+                  const data = JSON.parse(jsonStr)
+                  if (data.content) {
+                    fullContent += data.content
+                    updateLastMessage(currentId!, fullContent)
+                  }
+                } catch {}
+              }
+            }
+          }
+        }
+
+        // 处理缓冲区剩余
+        if (buffer.trim()) {
+          const lines = buffer.split('\n')
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               const jsonStr = line.slice(6).trim()
-              if (jsonStr === '[DONE]') continue
-              try {
-                const data = JSON.parse(jsonStr)
-                if (data.content) {
-                  fullContent += data.content
-                  updateAIContent(fullContent)
-                }
-              } catch {}
+              if (jsonStr && jsonStr !== '[DONE]') {
+                try {
+                  const data = JSON.parse(jsonStr)
+                  if (data.content) fullContent += data.content
+                } catch {}
+              }
             }
           }
         }
-      }
 
-      // 处理缓冲区剩余
-      if (buffer.trim()) {
-        const lines = buffer.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6).trim()
-            if (jsonStr && jsonStr !== '[DONE]') {
-              try {
-                const data = JSON.parse(jsonStr)
-                if (data.content) fullContent += data.content
-              } catch {}
-            }
-          }
+        // 保存完整消息到后端
+        if (fullContent) {
+          await addMessage(currentId!, 'assistant', fullContent)
         }
-      }
-
-      // 最终更新
-      setLocalMessages(prev => {
-        const updated = [...prev]
-        const lastIdx = updated.length - 1
-        if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
-          updated[lastIdx] = {
-            ...updated[lastIdx],
-            content: fullContent || '（无响应）',
-            isStreaming: false,
-          }
-        }
-        return updated
-      })
-
-      // 保存到后端
-      if (fullContent) {
-        await addMessageApi(currentId, { role: 'user', content: sendContent })
-        await addMessageApi(currentId, { role: 'assistant', content: fullContent })
       }
     } catch (error: any) {
-      if (error.name !== 'AbortError') {
+      if (error.name === 'AbortError') {
+        console.log('Request aborted')
+      } else {
         console.error('Chat error:', error)
-        message.error('AI 对话失败')
-        setLocalMessages(prev => {
-          const updated = [...prev]
-          const lastIdx = updated.length - 1
-          if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
-            updated[lastIdx] = {
-              ...updated[lastIdx],
-              content: '❌ AI 服务不可用',
-              isStreaming: false,
-            }
-          }
-          return updated
-        })
+        message.error('AI 服务不可用')
+        await addMessage(currentId!, 'assistant', '❌ AI 服务不可用，请在 **AI 设置** 中配置 LLM。')
       }
     } finally {
       setLoading(false)
       abortControllerRef.current = null
     }
+  }
+
+  // 确认执行操作 - 调用后端 API 真正执行
+  const handleConfirm = async () => {
+    if (!activeId || !activeConversation) return
+
+    // 从对话历史中提取要执行的操作
+    const lastAssistantMsg = [...activeConversation.messages]
+      .reverse()
+      .find(m => m.role === 'assistant')
+
+    if (!lastAssistantMsg) return
+
+    const content = lastAssistantMsg.content
+
+    // 解析所有 ```action JSON 块（支持多个）
+    const actionRegex = /```action\s*\n([\s\S]*?)\n```/g
+    const actions: any[] = []
+    let match
+
+    while ((match = actionRegex.exec(content)) !== null) {
+      try {
+        const actionData = JSON.parse(match[1])
+        actions.push(actionData)
+      } catch (e) {
+        console.error('Failed to parse action:', e)
+      }
+    }
+
+    if (actions.length === 0) {
+      // 如果没有 action 块，发送确认消息让 AI 继续
+      await handleSend('确认执行以上操作')
+      return
+    }
+
+    // 执行所有操作
+    setLoading(true)
+    await addMessage(activeId, 'user', '确认执行')
+
+    const results: string[] = []
+
+    for (const action of actions) {
+      try {
+        // 构建请求，确保所有必需字段都有值
+        const request: ExecuteRequest = {
+          cluster_id: selectedCluster,
+          action: action.action,
+          name: action.name || action.resource_name,
+          namespace: action.namespace || 'default',
+          // Deployment 相关
+          image: action.image || 'nginx:latest',
+          replicas: action.replicas || 1,
+          ports: action.ports || (action.container_port ? [action.container_port] : []),
+          // Service 相关
+          service_type: action.service_type || action.type || 'ClusterIP',
+          port: action.port || 80,
+          target_port: action.target_port || action.container_port || 80,
+          node_port: action.node_port || action.nodePort,
+          selector: action.selector || (action.name ? { app: action.name } : {}),
+        }
+
+        const res = await executeK8SOperation(request)
+        if (res.code === 0 && res.data) {
+          const details = res.data.details ? '\n' + res.data.details.map(d => `  - ${d}`).join('\n') : ''
+          results.push(`✅ ${res.data.message}${details}`)
+        } else {
+          results.push(`❌ ${action.action} ${action.name}: 执行失败`)
+        }
+      } catch (error: any) {
+        results.push(`❌ ${action.action} ${action.name}: ${error.message || '执行失败'}`)
+      }
+    }
+
+    // 显示所有执行结果
+    await addMessage(activeId, 'assistant', results.join('\n\n'))
+    setLoading(false)
+  }
+
+  // 取消操作
+  const handleCancel = async () => {
+    let currentId = activeId
+    if (!currentId) {
+      currentId = await createConversation()
+      if (!currentId) return
+    }
+    await addMessage(currentId, 'assistant', '❌ 操作已取消')
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -283,29 +317,40 @@ const AIAgent: React.FC = () => {
     }
   }
 
-  const renderMessage = (msg: LocalMessage, index: number) => {
+  const renderMessage = (msg: any, index: number) => {
     const isUser = msg.role === 'user'
+    const isEmpty = !msg.content && !isUser
     const needsConfirm = !isUser && hasConfirmationPrompt(msg.content)
 
     return (
       <div
         key={msg.id || index}
-        style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', marginBottom: 24, padding: '0 16px', position: 'relative' }}
+        style={{
+          display: 'flex',
+          justifyContent: isUser ? 'flex-end' : 'flex-start',
+          marginBottom: 24,
+          padding: '0 16px',
+          position: 'relative',
+        }}
       >
         {!isUser && (
-          <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12, flexShrink: 0 }} />
+          <Avatar
+            icon={chatMode === 'agent' ? <ThunderboltOutlined /> : <RobotOutlined />}
+            style={{ backgroundColor: chatMode === 'agent' ? '#722ed1' : '#1890ff', marginRight: 12, flexShrink: 0 }}
+          />
         )}
         <div style={{ maxWidth: '75%', position: 'relative' }}>
-          <div style={{ padding: '12px 16px', borderRadius: 12, backgroundColor: isUser ? '#1890ff' : '#f0f2f5', color: isUser ? '#fff' : '#333', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
-            {msg.isStreaming ? (
-              <>
-                <div className="markdown-body">
-                  <MarkdownRenderer content={msg.content || '...'} />
-                </div>
-                <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: '#999' }}>
-                  生成中...
-                </div>
-              </>
+          <div
+            style={{
+              padding: '12px 16px',
+              borderRadius: 12,
+              backgroundColor: isUser ? (chatMode === 'agent' ? '#722ed1' : '#1890ff') : '#f0f2f5',
+              color: isUser ? '#fff' : '#333',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+            }}
+          >
+            {isEmpty ? (
+              <Spin size="small" />
             ) : isUser ? (
               <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
             ) : (
@@ -313,34 +358,65 @@ const AIAgent: React.FC = () => {
                 <MarkdownRenderer content={msg.content} />
               </div>
             )}
-            {!msg.isStreaming && (
-              <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: isUser ? '#fff' : '#999' }}>
-                {new Date(msg.created_at).toLocaleTimeString()}
+
+            {/* 确认/取消按钮 - 仅在 Agent 模式下显示 */}
+            {needsConfirm && chatMode === 'agent' && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e5e5' }}>
+                <Space>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<CheckCircleOutlined />}
+                    onClick={handleConfirm}
+                  >
+                    确认执行
+                  </Button>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<CloseCircleOutlined />}
+                    onClick={handleCancel}
+                  >
+                    取消
+                  </Button>
+                </Space>
               </div>
             )}
+
+            <div
+              style={{
+                textAlign: 'right',
+                fontSize: 11,
+                opacity: 0.7,
+                marginTop: 8,
+                color: isUser ? '#fff' : '#999',
+              }}
+            >
+              {new Date(msg.created_at).toLocaleTimeString()}
+            </div>
           </div>
-          {needsConfirm && !msg.isStreaming && (
-            <Space style={{ marginTop: 8 }}>
-              <Button
-                type="primary"
-                size="small"
-                icon={<CheckCircleOutlined />}
-                onClick={() => handleSend('确认执行')}
-              >
-                确认执行
-              </Button>
-              <Button
-                size="small"
-                icon={<CloseCircleOutlined />}
-                onClick={() => handleSend('取消')}
-              >
-                取消
-              </Button>
-            </Space>
-          )}
+          <Tooltip title="删除此对话">
+            <Button
+              type="text"
+              size="small"
+              icon={<DeleteOutlined />}
+              onClick={() => activeId && deleteMessagePair(activeId, msg.id)}
+              style={{
+                position: 'absolute',
+                top: -8,
+                right: isUser ? 'auto' : -8,
+                left: isUser ? -8 : 'auto',
+                opacity: 0.5,
+                fontSize: 12,
+              }}
+            />
+          </Tooltip>
         </div>
         {isUser && (
-          <Avatar icon={<UserOutlined />} style={{ backgroundColor: '#87d068', marginLeft: 12, flexShrink: 0 }} />
+          <Avatar
+            icon={<UserOutlined />}
+            style={{ backgroundColor: '#87d068', marginLeft: 12, flexShrink: 0 }}
+          />
         )}
       </div>
     )
@@ -379,64 +455,64 @@ const AIAgent: React.FC = () => {
             background: '#fff',
           }}
         >
-          <Segmented
-            value={chatMode}
-            onChange={(val) => setChatMode(val as ChatMode)}
-            options={[
-              {
-                label: (
-                  <Space>
-                    <ThunderboltOutlined />
-                    Agent 模式
-                  </Space>
-                ),
-                value: 'agent',
-              },
-              {
-                label: (
-                  <Space>
-                    <QuestionCircleOutlined />
-                    对话模式
-                  </Space>
-                ),
-                value: 'chat',
-              },
-            ]}
-          />
           <Space>
-            <Select
-              value={selectedCluster}
-              onChange={setSelectedCluster}
-              style={{ width: 200 }}
-              placeholder="选择集群"
-              options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
+            <Segmented
+              value={chatMode}
+              onChange={(value) => setChatMode(value as ChatMode)}
+              options={[
+                { value: 'chat', icon: <QuestionCircleOutlined />, label: '对话模式' },
+                { value: 'agent', icon: <ToolOutlined />, label: 'Agent 模式' },
+              ]}
             />
-            <Tooltip title={chatMode === 'agent' ? 'Agent 模式：可执行 K8S 操作' : '对话模式：纯对话，不执行操作'}>
-              <Button icon={<ToolOutlined />} type="text" />
+            <Tooltip title={chatMode === 'chat' ? '纯问答对话' : '可执行 K8S 操作'}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {chatMode === 'chat' ? '💬 纯对话' : '🤖 可执行操作'}
+              </Text>
             </Tooltip>
           </Space>
+          <Select
+            value={selectedCluster}
+            onChange={setSelectedCluster}
+            style={{ width: 200 }}
+            placeholder="选择集群"
+            options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
+          />
         </div>
 
         {/* 消息区域 */}
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 0', background: '#fff' }}>
-          {localMessages.length === 0 ? (
+          {(!activeConversation || activeConversation.messages.length === 0) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#999' }}>
-              <RobotOutlined style={{ fontSize: 64, marginBottom: 24, color: '#d9d9d9' }} />
-              <Title level={4} style={{ color: '#666' }}>
-                {chatMode === 'agent' ? 'Agent 模式' : '对话模式'}
-              </Title>
-              <Text type="secondary">
-                {chatMode === 'agent'
-                  ? '使用自然语言操作 K8S 集群'
-                  : '与 AI 助手对话，获取运维建议'}
-              </Text>
+              {chatMode === 'agent' ? (
+                <>
+                  <ThunderboltOutlined style={{ fontSize: 64, marginBottom: 24, color: '#d9d9d9' }} />
+                  <Title level={4} style={{ color: '#666' }}>AI Agent</Title>
+                  <Text type="secondary">通过自然语言管理 Kubernetes 集群</Text>
+                  <div style={{ marginTop: 24, textAlign: 'left', maxWidth: 500 }}>
+                    <Text type="secondary">
+                      <strong>查询示例</strong>（直接执行）：<br/>
+                      • "查看所有 Pod"<br/>
+                      • "显示节点状态"<br/><br/>
+                      <strong>操作示例</strong>（需确认）：<br/>
+                      • "创建一个 nginx Deployment"<br/>
+                      • "删除 test Pod"
+                    </Text>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <RobotOutlined style={{ fontSize: 64, marginBottom: 24, color: '#d9d9d9' }} />
+                  <Title level={4} style={{ color: '#666' }}>AI 对话</Title>
+                  <Text type="secondary">与 AI 助手自由对话</Text>
+                </>
+              )}
             </div>
           ) : (
-            localMessages.map((msg, index) => renderMessage(msg, index))
+            activeConversation.messages.map((msg, index) => renderMessage(msg, index))
           )}
-          {loading && localMessages.length > 0 && !localMessages[localMessages.length - 1]?.isStreaming && (
+          {loading && (
             <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
-              <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12 }} />
+              <Avatar icon={chatMode === 'agent' ? <ThunderboltOutlined /> : <RobotOutlined />} style={{ backgroundColor: chatMode === 'agent' ? '#722ed1' : '#1890ff', marginRight: 12 }} />
               <Spin size="small" />
               <Text type="secondary" style={{ marginLeft: 8 }}>AI 思考中...</Text>
             </div>
@@ -444,14 +520,14 @@ const AIAgent: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 输入框 */}
+        {/* 输入区域 */}
         <div style={{ padding: '16px 24px', borderTop: '1px solid #e5e5e5', background: '#fff' }}>
           <div style={{ display: 'flex', gap: 8 }}>
             <TextArea
               value={inputValue}
               onChange={e => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={chatMode === 'agent' ? '使用自然语言操作 K8S... (Enter 发送)' : '输入消息... (Enter 发送)'}
+              placeholder={chatMode === 'agent' ? '输入指令... (例如: 查看所有 Pod)' : '输入问题...'}
               autoSize={{ minRows: 1, maxRows: 4 }}
               disabled={loading}
               style={{ flex: 1 }}
@@ -461,7 +537,13 @@ const AIAgent: React.FC = () => {
                 停止
               </Button>
             ) : (
-              <Button type="primary" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!inputValue.trim()} style={{ height: 'auto' }}>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={() => handleSend()}
+                disabled={!inputValue.trim()}
+                style={{ height: 'auto', background: chatMode === 'agent' ? '#722ed1' : '#1890ff', borderColor: chatMode === 'agent' ? '#722ed1' : '#1890ff' }}
+              >
                 发送
               </Button>
             )}

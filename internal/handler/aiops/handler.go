@@ -602,45 +602,6 @@ func (h *Handler) AgentChat(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// AgentChatStream Agent 流式对话
-func (h *Handler) AgentChatStream(c *gin.Context) {
-	if h.service == nil {
-		response.InternalError(c, "AI service not configured")
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-
-	var req struct {
-		Message        string `json:"message" binding:"required"`
-		ClusterID      uint   `json:"cluster_id" binding:"required"`
-		ConversationID uint   `json:"conversation_id"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-
-	ch, err := h.service.AgentChatStream(c.Request.Context(), userID.(uint), req.ClusterID, req.Message, req.ConversationID)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	// 设置SSE响应头
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	// 发送流式数据
-	for chunk := range ch {
-		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-		c.Writer.Flush()
-	}
-}
-
 // AgentConfirmAction 确认执行Agent动作
 func (h *Handler) AgentConfirmAction(c *gin.Context) {
 	actionID := c.Param("actionId")
