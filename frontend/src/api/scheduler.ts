@@ -145,6 +145,10 @@ export const retryTask = (id: number) => {
   return post(`/scheduler/tasks/${id}/retry`)
 }
 
+export const deleteTask = (id: number) => {
+  return del(`/scheduler/tasks/${id}`)
+}
+
 export const getTaskLogs = (id: number) => {
   return get<{ code: number; data: TaskLog[] }>(`/scheduler/tasks/${id}/logs`)
 }

@@ -28,6 +28,7 @@ import {
   FormOutlined,
   CodeOutlined,
   CopyOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
@@ -36,6 +37,7 @@ import {
   createTask,
   cancelTask,
   retryTask,
+  deleteTask,
   getTask,
   listQueues,
   Task,
@@ -154,6 +156,7 @@ const Tasks: React.FC = () => {
   const [detailModalVisible, setDetailModalVisible] = useState(false)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLog[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [form] = Form.useForm()
 
   // YAML 模式状态
@@ -334,6 +337,47 @@ const Tasks: React.FC = () => {
     }
   }
 
+  const handleDelete = async (id: number) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除此任务吗？',
+      onOk: async () => {
+        try {
+          await deleteTask(id)
+          message.success('任务已删除')
+          fetchTasks()
+        } catch (error) {
+          message.error('删除失败')
+        }
+      },
+    })
+  }
+
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的任务')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个任务吗？`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        let success = 0
+        for (const key of selectedRowKeys) {
+          try {
+            await deleteTask(Number(key))
+            success++
+          } catch (e) { /* ignore */ }
+        }
+        message.success(`成功删除 ${success} 个任务`)
+        setSelectedRowKeys([])
+        fetchTasks()
+      },
+    })
+  }
+
   const handleViewDetail = async (task: Task) => {
     setSelectedTask(task)
     try {
@@ -418,7 +462,7 @@ const Tasks: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 180,
       render: (_, record) => (
         <Space size="small">
           <Tooltip title="查看详情">
@@ -447,6 +491,14 @@ const Tasks: React.FC = () => {
               />
             </Tooltip>
           )}
+          <Tooltip title="删除">
+            <Button
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => handleDelete(record.id)}
+            />
+          </Tooltip>
         </Space>
       ),
     },
@@ -489,12 +541,27 @@ const Tasks: React.FC = () => {
         </Space>
       </div>
 
+      {/* 批量操作栏 */}
+      {selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <Space>
+            <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>批量删除</Button>
+            <Button type="link" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          </Space>
+        </Card>
+      )}
+
       <Card>
         <Table
           columns={columns}
           dataSource={tasks}
           rowKey="id"
           loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => setSelectedRowKeys(keys),
+          }}
           pagination={{
             current: page,
             pageSize: pageSize,

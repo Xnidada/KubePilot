@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Card, Table, Tag, Button, Space, Typography, Select, Input, message, Popconfirm, Tooltip, Alert
+  Card, Table, Tag, Button, Space, Typography, Select, Input, message, Popconfirm, Tooltip, Alert, Modal
 } from 'antd'
 import {
   SyncOutlined, DeleteOutlined, SearchOutlined, ScheduleOutlined,
@@ -13,7 +13,7 @@ import { getNamespaceNames } from '../../api/workload'
 import StatusTag from '../../components/StatusTag'
 import { get, del } from '../../api/request'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 interface Job {
   name: string
@@ -35,6 +35,7 @@ const JobManagement: React.FC = () => {
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [selectedNamespace, setSelectedNamespace] = useState<string>('')
   const [searchText, setSearchText] = useState('')
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
 
   useEffect(() => { fetchClusters() }, [])
   useEffect(() => { if (selectedCluster) { fetchNamespaces(); fetchData() } }, [selectedCluster, selectedNamespace])
@@ -70,6 +71,32 @@ const JobManagement: React.FC = () => {
       message.success('删除成功')
       fetchData()
     } catch (e) { console.error(e) }
+  }
+
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的 Job')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个 Job 吗？`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        let success = 0
+        for (const key of selectedRowKeys) {
+          const [namespace, name] = key.split('/')
+          try {
+            await del(`/clusters/${selectedCluster}/workloads/jobs/${namespace}/${name}`)
+            success++
+          } catch (e) { /* ignore */ }
+        }
+        message.success(`成功删除 ${success} 个 Job`)
+        setSelectedRowKeys([])
+        fetchData()
+      },
+    })
   }
 
   // 判断是否为调度任务创建的 Job
@@ -122,6 +149,17 @@ const JobManagement: React.FC = () => {
         </Space>
       </div>
 
+      {/* 批量操作栏 */}
+      {selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <Space>
+            <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>批量删除</Button>
+            <Button type="link" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          </Space>
+        </Card>
+      )}
+
       <Card>
         <Alert
           message="Job 管理说明"
@@ -135,7 +173,16 @@ const JobManagement: React.FC = () => {
             </Button>
           }
         />
-        <Table columns={columns} dataSource={jobs} rowKey={(r) => `${r.namespace}/${r.name}`} loading={loading} />
+        <Table
+          columns={columns}
+          dataSource={jobs}
+          rowKey={(r) => `${r.namespace}/${r.name}`}
+          loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys: any[]) => setSelectedRowKeys(keys),
+          }}
+        />
       </Card>
     </div>
   )

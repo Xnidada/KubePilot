@@ -491,6 +491,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				schedulerGroup.GET("/tasks/:id", schedulerHandler.GetTask)
 				schedulerGroup.POST("/tasks/:id/cancel", schedulerHandler.CancelTask)
 				schedulerGroup.POST("/tasks/:id/retry", schedulerHandler.RetryTask)
+				schedulerGroup.DELETE("/tasks/:id", schedulerHandler.DeleteTask)
 				schedulerGroup.GET("/tasks/:id/logs", schedulerHandler.GetTaskLogs)
 
 				// 资源预留

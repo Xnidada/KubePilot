@@ -486,6 +486,38 @@ func (h *Handler) RetryTask(c *gin.Context) {
 	response.SuccessWithMessage(c, "task retrying", nil)
 }
 
+// DeleteTask 删除任务
+func (h *Handler) DeleteTask(c *gin.Context) {
+	id := c.Param("id")
+	var task model.Task
+	if err := h.db.First(&task, id).Error; err != nil {
+		response.NotFound(c, "task not found")
+		return
+	}
+
+	// 如果任务正在运行，先取消
+	if task.Status == "running" || task.Status == "queued" {
+		// 尝试删除 K8S Job
+		if task.K8SJobName != "" {
+			client, err := k8s.Manager.GetClient(task.ClusterID)
+			if err == nil {
+				client.Clientset.BatchV1().Jobs(task.Namespace).Delete(context.Background(), task.K8SJobName, metav1.DeleteOptions{})
+			}
+		}
+	}
+
+	// 删除任务日志
+	h.db.Where("task_ref_id = ?", task.ID).Delete(&model.TaskLog{})
+
+	// 删除任务
+	if err := h.db.Delete(&task).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "task deleted", nil)
+}
+
 // GetTaskLogs 获取任务日志
 func (h *Handler) GetTaskLogs(c *gin.Context) {
 	id := c.Param("id")
