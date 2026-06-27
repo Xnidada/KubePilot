@@ -3,10 +3,9 @@ import {
   Card, Table, Tag, Button, Space, Typography, Select, Input, message, Popconfirm,
   Modal, Form, InputNumber, Divider, Row, Col, Switch, Radio, Tooltip
 } from 'antd'
-
-const { TextArea } = Input
 import {
-  SyncOutlined, DeleteOutlined, SearchOutlined, PlusOutlined, EditOutlined, CodeOutlined
+  SyncOutlined, DeleteOutlined, SearchOutlined, PlusOutlined, EditOutlined, CodeOutlined,
+  PauseCircleOutlined, PlayCircleOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
@@ -14,6 +13,7 @@ import { getNamespaceNames } from '../../api/workload'
 import { get, post, put, del } from '../../api/request'
 
 const { Title, Text } = Typography
+const { TextArea } = Input
 
 interface CronJob {
   name: string
@@ -24,6 +24,8 @@ interface CronJob {
   last_schedule: string
   age: string
   images: string[]
+  command?: string[]
+  args?: string[]
 }
 
 // 根据表单值生成 cron 表达式
@@ -82,6 +84,85 @@ const parseCronToText = (cron: string): string => {
   return descriptions.join('，')
 }
 
+// 解析命令参数
+const parseCommandArgs = (cmd: string, args: string) => {
+  let command: string[] = []
+  let parsedArgs: string[] = []
+
+  if (cmd) {
+    try {
+      if (cmd.trim().startsWith('[')) {
+        command = JSON.parse(cmd)
+      } else {
+        command = cmd.trim().split(/\s+/)
+      }
+    } catch {
+      command = cmd.trim().split(/\s+/)
+    }
+  }
+
+  if (args) {
+    try {
+      if (args.trim().startsWith('[')) {
+        parsedArgs = JSON.parse(args)
+      } else {
+        parsedArgs = parseQuotedArgs(args.trim())
+      }
+    } catch {
+      parsedArgs = parseQuotedArgs(args.trim())
+    }
+  }
+
+  return { command, args: parsedArgs }
+}
+
+const parseQuotedArgs = (input: string): string[] => {
+  const result: string[] = []
+  let current = ''
+  let inQuote = false
+  let quoteChar = ''
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+    if (inQuote) {
+      if (char === quoteChar) {
+        inQuote = false
+      } else {
+        current += char
+      }
+    } else {
+      if (char === '"' || char === "'") {
+        inQuote = true
+        quoteChar = char
+      } else if (char === ' ' || char === '\t') {
+        if (current) {
+          result.push(current)
+          current = ''
+        }
+      } else {
+        current += char
+      }
+    }
+  }
+  if (current) {
+    result.push(current)
+  }
+  return result
+}
+
+// 将命令数组转为字符串
+const commandToString = (cmd?: string[]): string => {
+  if (!cmd || cmd.length === 0) return ''
+  return cmd.join(' ')
+}
+
+// 将参数数组转为字符串
+const argsToString = (args?: string[]): string => {
+  if (!args || args.length === 0) return ''
+  // 如果有包含空格的参数，用引号包裹
+  return args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')
+}
+
 const CronJobManagement: React.FC = () => {
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [loading, setLoading] = useState(false)
@@ -95,6 +176,7 @@ const CronJobManagement: React.FC = () => {
   const [yamlModalVisible, setYamlModalVisible] = useState(false)
   const [editingJob, setEditingJob] = useState<CronJob | null>(null)
   const [yamlContent, setYamlContent] = useState('')
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [form] = Form.useForm()
   const [editForm] = Form.useForm()
   const scheduleType = Form.useWatch('scheduleType', form)
@@ -128,76 +210,6 @@ const CronJobManagement: React.FC = () => {
     finally { setLoading(false) }
   }
 
-  // 解析命令参数
-  const parseCommandArgs = (cmd: string, args: string) => {
-    let command: string[] = []
-    let parsedArgs: string[] = []
-
-    // 解析 command
-    if (cmd) {
-      try {
-        if (cmd.trim().startsWith('[')) {
-          command = JSON.parse(cmd)
-        } else {
-          command = cmd.trim().split(/\s+/)
-        }
-      } catch {
-        command = cmd.trim().split(/\s+/)
-      }
-    }
-
-    // 解析 args - 支持 JSON 数组或带引号的字符串
-    if (args) {
-      try {
-        if (args.trim().startsWith('[')) {
-          parsedArgs = JSON.parse(args)
-        } else {
-          // 处理引号内的内容作为单个参数
-          parsedArgs = parseQuotedArgs(args.trim())
-        }
-      } catch {
-        parsedArgs = parseQuotedArgs(args.trim())
-      }
-    }
-
-    return { command, args: parsedArgs }
-  }
-
-  // 解析带引号的参数
-  const parseQuotedArgs = (input: string): string[] => {
-    const result: string[] = []
-    let current = ''
-    let inQuote = false
-    let quoteChar = ''
-
-    for (let i = 0; i < input.length; i++) {
-      const char = input[i]
-      if (inQuote) {
-        if (char === quoteChar) {
-          inQuote = false
-        } else {
-          current += char
-        }
-      } else {
-        if (char === '"' || char === "'") {
-          inQuote = true
-          quoteChar = char
-        } else if (char === ' ' || char === '\t') {
-          if (current) {
-            result.push(current)
-            current = ''
-          }
-        } else {
-          current += char
-        }
-      }
-    }
-    if (current) {
-      result.push(current)
-    }
-    return result
-  }
-
   const handleCreate = async (values: any) => {
     const schedule = buildCronExpression(values)
     const { command, args } = parseCommandArgs(values.command || '', values.args || '')
@@ -226,11 +238,33 @@ const CronJobManagement: React.FC = () => {
       name: record.name,
       schedule: record.schedule,
       image: record.images?.[0] || '',
+      command: commandToString(record.command),
+      args: argsToString(record.args),
       suspend: record.suspend,
       scheduleType: 'custom',
       customSchedule: record.schedule,
     })
     setEditModalVisible(true)
+  }
+
+  const handleUpdate = async (values: any) => {
+    if (!editingJob) return
+    const schedule = buildCronExpression(values)
+    const { command, args } = parseCommandArgs(values.command || '', values.args || '')
+
+    try {
+      await put(`/clusters/${selectedCluster}/workloads/cronjobs/${editingJob.namespace}/${editingJob.name}`, {
+        schedule: schedule,
+        image: values.image,
+        command: command.length > 0 ? command : undefined,
+        args: args.length > 0 ? args : undefined,
+        suspend: values.suspend || false,
+      })
+      message.success('CronJob 更新成功')
+      setEditModalVisible(false)
+      editForm.resetFields()
+      fetchData()
+    } catch (e) { message.error('更新失败') }
   }
 
   const handleEditYAML = async (record: CronJob) => {
@@ -246,22 +280,6 @@ const CronJobManagement: React.FC = () => {
     } catch (e) { message.error('获取 YAML 失败') }
   }
 
-  const handleUpdate = async (values: any) => {
-    if (!editingJob) return
-    const schedule = buildCronExpression(values)
-    try {
-      await put(`/clusters/${selectedCluster}/workloads/cronjobs/${editingJob.namespace}/${editingJob.name}`, {
-        schedule: schedule,
-        image: values.image,
-        suspend: values.suspend || false,
-      })
-      message.success('CronJob 更新成功')
-      setEditModalVisible(false)
-      editForm.resetFields()
-      fetchData()
-    } catch (e) { message.error('更新失败') }
-  }
-
   const handleApplyYAML = async () => {
     try {
       await post('/aiops/kubectl', {
@@ -275,12 +293,86 @@ const CronJobManagement: React.FC = () => {
     } catch (e) { message.error('应用失败') }
   }
 
-  const handleDelete = async (record: CronJob) => {
+  // 暂停/继续 CronJob
+  const handleToggleSuspend = async (record: CronJob) => {
     try {
-      await del(`/clusters/${selectedCluster}/workloads/cronjobs/${record.namespace}/${record.name}`)
-      message.success('删除成功')
+      await put(`/clusters/${selectedCluster}/workloads/cronjobs/${record.namespace}/${record.name}`, {
+        suspend: !record.suspend,
+      })
+      message.success(record.suspend ? '已恢复调度' : '已暂停调度')
       fetchData()
-    } catch (e) { console.error(e) }
+    } catch (e) { message.error('操作失败') }
+  }
+
+  // 批量删除
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的 CronJob')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个 CronJob 吗？`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        let success = 0
+        for (const key of selectedRowKeys) {
+          const [namespace, name] = key.split('/')
+          try {
+            await del(`/clusters/${selectedCluster}/workloads/cronjobs/${namespace}/${name}`)
+            success++
+          } catch (e) { /* ignore */ }
+        }
+        message.success(`成功删除 ${success} 个 CronJob`)
+        setSelectedRowKeys([])
+        fetchData()
+      },
+    })
+  }
+
+  // 批量暂停
+  const handleBatchSuspend = async () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要暂停的 CronJob')
+      return
+    }
+    let success = 0
+    for (const key of selectedRowKeys) {
+      const [namespace, name] = key.split('/')
+      const job = cronJobs.find(j => j.namespace === namespace && j.name === name)
+      if (job && !job.suspend) {
+        try {
+          await put(`/clusters/${selectedCluster}/workloads/cronjobs/${namespace}/${name}`, { suspend: true })
+          success++
+        } catch (e) { /* ignore */ }
+      }
+    }
+    message.success(`成功暂停 ${success} 个 CronJob`)
+    setSelectedRowKeys([])
+    fetchData()
+  }
+
+  // 批量恢复
+  const handleBatchResume = async () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要恢复的 CronJob')
+      return
+    }
+    let success = 0
+    for (const key of selectedRowKeys) {
+      const [namespace, name] = key.split('/')
+      const job = cronJobs.find(j => j.namespace === namespace && j.name === name)
+      if (job && job.suspend) {
+        try {
+          await put(`/clusters/${selectedCluster}/workloads/cronjobs/${namespace}/${name}`, { suspend: false })
+          success++
+        } catch (e) { /* ignore */ }
+      }
+    }
+    message.success(`成功恢复 ${success} 个 CronJob`)
+    setSelectedRowKeys([])
+    fetchData()
   }
 
   const columns: ColumnsType<CronJob> = [
@@ -302,9 +394,16 @@ const CronJobManagement: React.FC = () => {
     { title: '镜像', dataIndex: 'images', key: 'images', render: (imgs: string[]) => imgs?.map(i => <Tag key={i}>{i}</Tag>) },
     { title: '年龄', dataIndex: 'age', key: 'age' },
     {
-      title: '操作', key: 'action', width: 180,
+      title: '操作', key: 'action', width: 200,
       render: (_, record) => (
         <Space size="small">
+          <Tooltip title={record.suspend ? '恢复调度' : '暂停调度'}>
+            <Button
+              type="link"
+              icon={record.suspend ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
+              onClick={() => handleToggleSuspend(record)}
+            />
+          </Tooltip>
           <Tooltip title="图形编辑">
             <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           </Tooltip>
@@ -319,8 +418,16 @@ const CronJobManagement: React.FC = () => {
     },
   ]
 
+  const handleDelete = async (record: CronJob) => {
+    try {
+      await del(`/clusters/${selectedCluster}/workloads/cronjobs/${record.namespace}/${record.name}`)
+      message.success('删除成功')
+      fetchData()
+    } catch (e) { console.error(e) }
+  }
+
   // 渲染调度规则表单
-  const renderScheduleForm = (_formInstance: any, prefix: string = '') => {
+  const renderScheduleForm = (prefix: string = '') => {
     const type = prefix ? editScheduleType : scheduleType
     return (
       <>
@@ -407,71 +514,20 @@ const CronJobManagement: React.FC = () => {
     )
   }
 
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={4}>CronJob</Title>
-        <Space>
-          <Select value={selectedCluster} onChange={setSelectedCluster} style={{ width: 200 }} options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))} />
-          <Select value={selectedNamespace} onChange={setSelectedNamespace} style={{ width: 150 }} placeholder="所有命名空间" allowClear options={namespaces.map(ns => ({ label: ns, value: ns }))} />
-          <Input placeholder="搜索..." prefix={<SearchOutlined />} value={searchText} onChange={(e) => setSearchText(e.target.value)} style={{ width: 200 }} />
-          <Button icon={<SyncOutlined />} onClick={fetchData}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ scheduleType: 'daily', specificTime: { hour: 0, minute: 0 } }); setCreateModalVisible(true) }}>创建</Button>
-        </Space>
-      </div>
-
-      <Card>
-        <Table columns={columns} dataSource={cronJobs} rowKey={(r) => `${r.namespace}/${r.name}`} loading={loading} />
-      </Card>
-
-      {/* 创建 Modal */}
-      <Modal title="创建 CronJob" open={createModalVisible} onCancel={() => { setCreateModalVisible(false); form.resetFields() }} onOk={() => form.submit()} width={700}>
-        <Form form={form} layout="vertical" onFinish={handleCreate}>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="namespace" label="命名空间" rules={[{ required: true }]}>
-                <Select options={namespaces.map(ns => ({ label: ns, value: ns }))} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-                <Input placeholder="例如: daily-backup" />
-              </Form.Item>
-            </Col>
-          </Row>
-
-          <Divider>调度规则</Divider>
-          {renderScheduleForm(form)}
-
-          <Divider>容器配置</Divider>
-          <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
-            <Input placeholder="例如: busybox:latest" />
-          </Form.Item>
-          <Form.Item name="command" label="入口命令 (Command)" help="例如: /bin/sh 或 /bin/bash">
-            <Input placeholder="/bin/sh" />
-          </Form.Item>
-          <Form.Item name="args" label="参数 (Args)" help="支持 JSON 数组格式: [&quot;-c&quot;, &quot;echo hello&quot;] 或空格分隔: -c echo hello">
-            <TextArea rows={3} placeholder={'例如: -c "for i in 9 8 7 6 5 4 3 2 1; do echo $i; sleep 3; done"'} />
-          </Form.Item>
-
-          <Row gutter={16}>
-            <Col span={8}>
-              <Form.Item name="suspend" label="暂停" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="successfulHistory" label="成功历史数" initialValue={3}>
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="failedHistory" label="失败历史数" initialValue={1}>
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-
+  // 渲染容器配置表单
+  const renderContainerForm = (showResources: boolean = true) => (
+    <>
+      <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
+        <Input placeholder="例如: busybox:latest" />
+      </Form.Item>
+      <Form.Item name="command" label="入口命令 (Command)" help="例如: /bin/sh 或 /bin/bash">
+        <Input placeholder="/bin/sh" />
+      </Form.Item>
+      <Form.Item name="args" label="参数 (Args)" help="支持 JSON 数组: [&quot;-c&quot;, &quot;echo hello&quot;] 或带引号: -c &quot;for i in ...&quot;">
+        <TextArea rows={3} placeholder={'例如: -c "for i in 9 8 7 6 5 4 3 2 1; do echo $i; sleep 3; done"'} />
+      </Form.Item>
+      {showResources && (
+        <>
           <Divider>资源配额</Divider>
           <Row gutter={16}>
             <Col span={6}>
@@ -495,6 +551,89 @@ const CronJobManagement: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+        </>
+      )}
+    </>
+  )
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Title level={4}>CronJob</Title>
+        <Space>
+          <Select value={selectedCluster} onChange={setSelectedCluster} style={{ width: 200 }} options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))} />
+          <Select value={selectedNamespace} onChange={setSelectedNamespace} style={{ width: 150 }} placeholder="所有命名空间" allowClear options={namespaces.map(ns => ({ label: ns, value: ns }))} />
+          <Input placeholder="搜索..." prefix={<SearchOutlined />} value={searchText} onChange={(e) => setSearchText(e.target.value)} style={{ width: 200 }} />
+          <Button icon={<SyncOutlined />} onClick={fetchData}>刷新</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ scheduleType: 'daily', specificTime: { hour: 0, minute: 0 } }); setCreateModalVisible(true) }}>创建</Button>
+        </Space>
+      </div>
+
+      {/* 批量操作栏 */}
+      {selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <Space>
+            <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+            <Button icon={<PauseCircleOutlined />} onClick={handleBatchSuspend}>批量暂停</Button>
+            <Button icon={<PlayCircleOutlined />} onClick={handleBatchResume}>批量恢复</Button>
+            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>批量删除</Button>
+            <Button type="link" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          </Space>
+        </Card>
+      )}
+
+      <Card>
+        <Table
+          columns={columns}
+          dataSource={cronJobs}
+          rowKey={(r) => `${r.namespace}/${r.name}`}
+          loading={loading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys: any[]) => setSelectedRowKeys(keys),
+          }}
+        />
+      </Card>
+
+      {/* 创建 Modal */}
+      <Modal title="创建 CronJob" open={createModalVisible} onCancel={() => { setCreateModalVisible(false); form.resetFields() }} onOk={() => form.submit()} width={700}>
+        <Form form={form} layout="vertical" onFinish={handleCreate}>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="namespace" label="命名空间" rules={[{ required: true }]}>
+                <Select options={namespaces.map(ns => ({ label: ns, value: ns }))} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+                <Input placeholder="例如: daily-backup" />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Divider>调度规则</Divider>
+          {renderScheduleForm()}
+
+          <Divider>容器配置</Divider>
+          {renderContainerForm()}
+
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item name="suspend" label="暂停" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="successfulHistory" label="成功历史数" initialValue={3}>
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="failedHistory" label="失败历史数" initialValue={1}>
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
       </Modal>
 
@@ -515,20 +654,14 @@ const CronJobManagement: React.FC = () => {
           </Row>
 
           <Divider>调度规则</Divider>
-          {renderScheduleForm(editForm, 'edit')}
+          {renderScheduleForm('edit')}
 
           <Divider>容器配置</Divider>
-          <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
-            <Input placeholder="例如: busybox:latest" />
-          </Form.Item>
+          {renderContainerForm(false)}
 
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="suspend" label="暂停" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item name="suspend" label="暂停" valuePropName="checked">
+            <Switch />
+          </Form.Item>
         </Form>
       </Modal>
 
