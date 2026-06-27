@@ -97,6 +97,17 @@ func AutoMigrate() error {
 		&TaskLog{},
 		&ResourceReservation{},
 		&SchedulePolicy{},
+		// 多租户
+		&Tenant{},
+		&TenantNamespace{},
+		&TenantMember{},
+		// 备份
+		&BackupSchedule{},
+		&BackupRecord{},
+		&RestoreRecord{},
+		// Webhook
+		&WebhookConfig{},
+		&WebhookLog{},
 	)
 }
 

@@ -258,8 +258,20 @@ const menuItems: MenuProps['items'] = [
         label: '角色管理',
       },
       {
+        key: '/system/tenants',
+        label: '租户管理',
+      },
+      {
         key: '/system/2fa',
         label: '两步验证',
+      },
+      {
+        key: '/system/backup',
+        label: '备份管理',
+      },
+      {
+        key: '/system/webhooks',
+        label: 'Webhook 通知',
       },
     ],
   },

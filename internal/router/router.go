@@ -8,10 +8,13 @@ import (
 	"github.com/kubepilot/kubepilot/internal/handler/alert"
 	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
+	"github.com/kubepilot/kubepilot/internal/handler/backup"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
 	opsHandler "github.com/kubepilot/kubepilot/internal/handler/ops"
 	schedulerHandler "github.com/kubepilot/kubepilot/internal/handler/scheduler"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
+	"github.com/kubepilot/kubepilot/internal/handler/tenant"
+	whHandler "github.com/kubepilot/kubepilot/internal/handler/webhook"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/llm"
@@ -74,6 +77,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
 	schedulerHandler := schedulerHandler.NewHandler(model.DB)
 	opsHandler := opsHandler.NewHandler()
+	tenantHandler := tenant.NewHandler(model.DB)
+	backupHandler := backup.NewHandler(model.DB)
+	webhookHandler := whHandler.NewHandler(model.DB)
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -498,6 +504,44 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				schedulerGroup.GET("/reservations", schedulerHandler.ListReservations)
 				schedulerGroup.POST("/reservations", schedulerHandler.CreateReservation)
 				schedulerGroup.DELETE("/reservations/:id", schedulerHandler.DeleteReservation)
+			}
+
+			// 多租户管理
+			tenantGroup := protected.Group("/tenants")
+			{
+				tenantGroup.GET("", tenantHandler.ListTenants)
+				tenantGroup.POST("", tenantHandler.CreateTenant)
+				tenantGroup.GET("/:id", tenantHandler.GetTenant)
+				tenantGroup.PUT("/:id", tenantHandler.UpdateTenant)
+				tenantGroup.DELETE("/:id", tenantHandler.DeleteTenant)
+				tenantGroup.POST("/:id/members", tenantHandler.AddTenantMember)
+				tenantGroup.DELETE("/:id/members/:userId", tenantHandler.RemoveTenantMember)
+				tenantGroup.POST("/:id/namespaces", tenantHandler.CreateTenantNamespace)
+				tenantGroup.DELETE("/:id/namespaces/:nsId", tenantHandler.DeleteTenantNamespace)
+			}
+
+			// 备份管理
+			backupGroup := protected.Group("/backups")
+			{
+				backupGroup.GET("/schedules", backupHandler.ListBackupSchedules)
+				backupGroup.POST("/schedules", backupHandler.CreateBackupSchedule)
+				backupGroup.DELETE("/schedules/:id", backupHandler.DeleteBackupSchedule)
+				backupGroup.POST("", backupHandler.CreateBackup)
+				backupGroup.GET("", backupHandler.ListBackupRecords)
+				backupGroup.GET("/:id", backupHandler.GetBackupRecord)
+				backupGroup.POST("/restore", backupHandler.CreateRestore)
+				backupGroup.GET("/restores", backupHandler.ListRestoreRecords)
+			}
+
+			// Webhook 管理
+			webhookGroup := protected.Group("/webhooks")
+			{
+				webhookGroup.GET("", webhookHandler.ListWebhooks)
+				webhookGroup.POST("", webhookHandler.CreateWebhook)
+				webhookGroup.PUT("/:id", webhookHandler.UpdateWebhook)
+				webhookGroup.DELETE("/:id", webhookHandler.DeleteWebhook)
+				webhookGroup.POST("/:id/test", webhookHandler.TestWebhook)
+				webhookGroup.GET("/logs", webhookHandler.ListWebhookLogs)
 			}
 		}
 	}
