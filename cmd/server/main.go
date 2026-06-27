@@ -52,6 +52,12 @@ func main() {
 	}
 	logger.Info("database migrated")
 
+	// Seed default data (roles, permissions, users)
+	if err := model.SeedData(); err != nil {
+		logger.Warn("failed to seed data", zap.Error(err))
+	}
+	logger.Info("seed data initialized")
+
 	// Initialize cache
 	cacheInstance := cache.New(cache.Config{
 		Type:     cfg.Cache.Type,

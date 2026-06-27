@@ -1,36 +1,16 @@
-package main
+package model
 
 import (
 	"fmt"
-	"os"
 
-	"github.com/kubepilot/kubepilot/internal/config"
-	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"go.uber.org/zap"
 )
 
-func main() {
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Printf("failed to load config: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Initialize logger
-	if err := logger.Init(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output); err != nil {
-		fmt.Printf("failed to init logger: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Initialize database
-	if err := model.InitDatabase(cfg.Database.Driver, cfg.Database.DSN(), cfg.Database.MaxIdleConns, cfg.Database.MaxOpenConns); err != nil {
-		logger.Fatal("failed to connect to database", zap.Error(err))
-	}
-
-	// Define roles with permissions
+// SeedData 初始化默认数据（角色、权限、用户）
+func SeedData() error {
+	// 定义默认角色
 	type RoleDef struct {
 		Name        string
 		Description string
@@ -65,20 +45,19 @@ func main() {
 		},
 	}
 
-	// Create or update roles
+	// 创建或更新角色
 	roleMap := make(map[string]uint)
 	for _, r := range roles {
-		var existingRole model.Role
-		result := model.DB.Where("name = ?", r.Name).First(&existingRole)
+		var existingRole Role
+		result := DB.Where("name = ?", r.Name).First(&existingRole)
 		if result.Error != nil {
-			// Role doesn't exist, create it
-			newRole := model.Role{
+			newRole := Role{
 				Name:        r.Name,
 				Description: r.Description,
 				Permissions: r.Permissions,
 				IsSystem:    r.IsSystem,
 			}
-			if err := model.DB.Create(&newRole).Error; err != nil {
+			if err := DB.Create(&newRole).Error; err != nil {
 				logger.Error("failed to create role", zap.String("role", r.Name), zap.Error(err))
 			} else {
 				logger.Info("role created", zap.String("role", r.Name))
@@ -86,27 +65,23 @@ func main() {
 			}
 		} else {
 			roleMap[r.Name] = existingRole.ID
-			// Update permissions
-			if err := model.DB.Model(&existingRole).Updates(map[string]interface{}{
+			// 更新权限
+			DB.Model(&existingRole).Updates(map[string]interface{}{
 				"description": r.Description,
 				"permissions": r.Permissions,
 				"is_system":   r.IsSystem,
-			}).Error; err != nil {
-				logger.Error("failed to update role", zap.String("role", r.Name), zap.Error(err))
-			} else {
-				logger.Info("role updated", zap.String("role", r.Name))
-			}
+			})
 		}
 	}
 
-	// Default password for all users
+	// 默认密码
 	defaultPassword := "admin123"
 	hashedPassword, err := crypto.HashPassword(defaultPassword)
 	if err != nil {
-		logger.Fatal("failed to hash password", zap.Error(err))
+		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Define users
+	// 定义默认用户
 	type UserDef struct {
 		Username string
 		Email    string
@@ -121,19 +96,17 @@ func main() {
 		{Username: "viewer", Email: "viewer@kubepilot.io", RealName: "只读用户", RoleName: "viewer"},
 	}
 
-	// Create or update users
+	// 创建或更新用户
 	for _, u := range users {
 		roleID, ok := roleMap[u.RoleName]
 		if !ok {
-			logger.Error("role not found for user", zap.String("user", u.Username), zap.String("role", u.RoleName))
 			continue
 		}
 
-		var existingUser model.User
-		result := model.DB.Where("username = ?", u.Username).First(&existingUser)
+		var existingUser User
+		result := DB.Where("username = ?", u.Username).First(&existingUser)
 		if result.Error != nil {
-			// User doesn't exist, create it
-			newUser := model.User{
+			newUser := User{
 				Username: u.Username,
 				Email:    u.Email,
 				Password: hashedPassword,
@@ -141,27 +114,13 @@ func main() {
 				Status:   1,
 				RoleID:   roleID,
 			}
-			if err := model.DB.Create(&newUser).Error; err != nil {
+			if err := DB.Create(&newUser).Error; err != nil {
 				logger.Error("failed to create user", zap.String("user", u.Username), zap.Error(err))
 			} else {
 				logger.Info("user created", zap.String("user", u.Username), zap.String("role", u.RoleName))
 			}
-		} else {
-			// User exists, update role if needed
-			if existingUser.RoleID != roleID {
-				model.DB.Model(&existingUser).Update("role_id", roleID)
-				logger.Info("user role updated", zap.String("user", u.Username), zap.String("role", u.RoleName))
-			}
 		}
 	}
 
-	fmt.Println("=== Initialization Complete ===")
-	fmt.Println("")
-	fmt.Println("Default users (password: admin123):")
-	fmt.Println("  - admin     : 系统管理员")
-	fmt.Println("  - operator  : 运维工程师")
-	fmt.Println("  - developer : 开发人员")
-	fmt.Println("  - viewer    : 只读用户")
-	fmt.Println("")
-	fmt.Println("⚠️  Please change the default passwords after first login!")
+	return nil
 }
