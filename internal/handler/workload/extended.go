@@ -333,21 +333,29 @@ func (h *Handler) ListCronJobs(c *gin.Context) {
 	}
 
 	type CronJobInfo struct {
-		Name        string   `json:"name"`
-		Namespace   string   `json:"namespace"`
-		Schedule    string   `json:"schedule"`
-		Suspend     bool     `json:"suspend"`
-		Active      int      `json:"active"`
-		LastSchedule string  `json:"last_schedule"`
-		Age         string   `json:"age"`
-		Images      []string `json:"images"`
+		Name         string   `json:"name"`
+		Namespace    string   `json:"namespace"`
+		Schedule     string   `json:"schedule"`
+		Suspend      bool     `json:"suspend"`
+		Active       int      `json:"active"`
+		LastSchedule string   `json:"last_schedule"`
+		Age          string   `json:"age"`
+		Images       []string `json:"images"`
+		Command      []string `json:"command"`
+		Args         []string `json:"args"`
 	}
 
 	result := make([]CronJobInfo, 0, len(cronJobs.Items))
 	for _, cj := range cronJobs.Items {
 		images := make([]string, 0)
-		for _, c := range cj.Spec.JobTemplate.Spec.Template.Spec.Containers {
-			images = append(images, c.Image)
+		command := make([]string, 0)
+		args := make([]string, 0)
+
+		if len(cj.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
+			container := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
+			images = append(images, container.Image)
+			command = container.Command
+			args = container.Args
 		}
 
 		lastSchedule := ""
@@ -369,6 +377,8 @@ func (h *Handler) ListCronJobs(c *gin.Context) {
 			LastSchedule: lastSchedule,
 			Age:          timeSince(cj.CreationTimestamp.Time),
 			Images:       images,
+			Command:      command,
+			Args:         args,
 		})
 	}
 
