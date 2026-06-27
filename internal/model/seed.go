@@ -65,12 +65,11 @@ func SeedData() error {
 			}
 		} else {
 			roleMap[r.Name] = existingRole.ID
-			// 更新权限
-			DB.Model(&existingRole).Updates(map[string]interface{}{
-				"description": r.Description,
-				"permissions": r.Permissions,
-				"is_system":   r.IsSystem,
-			})
+			// 强制更新权限
+			DB.Model(&existingRole).Update("permissions", r.Permissions)
+			DB.Model(&existingRole).Update("description", r.Description)
+			DB.Model(&existingRole).Update("is_system", r.IsSystem)
+			logger.Info("role updated", zap.String("role", r.Name))
 		}
 	}
 
