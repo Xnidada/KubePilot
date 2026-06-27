@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Button, Space, Typography, Select, message, Checkbox, Alert, Table, Row, Col, Tag
+  Card, Button, Space, Typography, Select, message, Checkbox, Alert, Table, Row, Col, Tag, Tooltip
 } from 'antd'
-import { CopyOutlined, ReloadOutlined, CheckSquareOutlined } from '@ant-design/icons'
+import { CopyOutlined, ReloadOutlined, CheckSquareOutlined, WarningOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getNamespaceNames, getDeployments, getServices } from '../../api/workload'
@@ -16,6 +16,7 @@ interface ResourceItem {
   name: string
   namespace: string
   selected: boolean
+  existsInTarget: boolean
 }
 
 const EnvClone: React.FC = () => {
@@ -30,7 +31,7 @@ const EnvClone: React.FC = () => {
 
   useEffect(() => { fetchClusters() }, [])
   useEffect(() => { if (selectedCluster) fetchNamespaces() }, [selectedCluster])
-  useEffect(() => { if (selectedCluster && sourceNamespace) fetchResources() }, [selectedCluster, sourceNamespace])
+  useEffect(() => { if (selectedCluster && sourceNamespace) fetchResources() }, [selectedCluster, sourceNamespace, targetNamespace])
 
   const fetchClusters = async () => {
     try {
@@ -51,31 +52,52 @@ const EnvClone: React.FC = () => {
     setLoading(true)
     try {
       const items: ResourceItem[] = []
+      const targetNames = new Set<string>()
 
-      // 获取 Deployments
+      // 先获取目标命名空间的资源
+      if (targetNamespace) {
+        try {
+          const targetDeploys = await getDeployments(selectedCluster, targetNamespace)
+          for (const d of (targetDeploys.data || [])) {
+            targetNames.add(`Deployment/${d.name}`)
+          }
+        } catch (e) {}
+
+        try {
+          const targetSvcs = await getServices(selectedCluster, targetNamespace)
+          for (const s of (targetSvcs.data || [])) {
+            targetNames.add(`Service/${s.name}`)
+          }
+        } catch (e) {}
+      }
+
+      // 获取源命名空间的资源
       try {
         const deploys = await getDeployments(selectedCluster, sourceNamespace)
         for (const d of (deploys.data || [])) {
+          const exists = targetNames.has(`Deployment/${d.name}`)
           items.push({
             key: `Deployment/${d.namespace}/${d.name}`,
             kind: 'Deployment',
             name: d.name,
             namespace: d.namespace,
-            selected: true,
+            selected: !exists,  // 已存在的默认不选
+            existsInTarget: exists,
           })
         }
       } catch (e) {}
 
-      // 获取 Services
       try {
         const svcs = await getServices(selectedCluster, sourceNamespace)
         for (const s of (svcs.data || [])) {
+          const exists = targetNames.has(`Service/${s.name}`)
           items.push({
             key: `Service/${s.namespace}/${s.name}`,
             kind: 'Service',
             name: s.name,
             namespace: s.namespace,
-            selected: true,
+            selected: !exists,
+            existsInTarget: exists,
           })
         }
       } catch (e) {}
@@ -92,11 +114,15 @@ const EnvClone: React.FC = () => {
   }
 
   const handleSelectAll = () => {
-    const allSelected = resources.every(r => r.selected)
-    setResources(prev => prev.map(r => ({ ...r, selected: !allSelected })))
+    const selectable = resources.filter(r => !r.existsInTarget)
+    const allSelected = selectable.every(r => r.selected)
+    setResources(prev => prev.map(r =>
+      r.existsInTarget ? r : { ...r, selected: !allSelected }
+    ))
   }
 
   const selectedCount = resources.filter(r => r.selected).length
+  const duplicateCount = resources.filter(r => r.existsInTarget).length
 
   const handleClone = async () => {
     if (!sourceNamespace || !targetNamespace) {
@@ -126,6 +152,7 @@ const EnvClone: React.FC = () => {
       })
 
       message.success(`成功克隆 ${selectedCount} 个资源到 ${targetNamespace}`)
+      fetchResources() // 刷新列表
     } catch (e) {
       message.error('克隆失败')
     } finally {
@@ -137,8 +164,8 @@ const EnvClone: React.FC = () => {
     {
       title: (
         <Checkbox
-          checked={resources.length > 0 && resources.every(r => r.selected)}
-          indeterminate={selectedCount > 0 && selectedCount < resources.length}
+          checked={resources.filter(r => !r.existsInTarget).length > 0 && resources.filter(r => !r.existsInTarget).every(r => r.selected)}
+          indeterminate={selectedCount > 0 && selectedCount < resources.filter(r => !r.existsInTarget).length}
           onChange={handleSelectAll}
         />
       ),
@@ -147,6 +174,7 @@ const EnvClone: React.FC = () => {
       render: (_, record) => (
         <Checkbox
           checked={record.selected}
+          disabled={record.existsInTarget}
           onChange={() => handleToggleResource(record.key)}
         />
       ),
@@ -155,17 +183,26 @@ const EnvClone: React.FC = () => {
       title: '类型',
       dataIndex: 'kind',
       key: 'kind',
-      filters: [
-        { text: 'Deployment', value: 'Deployment' },
-        { text: 'Service', value: 'Service' },
-      ],
-      onFilter: (value, record) => record.kind === value,
+      width: 120,
       render: (kind) => (
         <Tag color={kind === 'Deployment' ? 'blue' : 'green'}>{kind}</Tag>
       ),
     },
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '命名空间', dataIndex: 'namespace', key: 'namespace' },
+    {
+      title: '目标状态',
+      key: 'status',
+      width: 120,
+      render: (_, record) => (
+        record.existsInTarget ? (
+          <Tooltip title="目标命名空间已存在同名资源">
+            <Tag color="warning" icon={<WarningOutlined />}>已存在</Tag>
+          </Tooltip>
+        ) : (
+          <Tag color="success">可克隆</Tag>
+        )
+      ),
+    },
   ]
 
   return (
@@ -174,7 +211,7 @@ const EnvClone: React.FC = () => {
 
       <Alert
         message="环境克隆说明"
-        description="从源命名空间克隆资源配置到目标命名空间。支持选择具体资源进行克隆。"
+        description="从源命名空间克隆资源配置到目标命名空间。已存在于目标命名空间的资源会自动标记，避免重复克隆。"
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
@@ -213,6 +250,15 @@ const EnvClone: React.FC = () => {
                   options={namespaces.map(ns => ({ label: ns, value: ns }))}
                 />
               </div>
+
+              {duplicateCount > 0 && (
+                <Alert
+                  message={`${duplicateCount} 个资源在目标命名空间已存在`}
+                  type="warning"
+                  showIcon
+                />
+              )}
+
               <Button
                 type="primary"
                 icon={<CopyOutlined />}
@@ -229,11 +275,11 @@ const EnvClone: React.FC = () => {
 
         <Col span={16}>
           <Card
-            title="资源列表"
+            title={`源命名空间资源 (${resources.length})`}
             extra={
               <Space>
                 <Button size="small" icon={<CheckSquareOutlined />} onClick={handleSelectAll}>
-                  {resources.every(r => r.selected) ? '取消全选' : '全选'}
+                  {resources.filter(r => !r.existsInTarget).every(r => r.selected) ? '取消全选' : '全选可克隆'}
                 </Button>
                 <Button size="small" icon={<ReloadOutlined />} onClick={fetchResources}>刷新</Button>
               </Space>
