@@ -128,15 +128,88 @@ const CronJobManagement: React.FC = () => {
     finally { setLoading(false) }
   }
 
+  // 解析命令参数
+  const parseCommandArgs = (cmd: string, args: string) => {
+    let command: string[] = []
+    let parsedArgs: string[] = []
+
+    // 解析 command
+    if (cmd) {
+      try {
+        if (cmd.trim().startsWith('[')) {
+          command = JSON.parse(cmd)
+        } else {
+          command = cmd.trim().split(/\s+/)
+        }
+      } catch {
+        command = cmd.trim().split(/\s+/)
+      }
+    }
+
+    // 解析 args - 支持 JSON 数组或带引号的字符串
+    if (args) {
+      try {
+        if (args.trim().startsWith('[')) {
+          parsedArgs = JSON.parse(args)
+        } else {
+          // 处理引号内的内容作为单个参数
+          parsedArgs = parseQuotedArgs(args.trim())
+        }
+      } catch {
+        parsedArgs = parseQuotedArgs(args.trim())
+      }
+    }
+
+    return { command, args: parsedArgs }
+  }
+
+  // 解析带引号的参数
+  const parseQuotedArgs = (input: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuote = false
+    let quoteChar = ''
+
+    for (let i = 0; i < input.length; i++) {
+      const char = input[i]
+      if (inQuote) {
+        if (char === quoteChar) {
+          inQuote = false
+        } else {
+          current += char
+        }
+      } else {
+        if (char === '"' || char === "'") {
+          inQuote = true
+          quoteChar = char
+        } else if (char === ' ' || char === '\t') {
+          if (current) {
+            result.push(current)
+            current = ''
+          }
+        } else {
+          current += char
+        }
+      }
+    }
+    if (current) {
+      result.push(current)
+    }
+    return result
+  }
+
   const handleCreate = async (values: any) => {
     const schedule = buildCronExpression(values)
+    const { command, args } = parseCommandArgs(values.command || '', values.args || '')
+
     try {
       await post(`/clusters/${selectedCluster}/workloads/cronjobs`, {
         namespace: values.namespace,
         name: values.name,
         schedule: schedule,
         image: values.image,
-        command: values.command ? values.command.split(' ') : [],
+        command: command.length > 0 ? command : undefined,
+        args: args.length > 0 ? args : undefined,
         suspend: values.suspend || false,
       })
       message.success('CronJob 创建成功')
@@ -160,6 +233,19 @@ const CronJobManagement: React.FC = () => {
     setEditModalVisible(true)
   }
 
+  const handleEditYAML = async (record: CronJob) => {
+    setEditingJob(record)
+    try {
+      const res = await get<{ code: number; data: { yaml: string } }>(
+        `/clusters/${selectedCluster}/workloads/yaml/cronjobs/${record.namespace}/${record.name}`
+      )
+      if (res.data?.yaml) {
+        setYamlContent(res.data.yaml)
+        setYamlModalVisible(true)
+      }
+    } catch (e) { message.error('获取 YAML 失败') }
+  }
+
   const handleUpdate = async (values: any) => {
     if (!editingJob) return
     const schedule = buildCronExpression(values)
@@ -174,19 +260,6 @@ const CronJobManagement: React.FC = () => {
       editForm.resetFields()
       fetchData()
     } catch (e) { message.error('更新失败') }
-  }
-
-  const handleEditYAML = async (record: CronJob) => {
-    setEditingJob(record)
-    try {
-      const res = await get<{ code: number; data: { yaml: string } }>(
-        `/clusters/${selectedCluster}/workloads/yaml/cronjobs/${record.namespace}/${record.name}`
-      )
-      if (res.data?.yaml) {
-        setYamlContent(res.data.yaml)
-        setYamlModalVisible(true)
-      }
-    } catch (e) { message.error('获取 YAML 失败') }
   }
 
   const handleApplyYAML = async () => {
@@ -374,8 +447,11 @@ const CronJobManagement: React.FC = () => {
           <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
             <Input placeholder="例如: busybox:latest" />
           </Form.Item>
-          <Form.Item name="command" label="命令" help="空格分隔的命令参数">
-            <Input placeholder="例如: /bin/sh -c echo hello" />
+          <Form.Item name="command" label="入口命令 (Command)" help="例如: /bin/sh 或 /bin/bash">
+            <Input placeholder="/bin/sh" />
+          </Form.Item>
+          <Form.Item name="args" label="参数 (Args)" help="支持 JSON 数组格式: [&quot;-c&quot;, &quot;echo hello&quot;] 或空格分隔: -c echo hello">
+            <TextArea rows={3} placeholder={'例如: -c "for i in 9 8 7 6 5 4 3 2 1; do echo $i; sleep 3; done"'} />
           </Form.Item>
 
           <Row gutter={16}>
