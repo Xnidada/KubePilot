@@ -54,7 +54,6 @@ const YAML_TEMPLATES = {
 name: my-task
 queue_id: 1
 cluster_id: 1
-task_type: job
 priority: 100
 image: nginx:latest
 command: ["/bin/sh", "-c"]
@@ -66,26 +65,10 @@ replicas: 1
 namespace: default
 timeout: 3600
 max_retry: 3`,
-  cronjob: `# KubePilot 任务调度 - CronJob 模板
-name: my-cron-task
-queue_id: 1
-cluster_id: 1
-task_type: cronjob
-priority: 50
-image: busybox:latest
-command: ["/bin/sh", "-c"]
-args: ["echo scheduled task"]
-cpu: "50m"
-memory: "64Mi"
-replicas: 1
-namespace: default
-timeout: 1800
-max_retry: 2`,
   gpu: `# KubePilot 任务调度 - GPU 训练任务模板
 name: training-task
 queue_id: 1
 cluster_id: 1
-task_type: job
 priority: 200
 image: nvidia/cuda:11.8-base
 command: ["/bin/sh", "-c"]
@@ -215,6 +198,7 @@ const Tasks: React.FC = () => {
     try {
       await createTask({
         ...values,
+        task_type: 'job', // 默认为 Job 类型
         command: values.command ? values.command.split(' ') : [],
         args: values.args ? values.args.split(' ') : [],
       })
@@ -248,10 +232,6 @@ const Tasks: React.FC = () => {
         setYamlError('缺少必填字段: cluster_id')
         return
       }
-      if (!parsed.task_type) {
-        setYamlError('缺少必填字段: task_type')
-        return
-      }
       if (!parsed.image) {
         setYamlError('缺少必填字段: image')
         return
@@ -272,7 +252,7 @@ const Tasks: React.FC = () => {
         name: parsed.name,
         queue_id: parsed.queue_id,
         cluster_id: parsed.cluster_id,
-        task_type: parsed.task_type || 'job',
+        task_type: 'job', // 默认为 Job 类型
         priority: parsed.priority || 0,
         image: parsed.image,
         command: command || [],
@@ -638,14 +618,6 @@ const Tasks: React.FC = () => {
                 options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
               />
             </Form.Item>
-            <Form.Item name="task_type" label="任务类型" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: 'Job', value: 'job' },
-                  { label: 'CronJob', value: 'cronjob' },
-                ]}
-              />
-            </Form.Item>
             <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
               <Input placeholder="例如: nginx:latest" />
             </Form.Item>
@@ -687,7 +659,6 @@ const Tasks: React.FC = () => {
                   style={{ width: 160 }}
                   options={[
                     { label: 'Job 模板', value: 'job' },
-                    { label: 'CronJob 模板', value: 'cronjob' },
                     { label: 'GPU 训练模板', value: 'gpu' },
                   ]}
                 />
@@ -733,7 +704,7 @@ const Tasks: React.FC = () => {
               message="YAML 模式说明"
               description={
                 <ul style={{ margin: 0, paddingLeft: 20 }}>
-                  <li>必填字段: name, queue_id, cluster_id, task_type, image</li>
+                  <li>必填字段: name, queue_id, cluster_id, image</li>
                   <li>command 和 args 支持数组格式: ["/bin/sh", "-c"]</li>
                   <li>支持注释（以 # 开头）</li>
                   <li>可使用模板快速开始</li>
