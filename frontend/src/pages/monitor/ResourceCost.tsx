@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Table, Button, Space, Typography, Select, Row, Col, Statistic, Progress
+  Card, Table, Button, Space, Typography, Select, Row, Col, Statistic, Progress,
+  Modal, Form, InputNumber, message
 } from 'antd'
-import {
-  ReloadOutlined, CloudServerOutlined
-} from '@ant-design/icons'
+import { ReloadOutlined, SettingOutlined, DollarOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { get } from '../../api/request'
+import { get, post } from '../../api/request'
 
 const { Title, Text } = Typography
 
@@ -21,14 +20,25 @@ interface NamespaceCost {
   total_cost: number
 }
 
+interface CostConfig {
+  cpu_per_unit: number
+  mem_per_unit: number
+  gpu_per_unit: number
+  currency: string
+}
+
 const ResourceCost: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [costs, setCosts] = useState<NamespaceCost[]>([])
+  const [totalCost, setTotalCost] = useState(0)
+  const [currency, setCurrency] = useState('USD')
   const [loading, setLoading] = useState(false)
+  const [configModalVisible, setConfigModalVisible] = useState(false)
+  const [form] = Form.useForm()
 
   useEffect(() => { fetchClusters() }, [])
-  useEffect(() => { if (selectedCluster) fetchCosts() }, [selectedCluster])
+  useEffect(() => { if (selectedCluster) { fetchCosts(); fetchConfig() } }, [selectedCluster])
 
   const fetchClusters = async () => {
     try {
@@ -38,28 +48,40 @@ const ResourceCost: React.FC = () => {
     } catch (e) { console.error(e) }
   }
 
+  const fetchConfig = async () => {
+    try {
+      const res = await get<{ code: number; data: CostConfig }>(`/clusters/${selectedCluster}/cost/config`)
+      if (res.data) {
+        form.setFieldsValue(res.data)
+      }
+    } catch (e) { console.error(e) }
+  }
+
   const fetchCosts = async () => {
     setLoading(true)
     try {
-      await get<{ code: number; data: NamespaceCost[] }>(`/clusters/${selectedCluster}/workloads/metrics/overview`)
-      // 模拟成本数据（实际应从 metrics API 获取）
-      const namespaces = ['default', 'kube-system', 'kubepilot', 'monitoring']
-      const mockCosts: NamespaceCost[] = namespaces.map(ns => ({
-        namespace: ns,
-        cpu_request: Math.floor(Math.random() * 8000),
-        memory_request: Math.floor(Math.random() * 16384),
-        pod_count: Math.floor(Math.random() * 20) + 1,
-        cpu_cost: Math.floor(Math.random() * 500),
-        memory_cost: Math.floor(Math.random() * 300),
-        total_cost: 0,
-      }))
-      mockCosts.forEach(c => c.total_cost = c.cpu_cost + c.memory_cost)
-      setCosts(mockCosts)
+      const res = await get<{ code: number; data: { namespaces: NamespaceCost[]; total_cost: number; currency: string } }>(
+        `/clusters/${selectedCluster}/cost/analysis`
+      )
+      if (res.data) {
+        setCosts(res.data.namespaces || [])
+        setTotalCost(res.data.total_cost || 0)
+        setCurrency(res.data.currency || 'USD')
+      }
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }
 
-  const totalCost = costs.reduce((sum, c) => sum + c.total_cost, 0)
+  const handleSaveConfig = async (values: any) => {
+    try {
+      await post(`/clusters/${selectedCluster}/cost/config`, values)
+      message.success('成本配置已保存')
+      setConfigModalVisible(false)
+      fetchCosts()
+    } catch (e) {
+      message.error('保存失败')
+    }
+  }
 
   const columns: ColumnsType<NamespaceCost> = [
     { title: '命名空间', dataIndex: 'namespace', key: 'namespace' },
@@ -74,15 +96,15 @@ const ResourceCost: React.FC = () => {
     { title: 'Pod 数', dataIndex: 'pod_count', key: 'pods' },
     {
       title: 'CPU 成本', dataIndex: 'cpu_cost', key: 'cpu_cost',
-      render: (v) => <Text>¥{v}</Text>
+      render: (v) => <Text>{currency} {v.toFixed(2)}</Text>
     },
     {
       title: '内存成本', dataIndex: 'memory_cost', key: 'mem_cost',
-      render: (v) => <Text>¥{v}</Text>
+      render: (v) => <Text>{currency} {v.toFixed(2)}</Text>
     },
     {
       title: '总成本', dataIndex: 'total_cost', key: 'total',
-      render: (v) => <Text strong>¥{v}</Text>,
+      render: (v) => <Text strong>{currency} {v.toFixed(2)}</Text>,
       sorter: (a, b) => a.total_cost - b.total_cost,
     },
     {
@@ -104,6 +126,9 @@ const ResourceCost: React.FC = () => {
         <Space>
           <Select value={selectedCluster} onChange={setSelectedCluster} style={{ width: 200 }}
             options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))} />
+          <Button icon={<SettingOutlined />} onClick={() => setConfigModalVisible(true)}>
+            成本配置
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={fetchCosts}>刷新</Button>
         </Space>
       </div>
@@ -114,7 +139,8 @@ const ResourceCost: React.FC = () => {
             <Statistic
               title="总成本（月估算）"
               value={totalCost}
-              prefix="¥"
+              prefix={currency === 'USD' ? '$' : '¥'}
+              precision={2}
               valueStyle={{ color: '#1890ff' }}
             />
           </Card>
@@ -124,7 +150,7 @@ const ResourceCost: React.FC = () => {
             <Statistic
               title="命名空间数"
               value={costs.length}
-              prefix={<CloudServerOutlined />}
+              prefix={<DollarOutlined />}
             />
           </Card>
         </Col>
@@ -132,8 +158,9 @@ const ResourceCost: React.FC = () => {
           <Card>
             <Statistic
               title="平均成本"
-              value={costs.length > 0 ? Math.round(totalCost / costs.length) : 0}
-              prefix="¥"
+              value={costs.length > 0 ? totalCost / costs.length : 0}
+              prefix={currency === 'USD' ? '$' : '¥'}
+              precision={2}
             />
           </Card>
         </Col>
@@ -142,6 +169,68 @@ const ResourceCost: React.FC = () => {
       <Card>
         <Table columns={columns} dataSource={costs} rowKey="namespace" loading={loading} />
       </Card>
+
+      {/* 成本配置弹窗 */}
+      <Modal
+        title="成本配置"
+        open={configModalVisible}
+        onCancel={() => setConfigModalVisible(false)}
+        onOk={() => form.submit()}
+        width={500}
+      >
+        <Form form={form} layout="vertical" onFinish={handleSaveConfig}>
+          <Form.Item
+            name="cpu_per_unit"
+            label="CPU 单价（每核每小时）"
+            rules={[{ required: true }]}
+          >
+            <InputNumber
+              min={0}
+              step={0.001}
+              style={{ width: '100%' }}
+              addonBefore="$"
+              addonAfter="/核/小时"
+            />
+          </Form.Item>
+          <Form.Item
+            name="mem_per_unit"
+            label="内存单价（每 GB 每小时）"
+            rules={[{ required: true }]}
+          >
+            <InputNumber
+              min={0}
+              step={0.001}
+              style={{ width: '100%' }}
+              addonBefore="$"
+              addonAfter="/GB/小时"
+            />
+          </Form.Item>
+          <Form.Item
+            name="gpu_per_unit"
+            label="GPU 单价（每卡每小时）"
+            rules={[{ required: true }]}
+          >
+            <InputNumber
+              min={0}
+              step={0.1}
+              style={{ width: '100%' }}
+              addonBefore="$"
+              addonAfter="/卡/小时"
+            />
+          </Form.Item>
+          <Form.Item
+            name="currency"
+            label="货币单位"
+          >
+            <Select
+              options={[
+                { label: 'USD ($)', value: 'USD' },
+                { label: 'CNY (¥)', value: 'CNY' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }

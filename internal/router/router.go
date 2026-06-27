@@ -361,6 +361,15 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				workloads.POST("/namespaces/clone", workloadHandler.CloneNamespace)
 			}
 
+			// 成本分析路由
+			costHandler := workload.NewCostHandler(model.DB)
+			costGroup := protected.Group("/clusters/:id/cost")
+			{
+				costGroup.GET("/config", costHandler.GetCostConfig)
+				costGroup.POST("/config", costHandler.SaveCostConfig)
+				costGroup.GET("/analysis", costHandler.GetResourceCost)
+			}
+
 			// 运维工具路由
 			opsGroup := protected.Group("/ops/:id")
 			{
