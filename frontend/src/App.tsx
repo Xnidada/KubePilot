@@ -45,7 +45,6 @@ import ResourceGraphPage from './pages/ops/ResourceGraph'
 import IdleResourcesPage from './pages/ops/IdleResources'
 import NetworkPolicies from './pages/workload/NetworkPolicies'
 import ResourceCost from './pages/monitor/ResourceCost'
-import YAMLDiff from './pages/workload/YAMLDiff'
 import EnvClone from './pages/workload/EnvClone'
 import GPUScheduling from './pages/workload/GPUScheduling'
 import { useAuthStore } from './stores/auth'
@@ -112,7 +111,6 @@ function App() {
         <Route path="ops/idle-resources" element={<IdleResourcesPage />} />
         <Route path="workloads/networkpolicies" element={<NetworkPolicies />} />
         <Route path="monitor/cost" element={<ResourceCost />} />
-        <Route path="workloads/yaml-diff" element={<YAMLDiff />} />
         <Route path="workloads/env-clone" element={<EnvClone />} />
         <Route path="workloads/gpu" element={<GPUScheduling />} />
       </Route>

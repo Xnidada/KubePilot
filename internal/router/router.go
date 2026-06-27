@@ -356,6 +356,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				// Pod 亲和性
 				workloads.GET("/deployments/:ns/:name/affinity", workloadHandler.GetPodAffinity)
 				workloads.PUT("/deployments/:ns/:name/affinity", workloadHandler.UpdatePodAffinity)
+
+				// 环境克隆
+				workloads.POST("/namespaces/clone", workloadHandler.CloneNamespace)
 			}
 
 			// 运维工具路由

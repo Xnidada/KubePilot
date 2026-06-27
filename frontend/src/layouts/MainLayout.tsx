@@ -83,10 +83,6 @@ const menuItems: MenuProps['items'] = [
         label: 'GPU 调度',
       },
       {
-        key: '/workloads/yaml-diff',
-        label: 'YAML Diff',
-      },
-      {
         key: '/workloads/env-clone',
         label: '环境克隆',
       },
@@ -333,7 +329,6 @@ const MainLayout: React.FC = () => {
       '/workloads/batch': ['/workloads'],
       '/workloads/compare': ['/workloads'],
       '/workloads/gpu': ['/workloads'],
-      '/workloads/yaml-diff': ['/workloads'],
       '/workloads/env-clone': ['/workloads'],
       '/workloads/networkpolicies': ['/network'],
       '/monitor/cost': ['/monitor'],
