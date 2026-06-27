@@ -67,9 +67,16 @@ const YAMLDiff: React.FC = () => {
       message.warning('请选择资源')
       return
     }
+    // 转换资源类型为复数形式
+    const typeMap: Record<string, string> = {
+      'pod': 'pods',
+      'deployment': 'deployments',
+      'service': 'services',
+    }
+    const apiType = typeMap[resourceType] || resourceType
     try {
       const res = await get<{ code: number; data: { yaml: string } }>(
-        `/clusters/${selectedCluster}/workloads/yaml/${resourceType}/${namespace}/${resourceName}`
+        `/clusters/${selectedCluster}/workloads/yaml/${apiType}/${namespace}/${resourceName}`
       )
       if (res.data?.yaml) {
         setYamlA(res.data.yaml)
