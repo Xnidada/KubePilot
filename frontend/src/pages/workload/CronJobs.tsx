@@ -9,7 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getNamespaceNames } from '../../api/workload'
-import { get, del } from '../../api/request'
+import { get, post, del } from '../../api/request'
 
 const { Title, Text } = Typography
 
@@ -130,49 +130,18 @@ const CronJobManagement: React.FC = () => {
     const schedule = buildCronExpression(values)
 
     try {
-      const yaml = `
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: ${values.name}
-  namespace: ${values.namespace}
-spec:
-  schedule: "${schedule}"
-  suspend: ${values.suspend || false}
-  successfulJobsHistoryLimit: ${values.successfulHistory || 3}
-  failedJobsHistoryLimit: ${values.failedHistory || 1}
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: ${values.name}
-            image: ${values.image}
-            command: ${JSON.stringify(values.command ? values.command.split(' ') : ['echo', 'hello'])}
-            resources:
-              requests:
-                memory: "${values.memoryRequest || '128Mi'}"
-                cpu: "${values.cpuRequest || '100m'}"
-              limits:
-                memory: "${values.memoryLimit || '256Mi'}"
-                cpu: "${values.cpuLimit || '200m'}"
-          restartPolicy: OnFailure
-`
-      const token = getAuthToken()
-      const response = await fetch('/api/v1/aiops/kubectl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ cluster_id: selectedCluster, command: 'apply', yaml }),
+      await post(`/clusters/${selectedCluster}/workloads/cronjobs`, {
+        namespace: values.namespace,
+        name: values.name,
+        schedule: schedule,
+        image: values.image,
+        command: values.command ? values.command.split(' ') : [],
+        suspend: values.suspend || false,
       })
-      const res = await response.json()
-      if (res.code === 0 && res.data?.success) {
-        message.success('CronJob 创建成功')
-        setCreateModalVisible(false)
-        form.resetFields()
-        fetchData()
-      } else {
-        message.error(res.data?.error || '创建失败')
-      }
+      message.success('CronJob 创建成功')
+      setCreateModalVisible(false)
+      form.resetFields()
+      fetchData()
     } catch (e) { message.error('创建失败') }
   }
 
@@ -407,14 +376,4 @@ spec:
   )
 }
 
-function getAuthToken(): string {
-  const token = localStorage.getItem("auth-storage")
-  if (token) {
-    try {
-      const authData = JSON.parse(token)
-      return authData?.state?.token || ""
-    } catch { return "" }
-  }
-  return ""
-}
 export default CronJobManagement
