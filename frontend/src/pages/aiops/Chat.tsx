@@ -96,7 +96,13 @@ const AIChat: React.FC = () => {
     const userContent = inputValue.trim()
     setInputValue('')
 
+    // 添加用户消息
     await addMessage(currentId, 'user', userContent)
+
+    // 添加 AI 占位消息（用于流式更新）
+    const aiPlaceholder = await addMessage(currentId, 'assistant', '...')
+    if (!aiPlaceholder) return
+
     setLoading(true)
 
     const abortController = new AbortController()
@@ -169,14 +175,15 @@ const AIChat: React.FC = () => {
         }
       }
 
+      // 最终更新消息内容
       if (fullContent) {
-        await addMessage(currentId!, 'assistant', fullContent)
+        updateLastMessage(currentId!, fullContent)
       }
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         console.error('Chat error:', error)
         message.error('AI 对话失败')
-        await addMessage(currentId!, 'assistant', '❌ AI 服务不可用')
+        updateLastMessage(currentId!, '❌ AI 服务不可用')
       }
     } finally {
       setLoading(false)
