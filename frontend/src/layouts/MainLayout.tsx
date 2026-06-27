@@ -228,7 +228,7 @@ const menuItems: MenuProps['items'] = [
     children: [
       {
         key: '/aiops/agent',
-        label: 'AI 助手',
+        label: 'AI Agent',
       },
       {
         key: '/aiops/diagnosis',

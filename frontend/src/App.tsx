@@ -24,7 +24,6 @@ import StorageClasses from './pages/storage/StorageClasses'
 import MonitorOverview from './pages/monitor/Overview'
 import MonitorDashboard from './pages/monitor/Dashboard'
 import AppStoreList from './pages/appstore/List'
-import AIChat from './pages/aiops/Chat'
 import AIDiagnosis from './pages/aiops/Diagnosis'
 import AISettings from './pages/aiops/Settings'
 import AIAgent from './pages/aiops/Agent'
@@ -90,7 +89,6 @@ function App() {
         <Route path="monitor" element={<MonitorOverview />} />
         <Route path="monitor/dashboard" element={<MonitorDashboard />} />
         <Route path="appstore" element={<AppStoreList />} />
-        <Route path="aiops/chat" element={<AIChat />} />
         <Route path="aiops/agent" element={<AIAgent />} />
         <Route path="aiops/diagnosis" element={<AIDiagnosis />} />
         <Route path="aiops/tools" element={<AITools />} />
