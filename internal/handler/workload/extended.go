@@ -1026,6 +1026,7 @@ func (h *Handler) CreateCronJob(c *gin.Context) {
 		Schedule  string   `json:"schedule" binding:"required"`
 		Image     string   `json:"image" binding:"required"`
 		Command   []string `json:"command"`
+		Args      []string `json:"args"`
 		Suspend   bool     `json:"suspend"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1057,6 +1058,7 @@ func (h *Handler) CreateCronJob(c *gin.Context) {
 									Name:    req.Name,
 									Image:   req.Image,
 									Command: req.Command,
+									Args:    req.Args,
 								},
 							},
 						},
@@ -1087,9 +1089,11 @@ func (h *Handler) UpdateCronJob(c *gin.Context) {
 	name := c.Param("name")
 
 	var req struct {
-		Schedule *string `json:"schedule"`
-		Suspend  *bool   `json:"suspend"`
-		Image    string  `json:"image"`
+		Schedule *string  `json:"schedule"`
+		Suspend  *bool    `json:"suspend"`
+		Image    string   `json:"image"`
+		Command  []string `json:"command"`
+		Args     []string `json:"args"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -1115,8 +1119,16 @@ func (h *Handler) UpdateCronJob(c *gin.Context) {
 	if req.Suspend != nil {
 		cj.Spec.Suspend = req.Suspend
 	}
-	if req.Image != "" && len(cj.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
-		cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = req.Image
+	if len(cj.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
+		if req.Image != "" {
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = req.Image
+		}
+		if req.Command != nil {
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command = req.Command
+		}
+		if req.Args != nil {
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Args = req.Args
+		}
 	}
 
 	result, err := client.Clientset.BatchV1().CronJobs(namespace).Update(ctx, cj, metav1.UpdateOptions{})
