@@ -250,19 +250,29 @@ const SystemRoles: React.FC = () => {
       key: 'description',
     },
     {
-      title: '权限数',
+      title: '权限',
       key: 'permissions',
       render: (_: any, record: any) => {
-        let count = 0
-        if (record.permissions) {
-          record.permissions.forEach((p: any) => {
-            if (p.resource === '*') {
-              count = 96 // 16 resources * 6 actions
-            } else {
-              count += (p.actions?.length || 0)
-            }
-          })
+        if (!record.permissions) return <Tag>0 个权限</Tag>
+
+        // 检查是否有通配符权限
+        const hasWildcard = record.permissions.some((p: any) => p.resource === '*' && p.actions?.includes('*'))
+        if (hasWildcard) {
+          return <Tag color="red">全部权限</Tag>
         }
+
+        // 检查是否有资源通配符
+        const hasResourceWildcard = record.permissions.some((p: any) => p.resource === '*')
+        if (hasResourceWildcard) {
+          const actions = record.permissions.find((p: any) => p.resource === '*')?.actions || []
+          return <Tag color="orange">{actions.join(', ')}</Tag>
+        }
+
+        // 计算具体权限数
+        let count = 0
+        record.permissions.forEach((p: any) => {
+          count += (p.actions?.length || 0)
+        })
         return <Tag>{count} 个权限</Tag>
       },
     },
