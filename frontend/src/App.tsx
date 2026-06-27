@@ -31,7 +31,6 @@ import AITools from './pages/aiops/AITools'
 import SystemUsers from './pages/system/Users'
 import SystemRoles from './pages/system/Roles'
 import TwoFactorAuth from './pages/system/TwoFactorAuth'
-import Tenants from './pages/system/Tenants'
 import Backup from './pages/system/Backup'
 import Webhooks from './pages/system/Webhooks'
 import Profile from './pages/Profile'
@@ -99,7 +98,6 @@ function App() {
         <Route path="system/users" element={<SystemUsers />} />
         <Route path="system/roles" element={<SystemRoles />} />
         <Route path="system/2fa" element={<TwoFactorAuth />} />
-        <Route path="system/tenants" element={<Tenants />} />
         <Route path="system/backup" element={<Backup />} />
         <Route path="system/webhooks" element={<Webhooks />} />
         <Route path="profile" element={<Profile />} />
