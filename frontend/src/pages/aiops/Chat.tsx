@@ -34,7 +34,6 @@ const AIChat: React.FC = () => {
     createConversation,
     selectConversation,
     addMessage,
-    updateLastMessage,
     deleteMessagePair,
     deleteConversation,
     renameConversation,
@@ -84,6 +83,10 @@ const AIChat: React.FC = () => {
     }
   }
 
+  // 本地 AI 消息状态（用于流式显示，不立即写入后端）
+  const [streamingContent, setStreamingContent] = useState<string>('')
+  const [isStreaming, setIsStreaming] = useState(false)
+
   const handleSend = async () => {
     if (!inputValue.trim() || loading) return
 
@@ -95,15 +98,15 @@ const AIChat: React.FC = () => {
 
     const userContent = inputValue.trim()
     setInputValue('')
+    setLoading(true)
+    setIsStreaming(true)
+    setStreamingContent('')
 
-    // 添加用户消息
+    // 添加用户消息到后端
     await addMessage(currentId, 'user', userContent)
 
-    // 添加 AI 占位消息（用于流式更新）
-    const aiPlaceholder = await addMessage(currentId, 'assistant', '...')
-    if (!aiPlaceholder) return
-
-    setLoading(true)
+    // 等待 UI 更新
+    await new Promise(resolve => setTimeout(resolve, 300))
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
@@ -132,6 +135,16 @@ const AIChat: React.FC = () => {
       const decoder = new TextDecoder()
       let buffer = ''
       let fullContent = ''
+      let lastUpdateTime = 0
+      const UPDATE_INTERVAL = 50 // 50ms 更新一次 UI
+
+      const flushToUI = (content: string) => {
+        const now = Date.now()
+        if (now - lastUpdateTime >= UPDATE_INTERVAL) {
+          setStreamingContent(content)
+          lastUpdateTime = now
+        }
+      }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -151,7 +164,7 @@ const AIChat: React.FC = () => {
                 const data = JSON.parse(jsonStr)
                 if (data.content) {
                   fullContent += data.content
-                  updateLastMessage(currentId!, fullContent)
+                  flushToUI(fullContent)
                 }
               } catch {}
             }
@@ -175,19 +188,29 @@ const AIChat: React.FC = () => {
         }
       }
 
-      // 最终更新消息内容
+      // 最终更新 UI
+      setStreamingContent(fullContent)
+
+      // 保存到后端
       if (fullContent) {
-        updateLastMessage(currentId!, fullContent)
+        await addMessage(currentId, 'assistant', fullContent)
       }
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         console.error('Chat error:', error)
         message.error('AI 对话失败')
-        updateLastMessage(currentId!, '❌ AI 服务不可用')
+        setStreamingContent('❌ AI 服务不可用')
+        await addMessage(currentId, 'assistant', '❌ AI 服务不可用')
       }
     } finally {
       setLoading(false)
+      setIsStreaming(false)
+      setStreamingContent('')
       abortControllerRef.current = null
+      // 刷新对话列表
+      if (currentId) {
+        selectConversation(currentId)
+      }
     }
   }
 
@@ -292,14 +315,33 @@ const AIChat: React.FC = () => {
               <Text type="secondary">输入问题开始与 AI 助手交流</Text>
             </div>
           ) : (
-            activeConversation.messages.map((msg, index) => renderMessage(msg, index))
-          )}
-          {loading && (
-            <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
-              <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12 }} />
-              <Spin size="small" />
-              <Text type="secondary" style={{ marginLeft: 8 }}>AI 思考中...</Text>
-            </div>
+            <>
+              {activeConversation.messages.map((msg, index) => renderMessage(msg, index))}
+              {/* 流式输出的 AI 消息 */}
+              {isStreaming && streamingContent && (
+                <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 24, padding: '0 16px' }}>
+                  <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12, flexShrink: 0 }} />
+                  <div style={{ maxWidth: '75%' }}>
+                    <div style={{ padding: '12px 16px', borderRadius: 12, backgroundColor: '#f0f2f5', color: '#333', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
+                      <div className="markdown-body">
+                        <MarkdownRenderer content={streamingContent} />
+                      </div>
+                      <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: '#999' }}>
+                        生成中...
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* 加载指示器 */}
+              {loading && !streamingContent && (
+                <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
+                  <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12 }} />
+                  <Spin size="small" />
+                  <Text type="secondary" style={{ marginLeft: 8 }}>AI 思考中...</Text>
+                </div>
+              )}
+            </>
           )}
           <div ref={messagesEndRef} />
         </div>
