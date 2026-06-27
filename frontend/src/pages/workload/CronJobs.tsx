@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Card, Table, Tag, Button, Space, Typography, Select, Input, message, Popconfirm,
-  Modal, Form, InputNumber, Divider, Row, Col, Switch
+  Modal, Form, InputNumber, Divider, Row, Col, Switch, Radio
 } from 'antd'
 import {
   SyncOutlined, DeleteOutlined, SearchOutlined, PlusOutlined
@@ -11,7 +11,7 @@ import { getClusterList, Cluster } from '../../api/cluster'
 import { getNamespaceNames } from '../../api/workload'
 import { get, del } from '../../api/request'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 interface CronJob {
   name: string
@@ -24,6 +24,68 @@ interface CronJob {
   images: string[]
 }
 
+// 根据表单值生成 cron 表达式
+const buildCronExpression = (values: any): string => {
+  const { scheduleType, minute, hour, dayOfMonth, month, dayOfWeek,
+    everyNMinutes, everyNHours, specificDays, specificTime } = values
+
+  switch (scheduleType) {
+    case 'every_minute':
+      return `*/${everyNMinutes || 1} * * * *`
+    case 'every_hour':
+      return `0 */${everyNHours || 1} * * *`
+    case 'daily':
+      return `${specificTime?.minute || 0} ${specificTime?.hour || 0} * * *`
+    case 'weekly':
+      return `${specificTime?.minute || 0} ${specificTime?.hour || 0} * * ${specificDays || 0}`
+    case 'monthly':
+      return `${specificTime?.minute || 0} ${specificTime?.hour || 0} ${dayOfMonth || 1} * *`
+    case 'custom':
+      return `${minute || '*'} ${hour || '*'} ${dayOfMonth || '*'} ${month || '*'} ${dayOfWeek || '*'}`
+    default:
+      return '0 * * * *'
+  }
+}
+
+// 解析 cron 表达式为中文描述
+const parseCronToText = (cron: string): string => {
+  if (!cron) return ''
+  const parts = cron.split(' ')
+  if (parts.length !== 5) return cron
+
+  const [min, hour, dom, month, dow] = parts
+  const descriptions: string[] = []
+
+  // 分钟
+  if (min === '*') descriptions.push('每分钟')
+  else if (min.startsWith('*/')) descriptions.push(`每 ${min.slice(2)} 分钟`)
+  else descriptions.push(`第 ${min} 分钟`)
+
+  // 小时
+  if (hour === '*') descriptions.push('每小时')
+  else if (hour.startsWith('*/')) descriptions.push(`每 ${hour.slice(2)} 小时`)
+  else descriptions.push(`${hour} 时`)
+
+  // 日
+  if (dom !== '*') descriptions.push(`${dom} 日`)
+
+  // 月
+  if (month !== '*') descriptions.push(`${month} 月`)
+
+  // 星期
+  if (dow !== '*') {
+    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    const dayIndex = parseInt(dow)
+    if (!isNaN(dayIndex) && dayIndex >= 0 && dayIndex <= 6) {
+      descriptions.push(weekDays[dayIndex])
+    } else {
+      descriptions.push(`${dow}`)
+    }
+  }
+
+  return descriptions.join('，')
+}
+
 const CronJobManagement: React.FC = () => {
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [loading, setLoading] = useState(false)
@@ -34,6 +96,7 @@ const CronJobManagement: React.FC = () => {
   const [searchText, setSearchText] = useState('')
   const [createModalVisible, setCreateModalVisible] = useState(false)
   const [form] = Form.useForm()
+  const scheduleType = Form.useWatch('scheduleType', form)
 
   useEffect(() => { fetchClusters() }, [])
   useEffect(() => { if (selectedCluster) { fetchNamespaces(); fetchData() } }, [selectedCluster, selectedNamespace])
@@ -64,6 +127,8 @@ const CronJobManagement: React.FC = () => {
   }
 
   const handleCreate = async (values: any) => {
+    const schedule = buildCronExpression(values)
+
     try {
       const yaml = `
 apiVersion: batch/v1
@@ -72,7 +137,7 @@ metadata:
   name: ${values.name}
   namespace: ${values.namespace}
 spec:
-  schedule: "${values.schedule}"
+  schedule: "${schedule}"
   suspend: ${values.suspend || false}
   successfulJobsHistoryLimit: ${values.successfulHistory || 3}
   failedJobsHistoryLimit: ${values.failedHistory || 1}
@@ -122,10 +187,19 @@ spec:
   const columns: ColumnsType<CronJob> = [
     { title: '名称', dataIndex: 'name', key: 'name', filteredValue: searchText ? [searchText] : null, onFilter: (v, r) => r.name.includes(v as string) },
     { title: '命名空间', dataIndex: 'namespace', key: 'namespace' },
-    { title: 'Schedule', dataIndex: 'schedule', key: 'schedule', render: (s) => <Tag>{s}</Tag> },
-    { title: 'Suspend', dataIndex: 'suspend', key: 'suspend', render: (v) => v ? <Tag color="warning">暂停</Tag> : <Tag color="success">运行中</Tag> },
+    {
+      title: '调度规则', dataIndex: 'schedule', key: 'schedule',
+      render: (s) => (
+        <div>
+          <Tag>{s}</Tag>
+          <br />
+          <Text type="secondary" style={{ fontSize: 12 }}>{parseCronToText(s)}</Text>
+        </div>
+      )
+    },
+    { title: '状态', dataIndex: 'suspend', key: 'suspend', render: (v) => v ? <Tag color="warning">暂停</Tag> : <Tag color="success">运行中</Tag> },
     { title: 'Active', dataIndex: 'active', key: 'active' },
-    { title: 'Last Schedule', dataIndex: 'last_schedule', key: 'last_schedule', render: (v) => v || '-' },
+    { title: '最后调度', dataIndex: 'last_schedule', key: 'last_schedule', render: (v) => v || '-' },
     { title: '镜像', dataIndex: 'images', key: 'images', render: (imgs: string[]) => imgs?.map(i => <Tag key={i}>{i}</Tag>) },
     { title: '年龄', dataIndex: 'age', key: 'age' },
     {
@@ -147,7 +221,7 @@ spec:
           <Select value={selectedNamespace} onChange={setSelectedNamespace} style={{ width: 150 }} placeholder="所有命名空间" allowClear options={namespaces.map(ns => ({ label: ns, value: ns }))} />
           <Input placeholder="搜索..." prefix={<SearchOutlined />} value={searchText} onChange={(e) => setSearchText(e.target.value)} style={{ width: 200 }} />
           <Button icon={<SyncOutlined />} onClick={fetchData}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalVisible(true)}>创建</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ scheduleType: 'daily', specificTime: { hour: 0, minute: 0 } }); setCreateModalVisible(true) }}>创建</Button>
         </Space>
       </div>
 
@@ -170,21 +244,122 @@ spec:
               </Form.Item>
             </Col>
           </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="schedule" label="调度规则" rules={[{ required: true }]} help="Cron 表达式，例如: 0 2 * * * (每天凌晨2点)">
-                <Input placeholder="0 2 * * *" />
+
+          <Divider>调度规则</Divider>
+
+          <Form.Item name="scheduleType" label="调度频率" initialValue="daily">
+            <Radio.Group>
+              <Radio.Button value="every_minute">每N分钟</Radio.Button>
+              <Radio.Button value="every_hour">每N小时</Radio.Button>
+              <Radio.Button value="daily">每天</Radio.Button>
+              <Radio.Button value="weekly">每周</Radio.Button>
+              <Radio.Button value="monthly">每月</Radio.Button>
+              <Radio.Button value="custom">自定义</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+
+          {scheduleType === 'every_minute' && (
+            <Form.Item name="everyNMinutes" label="间隔分钟数" initialValue={5}>
+              <InputNumber min={1} max={59} style={{ width: 200 }} addonAfter="分钟" />
+            </Form.Item>
+          )}
+
+          {scheduleType === 'every_hour' && (
+            <Form.Item name="everyNHours" label="间隔小时数" initialValue={1}>
+              <InputNumber min={1} max={23} style={{ width: 200 }} addonAfter="小时" />
+            </Form.Item>
+          )}
+
+          {scheduleType === 'daily' && (
+            <Space>
+              <Form.Item name={['specificTime', 'hour']} label="小时" initialValue={0}>
+                <InputNumber min={0} max={23} style={{ width: 100 }} addonAfter="时" />
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
-                <Input placeholder="例如: busybox:latest" />
+              <Form.Item name={['specificTime', 'minute']} label="分钟" initialValue={0}>
+                <InputNumber min={0} max={59} style={{ width: 100 }} addonAfter="分" />
               </Form.Item>
-            </Col>
-          </Row>
+            </Space>
+          )}
+
+          {scheduleType === 'weekly' && (
+            <>
+              <Form.Item name="specificDays" label="星期几" initialValue="1">
+                <Select style={{ width: 200 }} options={[
+                  { label: '周日', value: '0' },
+                  { label: '周一', value: '1' },
+                  { label: '周二', value: '2' },
+                  { label: '周三', value: '3' },
+                  { label: '周四', value: '4' },
+                  { label: '周五', value: '5' },
+                  { label: '周六', value: '6' },
+                ]} />
+              </Form.Item>
+              <Space>
+                <Form.Item name={['specificTime', 'hour']} label="小时" initialValue={0}>
+                  <InputNumber min={0} max={23} style={{ width: 100 }} addonAfter="时" />
+                </Form.Item>
+                <Form.Item name={['specificTime', 'minute']} label="分钟" initialValue={0}>
+                  <InputNumber min={0} max={59} style={{ width: 100 }} addonAfter="分" />
+                </Form.Item>
+              </Space>
+            </>
+          )}
+
+          {scheduleType === 'monthly' && (
+            <>
+              <Form.Item name="dayOfMonth" label="几号" initialValue={1}>
+                <InputNumber min={1} max={31} style={{ width: 200 }} addonAfter="号" />
+              </Form.Item>
+              <Space>
+                <Form.Item name={['specificTime', 'hour']} label="小时" initialValue={0}>
+                  <InputNumber min={0} max={23} style={{ width: 100 }} addonAfter="时" />
+                </Form.Item>
+                <Form.Item name={['specificTime', 'minute']} label="分钟" initialValue={0}>
+                  <InputNumber min={0} max={59} style={{ width: 100 }} addonAfter="分" />
+                </Form.Item>
+              </Space>
+            </>
+          )}
+
+          {scheduleType === 'custom' && (
+            <Row gutter={16}>
+              <Col span={4}>
+                <Form.Item name="minute" label="分钟">
+                  <Input placeholder="*" />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="hour" label="小时">
+                  <Input placeholder="*" />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="dayOfMonth" label="日">
+                  <Input placeholder="*" />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="month" label="月">
+                  <Input placeholder="*" />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="dayOfWeek" label="星期">
+                  <Input placeholder="*" />
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
+
+          <Divider>容器配置</Divider>
+
+          <Form.Item name="image" label="镜像" rules={[{ required: true }]}>
+            <Input placeholder="例如: busybox:latest" />
+          </Form.Item>
           <Form.Item name="command" label="命令" help="空格分隔的命令参数">
             <Input placeholder="例如: /bin/sh -c echo hello" />
           </Form.Item>
+
           <Row gutter={16}>
             <Col span={8}>
               <Form.Item name="suspend" label="暂停" valuePropName="checked">
@@ -202,6 +377,7 @@ spec:
               </Form.Item>
             </Col>
           </Row>
+
           <Divider>资源配额</Divider>
           <Row gutter={16}>
             <Col span={6}>
