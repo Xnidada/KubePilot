@@ -6,7 +6,6 @@ import {
   ClusterOutlined,
   CloudServerOutlined,
   LineChartOutlined,
-  AppstoreOutlined,
   SettingOutlined,
   UserOutlined,
   LogoutOutlined,
@@ -16,7 +15,6 @@ import {
   RobotOutlined,
   ApiOutlined,
   ControlOutlined,
-  ApartmentOutlined,
   GithubOutlined,
   ScheduleOutlined,
   ToolOutlined,
@@ -36,6 +34,9 @@ const menuItems: MenuProps['items'] = [
     key: '/clusters',
     icon: <ClusterOutlined />,
     label: '集群管理',
+  },
+  {
+    type: 'divider',
   },
   {
     key: '/workloads',
@@ -74,24 +75,12 @@ const menuItems: MenuProps['items'] = [
         key: '/workloads/hpas',
         label: 'HPA 自动伸缩',
       },
-      {
-        key: '/workloads/compare',
-        label: '资源对比',
-      },
-      {
-        key: '/workloads/gpu',
-        label: 'GPU 调度',
-      },
-      {
-        key: '/workloads/env-clone',
-        label: '环境克隆',
-      },
     ],
   },
   {
     key: '/network',
     icon: <ApiOutlined />,
-    label: '服务与网络',
+    label: '网络',
     children: [
       {
         key: '/workloads/services',
@@ -108,9 +97,28 @@ const menuItems: MenuProps['items'] = [
     ],
   },
   {
+    key: '/storage',
+    icon: <DatabaseOutlined />,
+    label: '存储',
+    children: [
+      {
+        key: '/storage/storageclasses',
+        label: 'StorageClass',
+      },
+      {
+        key: '/storage/pvs',
+        label: 'PersistentVolume',
+      },
+      {
+        key: '/storage/pvcs',
+        label: 'PVC',
+      },
+    ],
+  },
+  {
     key: '/config',
     icon: <ControlOutlined />,
-    label: '配置管理',
+    label: '配置',
     children: [
       {
         key: '/workloads/configmaps',
@@ -120,54 +128,23 @@ const menuItems: MenuProps['items'] = [
         key: '/workloads/secrets',
         label: 'Secret',
       },
-    ],
-  },
-  {
-    key: '/storage',
-    icon: <DatabaseOutlined />,
-    label: '存储管理',
-    children: [
-      {
-        key: '/storage/pvs',
-        label: 'PersistentVolume',
-      },
-      {
-        key: '/storage/pvcs',
-        label: 'PersistentVolumeClaim',
-      },
-      {
-        key: '/storage/storageclasses',
-        label: 'StorageClass',
-      },
-    ],
-  },
-  {
-    key: '/cluster-resources',
-    icon: <ApartmentOutlined />,
-    label: '集群资源',
-    children: [
       {
         key: '/workloads/namespaces',
         label: '命名空间',
       },
       {
         key: '/workloads/crds',
-        label: 'CRD 管理',
-      },
-      {
-        key: '/cluster/inspection',
-        label: '集群巡检',
-      },
-      {
-        key: '/cluster/event-forward',
-        label: 'Event 转发',
+        label: 'CRD',
       },
     ],
   },
   {
+    type: 'divider',
+  },
+  {
     key: '/monitor',
     icon: <LineChartOutlined />,
-    label: '监控告警',
+    label: '监控',
     children: [
       {
         key: '/monitor/dashboard',
@@ -185,16 +162,24 @@ const menuItems: MenuProps['items'] = [
         key: '/monitor',
         label: '事件告警',
       },
+      {
+        key: '/ops/events',
+        label: '事件时间线',
+      },
     ],
   },
   {
     key: '/ops',
     icon: <ToolOutlined />,
-    label: '运维工具',
+    label: '运维',
     children: [
       {
-        key: '/ops/events',
-        label: '事件时间线',
+        key: '/cluster/inspection',
+        label: '集群巡检',
+      },
+      {
+        key: '/cluster/event-forward',
+        label: 'Event 转发',
       },
       {
         key: '/ops/resource-graph',
@@ -204,12 +189,19 @@ const menuItems: MenuProps['items'] = [
         key: '/ops/idle-resources',
         label: '闲置资源清理',
       },
+      {
+        key: '/workloads/compare',
+        label: '资源对比',
+      },
+      {
+        key: '/workloads/env-clone',
+        label: '环境克隆',
+      },
+      {
+        key: '/workloads/gpu',
+        label: 'GPU 调度',
+      },
     ],
-  },
-  {
-    key: '/appstore',
-    icon: <AppstoreOutlined />,
-    label: '应用商店',
   },
   {
     key: '/scheduler',
@@ -225,6 +217,9 @@ const menuItems: MenuProps['items'] = [
         label: '队列管理',
       },
     ],
+  },
+  {
+    type: 'divider',
   },
   {
     key: '/aiops',
@@ -252,7 +247,7 @@ const menuItems: MenuProps['items'] = [
   {
     key: '/system',
     icon: <SettingOutlined />,
-    label: '系统管理',
+    label: '系统',
     children: [
       {
         key: '/system/users',
