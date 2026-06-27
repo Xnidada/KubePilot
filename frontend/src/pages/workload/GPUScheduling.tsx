@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Table, Button, Space, Typography, Select, Tag, Progress, Row, Col, Statistic
+  Card, Table, Button, Space, Typography, Select, Tag, Progress, Row, Col, Statistic, Empty
 } from 'antd'
 import { ReloadOutlined, CloudServerOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getNodes } from '../../api/workload'
+import { get } from '../../api/request'
 
 const { Title } = Typography
 
@@ -15,7 +16,6 @@ interface GPUInfo {
   total: number
   allocated: number
   free: number
-  pods: string[]
 }
 
 const GPUScheduling: React.FC = () => {
@@ -38,17 +38,41 @@ const GPUScheduling: React.FC = () => {
   const fetchGPUInfo = async () => {
     setLoading(true)
     try {
-      const res = await getNodes(selectedCluster)
-      const nodes = res.data || []
-      const gpuList: GPUInfo[] = nodes.map((node: any) => ({
-        node: node.name,
-        gpu_type: 'nvidia.com/gpu',
-        total: Math.floor(Math.random() * 4), // 模拟数据
-        allocated: Math.floor(Math.random() * 2),
-        free: 0,
-        pods: [],
-      }))
-      gpuList.forEach(g => g.free = g.total - g.allocated)
+      // 获取节点信息，提取 GPU 资源
+      const nodesRes = await getNodes(selectedCluster)
+      const nodes = nodesRes.data || []
+
+      const gpuList: GPUInfo[] = []
+
+      for (const node of nodes) {
+        // 从节点获取 GPU 信息（通过 metrics API 或直接查询）
+        try {
+          const nodeDetail = await get<{ code: number; data: any }>(
+            `/clusters/${selectedCluster}/workloads/nodes/${node.name}`
+          )
+          if (nodeDetail.data) {
+            const capacity = nodeDetail.data.capacity || {}
+            const allocated = nodeDetail.data.allocatable || {}
+
+            // 检查 nvidia.com/gpu
+            const gpuCapacity = parseInt(capacity['nvidia.com/gpu'] || '0')
+            const gpuAllocatable = parseInt(allocated['nvidia.com/gpu'] || '0')
+
+            if (gpuCapacity > 0) {
+              gpuList.push({
+                node: node.name,
+                gpu_type: 'nvidia.com/gpu',
+                total: gpuCapacity,
+                allocated: gpuCapacity - gpuAllocatable,
+                free: gpuAllocatable,
+              })
+            }
+          }
+        } catch (e) {
+          // 节点没有 GPU
+        }
+      }
+
       setGpus(gpuList)
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
@@ -56,12 +80,13 @@ const GPUScheduling: React.FC = () => {
 
   const totalGPU = gpus.reduce((sum, g) => sum + g.total, 0)
   const allocatedGPU = gpus.reduce((sum, g) => sum + g.allocated, 0)
+  const freeGPU = totalGPU - allocatedGPU
 
   const columns: ColumnsType<GPUInfo> = [
     { title: '节点', dataIndex: 'node', key: 'node' },
-    { title: 'GPU 类型', dataIndex: 'gpu_type', key: 'type', render: (v) => <Tag>{v}</Tag> },
+    { title: 'GPU 类型', dataIndex: 'gpu_type', key: 'type', render: (v) => <Tag color="blue">{v}</Tag> },
     { title: '总数', dataIndex: 'total', key: 'total' },
-    { title: '已分配', dataIndex: 'allocated', key: 'allocated' },
+    { title: '已分配', dataIndex: 'allocated', key: 'allocated', render: (v) => <Tag color={v > 0 ? 'warning' : 'default'}>{v}</Tag> },
     { title: '空闲', dataIndex: 'free', key: 'free', render: (v) => <Tag color={v > 0 ? 'success' : 'error'}>{v}</Tag> },
     {
       title: '使用率', key: 'usage',
@@ -99,13 +124,17 @@ const GPUScheduling: React.FC = () => {
         </Col>
         <Col span={8}>
           <Card>
-            <Statistic title="空闲" value={totalGPU - allocatedGPU} valueStyle={{ color: '#52c41a' }} />
+            <Statistic title="空闲" value={freeGPU} valueStyle={{ color: '#52c41a' }} />
           </Card>
         </Col>
       </Row>
 
-      <Card>
-        <Table columns={columns} dataSource={gpus} rowKey="node" loading={loading} />
+      <Card title="节点 GPU 信息">
+        {gpus.length === 0 ? (
+          <Empty description="未发现 GPU 资源。请确保节点已安装 NVIDIA 设备插件。" />
+        ) : (
+          <Table columns={columns} dataSource={gpus} rowKey="node" loading={loading} pagination={false} />
+        )}
       </Card>
     </div>
   )

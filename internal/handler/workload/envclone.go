@@ -21,9 +21,12 @@ func (h *Handler) CloneNamespace(c *gin.Context) {
 	}
 
 	var req struct {
-		Source  string   `json:"source" binding:"required"`
-		Target  string   `json:"target" binding:"required"`
-		Types   []string `json:"types"`
+		Source    string `json:"source" binding:"required"`
+		Target    string `json:"target" binding:"required"`
+		Resources []struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+		} `json:"resources"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -46,7 +49,6 @@ func (h *Handler) CloneNamespace(c *gin.Context) {
 	// 确保目标命名空间存在
 	_, err = client.Clientset.CoreV1().Namespaces().Get(ctx, req.Target, metav1.GetOptions{})
 	if err != nil {
-		// 创建目标命名空间
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: req.Target,
@@ -61,77 +63,82 @@ func (h *Handler) CloneNamespace(c *gin.Context) {
 
 	results := []map[string]interface{}{}
 
-	// 克隆 ConfigMaps
-	if contains(req.Types, "configmaps") {
-		cms, err := client.Clientset.CoreV1().ConfigMaps(req.Source).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			for _, cm := range cms.Items {
-				newCM := &corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      cm.Name,
-						Namespace: req.Target,
-						Labels:    cm.Labels,
-					},
-					Data: cm.Data,
-				}
-				_, err := client.Clientset.CoreV1().ConfigMaps(req.Target).Create(ctx, newCM, metav1.CreateOptions{})
-				results = append(results, map[string]interface{}{
-					"type": "ConfigMap",
-					"name": cm.Name,
-					"status": map[bool]string{true: "success", false: "failed"}[err == nil],
-				})
-			}
+	for _, res := range req.Resources {
+		result := map[string]interface{}{
+			"kind": res.Kind,
+			"name": res.Name,
 		}
-	}
 
-	// 克隆 Secrets (不包含数据)
-	if contains(req.Types, "secrets") {
-		secrets, err := client.Clientset.CoreV1().Secrets(req.Source).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			for _, s := range secrets.Items {
-				newSecret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      s.Name,
-						Namespace: req.Target,
-						Labels:    s.Labels,
-					},
-					Type: s.Type,
-					Data: s.Data,
-				}
-				_, err := client.Clientset.CoreV1().Secrets(req.Target).Create(ctx, newSecret, metav1.CreateOptions{})
-				results = append(results, map[string]interface{}{
-					"type": "Secret",
-					"name": s.Name,
-					"status": map[bool]string{true: "success", false: "failed"}[err == nil],
-				})
-			}
-		}
-	}
+		var cloneErr error
 
-	// 克隆 Services
-	if contains(req.Types, "services") {
-		svcs, err := client.Clientset.CoreV1().Services(req.Source).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			for _, svc := range svcs.Items {
-				newSvc := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:        svc.Name,
-						Namespace:   req.Target,
-						Labels:      svc.Labels,
-						Annotations: svc.Annotations,
-					},
-					Spec: svc.Spec,
-				}
-				// 清理 ClusterIP，让 K8S 自动分配
-				newSvc.Spec.ClusterIP = ""
-				_, err := client.Clientset.CoreV1().Services(req.Target).Create(ctx, newSvc, metav1.CreateOptions{})
-				results = append(results, map[string]interface{}{
-					"type": "Service",
-					"name": svc.Name,
-					"status": map[bool]string{true: "success", false: "failed"}[err == nil],
-				})
+		switch res.Kind {
+		case "Deployment":
+			deploy, err := client.Clientset.AppsV1().Deployments(req.Source).Get(ctx, res.Name, metav1.GetOptions{})
+			if err != nil {
+				cloneErr = err
+				break
 			}
+			deploy.Name = res.Name
+			deploy.Namespace = req.Target
+			deploy.ResourceVersion = ""
+			deploy.UID = ""
+			deploy.CreationTimestamp = metav1.Now()
+			_, cloneErr = client.Clientset.AppsV1().Deployments(req.Target).Create(ctx, deploy, metav1.CreateOptions{})
+
+		case "Service":
+			svc, err := client.Clientset.CoreV1().Services(req.Source).Get(ctx, res.Name, metav1.GetOptions{})
+			if err != nil {
+				cloneErr = err
+				break
+			}
+			svc.Name = res.Name
+			svc.Namespace = req.Target
+			svc.ResourceVersion = ""
+			svc.UID = ""
+			svc.CreationTimestamp = metav1.Now()
+			svc.Spec.ClusterIP = ""
+			_, cloneErr = client.Clientset.CoreV1().Services(req.Target).Create(ctx, svc, metav1.CreateOptions{})
+
+		case "ConfigMap":
+			cm, err := client.Clientset.CoreV1().ConfigMaps(req.Source).Get(ctx, res.Name, metav1.GetOptions{})
+			if err != nil {
+				cloneErr = err
+				break
+			}
+			cm.Name = res.Name
+			cm.Namespace = req.Target
+			cm.ResourceVersion = ""
+			cm.UID = ""
+			cm.CreationTimestamp = metav1.Now()
+			_, cloneErr = client.Clientset.CoreV1().ConfigMaps(req.Target).Create(ctx, cm, metav1.CreateOptions{})
+
+		case "Secret":
+			secret, err := client.Clientset.CoreV1().Secrets(req.Source).Get(ctx, res.Name, metav1.GetOptions{})
+			if err != nil {
+				cloneErr = err
+				break
+			}
+			secret.Name = res.Name
+			secret.Namespace = req.Target
+			secret.ResourceVersion = ""
+			secret.UID = ""
+			secret.CreationTimestamp = metav1.Now()
+			_, cloneErr = client.Clientset.CoreV1().Secrets(req.Target).Create(ctx, secret, metav1.CreateOptions{})
+
+		default:
+			result["status"] = "skipped"
+			result["message"] = "unsupported resource type"
+			results = append(results, result)
+			continue
 		}
+
+		if cloneErr != nil {
+			result["status"] = "failed"
+			result["message"] = cloneErr.Error()
+		} else {
+			result["status"] = "success"
+		}
+		results = append(results, result)
 	}
 
 	response.Success(c, gin.H{

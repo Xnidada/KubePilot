@@ -1,13 +1,22 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Button, Space, Typography, Select, message, Checkbox, Alert, Tag, Row, Col
+  Card, Button, Space, Typography, Select, message, Checkbox, Alert, Table, Row, Col, Tag
 } from 'antd'
-import { CopyOutlined } from '@ant-design/icons'
+import { CopyOutlined, ReloadOutlined, CheckSquareOutlined } from '@ant-design/icons'
+import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getNamespaceNames, getDeployments, getServices } from '../../api/workload'
 import { post } from '../../api/request'
 
 const { Title, Text } = Typography
+
+interface ResourceItem {
+  key: string
+  kind: string
+  name: string
+  namespace: string
+  selected: boolean
+}
 
 const EnvClone: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
@@ -15,9 +24,9 @@ const EnvClone: React.FC = () => {
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [sourceNamespace, setSourceNamespace] = useState('')
   const [targetNamespace, setTargetNamespace] = useState('')
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(['deployments', 'services', 'configmaps'])
-  const [resources, setResources] = useState<Record<string, string[]>>({})
+  const [resources, setResources] = useState<ResourceItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [cloning, setCloning] = useState(false)
 
   useEffect(() => { fetchClusters() }, [])
   useEffect(() => { if (selectedCluster) fetchNamespaces() }, [selectedCluster])
@@ -39,22 +48,55 @@ const EnvClone: React.FC = () => {
   }
 
   const fetchResources = async () => {
+    setLoading(true)
     try {
-      const result: Record<string, string[]> = {}
+      const items: ResourceItem[] = []
 
+      // 获取 Deployments
       try {
         const deploys = await getDeployments(selectedCluster, sourceNamespace)
-        result['deployments'] = (deploys.data || []).map((d: any) => d.name)
+        for (const d of (deploys.data || [])) {
+          items.push({
+            key: `Deployment/${d.namespace}/${d.name}`,
+            kind: 'Deployment',
+            name: d.name,
+            namespace: d.namespace,
+            selected: true,
+          })
+        }
       } catch (e) {}
 
+      // 获取 Services
       try {
         const svcs = await getServices(selectedCluster, sourceNamespace)
-        result['services'] = (svcs.data || []).map((s: any) => s.name)
+        for (const s of (svcs.data || [])) {
+          items.push({
+            key: `Service/${s.namespace}/${s.name}`,
+            kind: 'Service',
+            name: s.name,
+            namespace: s.namespace,
+            selected: true,
+          })
+        }
       } catch (e) {}
 
-      setResources(result)
+      setResources(items)
     } catch (e) { console.error(e) }
+    finally { setLoading(false) }
   }
+
+  const handleToggleResource = (key: string) => {
+    setResources(prev => prev.map(r =>
+      r.key === key ? { ...r, selected: !r.selected } : r
+    ))
+  }
+
+  const handleSelectAll = () => {
+    const allSelected = resources.every(r => r.selected)
+    setResources(prev => prev.map(r => ({ ...r, selected: !allSelected })))
+  }
+
+  const selectedCount = resources.filter(r => r.selected).length
 
   const handleClone = async () => {
     if (!sourceNamespace || !targetNamespace) {
@@ -65,22 +107,66 @@ const EnvClone: React.FC = () => {
       message.warning('源和目标命名空间不能相同')
       return
     }
+    if (selectedCount === 0) {
+      message.warning('请至少选择一个资源')
+      return
+    }
 
-    setLoading(true)
+    setCloning(true)
     try {
-      // 调用后端克隆 API
+      const selectedResources = resources.filter(r => r.selected).map(r => ({
+        kind: r.kind,
+        name: r.name,
+      }))
+
       await post(`/clusters/${selectedCluster}/workloads/namespaces/clone`, {
         source: sourceNamespace,
         target: targetNamespace,
-        types: selectedTypes,
+        resources: selectedResources,
       })
-      message.success('环境克隆成功')
+
+      message.success(`成功克隆 ${selectedCount} 个资源到 ${targetNamespace}`)
     } catch (e) {
       message.error('克隆失败')
     } finally {
-      setLoading(false)
+      setCloning(false)
     }
   }
+
+  const columns: ColumnsType<ResourceItem> = [
+    {
+      title: (
+        <Checkbox
+          checked={resources.length > 0 && resources.every(r => r.selected)}
+          indeterminate={selectedCount > 0 && selectedCount < resources.length}
+          onChange={handleSelectAll}
+        />
+      ),
+      key: 'select',
+      width: 50,
+      render: (_, record) => (
+        <Checkbox
+          checked={record.selected}
+          onChange={() => handleToggleResource(record.key)}
+        />
+      ),
+    },
+    {
+      title: '类型',
+      dataIndex: 'kind',
+      key: 'kind',
+      filters: [
+        { text: 'Deployment', value: 'Deployment' },
+        { text: 'Service', value: 'Service' },
+      ],
+      onFilter: (value, record) => record.kind === value,
+      render: (kind) => (
+        <Tag color={kind === 'Deployment' ? 'blue' : 'green'}>{kind}</Tag>
+      ),
+    },
+    { title: '名称', dataIndex: 'name', key: 'name' },
+    { title: '命名空间', dataIndex: 'namespace', key: 'namespace' },
+  ]
 
   return (
     <div>
@@ -88,15 +174,15 @@ const EnvClone: React.FC = () => {
 
       <Alert
         message="环境克隆说明"
-        description="从源命名空间克隆资源配置到目标命名空间。支持 Deployment、Service、ConfigMap、Secret 等资源。"
+        description="从源命名空间克隆资源配置到目标命名空间。支持选择具体资源进行克隆。"
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
       />
 
       <Row gutter={16}>
-        <Col span={12}>
-          <Card title="源配置">
+        <Col span={8}>
+          <Card title="克隆配置">
             <Space direction="vertical" style={{ width: '100%' }}>
               <div>
                 <Text strong>集群</Text>
@@ -127,47 +213,40 @@ const EnvClone: React.FC = () => {
                   options={namespaces.map(ns => ({ label: ns, value: ns }))}
                 />
               </div>
-              <div>
-                <Text strong>资源类型</Text>
-                <div style={{ marginTop: 8 }}>
-                  <Checkbox.Group
-                    value={selectedTypes}
-                    onChange={(checked) => setSelectedTypes(checked as string[])}
-                    options={[
-                      { label: 'Deployment', value: 'deployments' },
-                      { label: 'Service', value: 'services' },
-                      { label: 'ConfigMap', value: 'configmaps' },
-                      { label: 'Secret', value: 'secrets' },
-                    ]}
-                  />
-                </div>
-              </div>
               <Button
                 type="primary"
                 icon={<CopyOutlined />}
                 onClick={handleClone}
-                loading={loading}
+                loading={cloning}
                 block
+                disabled={selectedCount === 0}
               >
-                开始克隆
+                克隆选中资源 ({selectedCount})
               </Button>
             </Space>
           </Card>
         </Col>
 
-        <Col span={12}>
-          <Card title="源资源列表">
-            {Object.entries(resources).map(([type, names]) => (
-              <div key={type} style={{ marginBottom: 16 }}>
-                <Text strong style={{ textTransform: 'capitalize' }}>{type}</Text>
-                <div style={{ marginTop: 8 }}>
-                  {names.map(name => (
-                    <Tag key={name} style={{ margin: '0 4px 4px 0' }}>{name}</Tag>
-                  ))}
-                  {names.length === 0 && <Text type="secondary">无</Text>}
-                </div>
-              </div>
-            ))}
+        <Col span={16}>
+          <Card
+            title="资源列表"
+            extra={
+              <Space>
+                <Button size="small" icon={<CheckSquareOutlined />} onClick={handleSelectAll}>
+                  {resources.every(r => r.selected) ? '取消全选' : '全选'}
+                </Button>
+                <Button size="small" icon={<ReloadOutlined />} onClick={fetchResources}>刷新</Button>
+              </Space>
+            }
+          >
+            <Table
+              columns={columns}
+              dataSource={resources}
+              rowKey="key"
+              loading={loading}
+              size="small"
+              pagination={false}
+            />
           </Card>
         </Col>
       </Row>
