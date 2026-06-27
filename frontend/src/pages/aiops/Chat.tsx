@@ -16,15 +16,23 @@ import {
   UserOutlined,
   ClearOutlined,
   StopOutlined,
-  DeleteOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { addMessage as addMessageApi } from '../../api/conversation'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
+
+interface LocalMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+  isStreaming?: boolean
+}
 
 const AIChat: React.FC = () => {
   const {
@@ -33,8 +41,6 @@ const AIChat: React.FC = () => {
     activeId,
     createConversation,
     selectConversation,
-    addMessage,
-    deleteMessagePair,
     deleteConversation,
     renameConversation,
     clearConversation,
@@ -45,6 +51,7 @@ const AIChat: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [localMessages, setLocalMessages] = useState<LocalMessage[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -52,9 +59,23 @@ const AIChat: React.FC = () => {
     fetchClusters()
   }, [])
 
+  // 当对话切换时，加载消息
+  useEffect(() => {
+    if (activeConversation?.messages) {
+      setLocalMessages(activeConversation.messages.map((m: any) => ({
+        id: String(m.id),
+        role: m.role,
+        content: m.content,
+        created_at: m.created_at,
+      })))
+    } else {
+      setLocalMessages([])
+    }
+  }, [activeConversation])
+
   useEffect(() => {
     scrollToBottom()
-  }, [activeConversation?.messages])
+  }, [localMessages])
 
   const fetchClusters = async () => {
     try {
@@ -79,13 +100,10 @@ const AIChat: React.FC = () => {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
       setLoading(false)
+      setLocalMessages(prev => prev.filter(m => !m.isStreaming))
       message.info('已停止生成')
     }
   }
-
-  // 本地 AI 消息状态（用于流式显示，不立即写入后端）
-  const [streamingContent, setStreamingContent] = useState<string>('')
-  const [isStreaming, setIsStreaming] = useState(false)
 
   const handleSend = async () => {
     if (!inputValue.trim() || loading) return
@@ -99,14 +117,25 @@ const AIChat: React.FC = () => {
     const userContent = inputValue.trim()
     setInputValue('')
     setLoading(true)
-    setIsStreaming(true)
-    setStreamingContent('')
 
-    // 添加用户消息到后端
-    await addMessage(currentId, 'user', userContent)
+    // 添加用户消息到本地
+    const userMsg: LocalMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: userContent,
+      created_at: new Date().toISOString(),
+    }
+    setLocalMessages(prev => [...prev, userMsg])
 
-    // 等待 UI 更新
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // 添加 AI 占位消息
+    const aiMsg: LocalMessage = {
+      id: `ai-${Date.now()}`,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      isStreaming: true,
+    }
+    setLocalMessages(prev => [...prev, aiMsg])
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
@@ -136,12 +165,19 @@ const AIChat: React.FC = () => {
       let buffer = ''
       let fullContent = ''
       let lastUpdateTime = 0
-      const UPDATE_INTERVAL = 50 // 50ms 更新一次 UI
+      const UPDATE_INTERVAL = 50
 
-      const flushToUI = (content: string) => {
+      const updateAIContent = (content: string) => {
         const now = Date.now()
         if (now - lastUpdateTime >= UPDATE_INTERVAL) {
-          setStreamingContent(content)
+          setLocalMessages(prev => {
+            const updated = [...prev]
+            const lastIdx = updated.length - 1
+            if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
+              updated[lastIdx] = { ...updated[lastIdx], content }
+            }
+            return updated
+          })
           lastUpdateTime = now
         }
       }
@@ -164,7 +200,7 @@ const AIChat: React.FC = () => {
                 const data = JSON.parse(jsonStr)
                 if (data.content) {
                   fullContent += data.content
-                  flushToUI(fullContent)
+                  updateAIContent(fullContent)
                 }
               } catch {}
             }
@@ -188,29 +224,45 @@ const AIChat: React.FC = () => {
         }
       }
 
-      // 最终更新 UI
-      setStreamingContent(fullContent)
+      // 最终更新
+      setLocalMessages(prev => {
+        const updated = [...prev]
+        const lastIdx = updated.length - 1
+        if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
+          updated[lastIdx] = {
+            ...updated[lastIdx],
+            content: fullContent || '（无响应）',
+            isStreaming: false,
+          }
+        }
+        return updated
+      })
 
       // 保存到后端
       if (fullContent) {
-        await addMessage(currentId, 'assistant', fullContent)
+        await addMessageApi(currentId, { role: 'user', content: userContent })
+        await addMessageApi(currentId, { role: 'assistant', content: fullContent })
       }
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         console.error('Chat error:', error)
         message.error('AI 对话失败')
-        setStreamingContent('❌ AI 服务不可用')
-        await addMessage(currentId, 'assistant', '❌ AI 服务不可用')
+        setLocalMessages(prev => {
+          const updated = [...prev]
+          const lastIdx = updated.length - 1
+          if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: '❌ AI 服务不可用',
+              isStreaming: false,
+            }
+          }
+          return updated
+        })
       }
     } finally {
       setLoading(false)
-      setIsStreaming(false)
-      setStreamingContent('')
       abortControllerRef.current = null
-      // 刷新对话列表
-      if (currentId) {
-        selectConversation(currentId)
-      }
     }
   }
 
@@ -221,9 +273,8 @@ const AIChat: React.FC = () => {
     }
   }
 
-  const renderMessage = (msg: any, index: number) => {
+  const renderMessage = (msg: LocalMessage, index: number) => {
     const isUser = msg.role === 'user'
-    const isEmpty = !msg.content && !isUser
 
     return (
       <div
@@ -235,8 +286,15 @@ const AIChat: React.FC = () => {
         )}
         <div style={{ maxWidth: '75%', position: 'relative' }}>
           <div style={{ padding: '12px 16px', borderRadius: 12, backgroundColor: isUser ? '#1890ff' : '#f0f2f5', color: isUser ? '#fff' : '#333', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
-            {isEmpty ? (
-              <Spin size="small" />
+            {msg.isStreaming ? (
+              <>
+                <div className="markdown-body">
+                  <MarkdownRenderer content={msg.content || '...'} />
+                </div>
+                <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: '#999' }}>
+                  生成中...
+                </div>
+              </>
             ) : isUser ? (
               <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
             ) : (
@@ -244,19 +302,12 @@ const AIChat: React.FC = () => {
                 <MarkdownRenderer content={msg.content} />
               </div>
             )}
-            <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: isUser ? '#fff' : '#999' }}>
-              {new Date(msg.created_at).toLocaleTimeString()}
-            </div>
+            {!msg.isStreaming && (
+              <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: isUser ? '#fff' : '#999' }}>
+                {new Date(msg.created_at).toLocaleTimeString()}
+              </div>
+            )}
           </div>
-          <Tooltip title="删除此对话">
-            <Button
-              type="text"
-              size="small"
-              icon={<DeleteOutlined />}
-              onClick={() => activeId && deleteMessagePair(activeId, msg.id)}
-              style={{ position: 'absolute', top: -8, right: isUser ? 'auto' : -8, left: isUser ? -8 : 'auto', opacity: 0.5, fontSize: 12 }}
-            />
-          </Tooltip>
         </div>
         {isUser && (
           <Avatar icon={<UserOutlined />} style={{ backgroundColor: '#87d068', marginLeft: 12, flexShrink: 0 }} />
@@ -308,40 +359,21 @@ const AIChat: React.FC = () => {
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 0', background: '#fff' }}>
-          {(!activeConversation || activeConversation.messages.length === 0) ? (
+          {localMessages.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#999' }}>
               <RobotOutlined style={{ fontSize: 64, marginBottom: 24, color: '#d9d9d9' }} />
               <Title level={4} style={{ color: '#666' }}>开始新的对话</Title>
               <Text type="secondary">输入问题开始与 AI 助手交流</Text>
             </div>
           ) : (
-            <>
-              {activeConversation.messages.map((msg, index) => renderMessage(msg, index))}
-              {/* 流式输出的 AI 消息 */}
-              {isStreaming && streamingContent && (
-                <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 24, padding: '0 16px' }}>
-                  <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12, flexShrink: 0 }} />
-                  <div style={{ maxWidth: '75%' }}>
-                    <div style={{ padding: '12px 16px', borderRadius: 12, backgroundColor: '#f0f2f5', color: '#333', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
-                      <div className="markdown-body">
-                        <MarkdownRenderer content={streamingContent} />
-                      </div>
-                      <div style={{ textAlign: 'right', fontSize: 11, opacity: 0.7, marginTop: 8, color: '#999' }}>
-                        生成中...
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {/* 加载指示器 */}
-              {loading && !streamingContent && (
-                <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
-                  <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12 }} />
-                  <Spin size="small" />
-                  <Text type="secondary" style={{ marginLeft: 8 }}>AI 思考中...</Text>
-                </div>
-              )}
-            </>
+            localMessages.map((msg, index) => renderMessage(msg, index))
+          )}
+          {loading && localMessages.length > 0 && !localMessages[localMessages.length - 1]?.isStreaming && (
+            <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
+              <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#1890ff', marginRight: 12 }} />
+              <Spin size="small" />
+              <Text type="secondary" style={{ marginLeft: 8 }}>AI 思考中...</Text>
+            </div>
           )}
           <div ref={messagesEndRef} />
         </div>
