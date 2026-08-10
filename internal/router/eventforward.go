@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -58,6 +59,9 @@ func (h *EventForwardHandler) CreateRule(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "event_forward", "create", rule.ClusterID, "*") {
+		return
+	}
 
 	rule.Enabled = true
 	if err := h.db.Create(&rule).Error; err != nil {
@@ -81,6 +85,9 @@ func (h *EventForwardHandler) GetRule(c *gin.Context) {
 		response.NotFound(c, "rule not found")
 		return
 	}
+	if !authz.EnsureScope(c, "event_forward", "view", rule.ClusterID, "*") {
+		return
+	}
 
 	response.Success(c, rule)
 }
@@ -91,6 +98,9 @@ func (h *EventForwardHandler) UpdateRule(c *gin.Context) {
 	var rule model.EventForwardRule
 	if err := h.db.First(&rule, id).Error; err != nil {
 		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "event_forward", "edit", rule.ClusterID, "*") {
 		return
 	}
 
@@ -150,7 +160,15 @@ func (h *EventForwardHandler) UpdateRule(c *gin.Context) {
 // DeleteRule 删除转发规则
 func (h *EventForwardHandler) DeleteRule(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.db.Delete(&model.EventForwardRule{}, id).Error; err != nil {
+	var rule model.EventForwardRule
+	if err := h.db.First(&rule, id).Error; err != nil {
+		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "event_forward", "delete", rule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Delete(&rule).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -164,6 +182,9 @@ func (h *EventForwardHandler) TestRule(c *gin.Context) {
 	var rule model.EventForwardRule
 	if err := h.db.First(&rule, id).Error; err != nil {
 		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "event_forward", "execute", rule.ClusterID, "*") {
 		return
 	}
 

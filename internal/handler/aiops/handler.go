@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
@@ -44,6 +45,9 @@ func (h *Handler) Chat(c *gin.Context) {
 	var req aiops.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if req.ClusterID > 0 && !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
 		return
 	}
 
@@ -105,6 +109,13 @@ func (h *Handler) Diagnose(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	ns := req.Namespace
+	if ns == "" {
+		ns = "*"
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, ns) {
+		return
+	}
 
 	result, err := h.service.Diagnose(c.Request.Context(), &req)
 	if err != nil {
@@ -138,6 +149,9 @@ func (h *Handler) ChatSSE(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.ClusterID > 0 && !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
 		return
 	}
 
@@ -592,6 +606,9 @@ func (h *Handler) AgentChat(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
 
 	result, err := h.service.AgentChat(c.Request.Context(), userID.(uint), req.ClusterID, req.Message, req.ConversationID)
 	if err != nil {
@@ -614,6 +631,14 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 
 	if action.Status != "pending" {
 		response.BadRequest(c, "action is not pending")
+		return
+	}
+
+	ns := action.Namespace
+	if ns == "" {
+		ns = "*"
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", action.ClusterID, ns) {
 		return
 	}
 
@@ -674,6 +699,9 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	// 默认命名空间
 	if req.Namespace == "" {
 		req.Namespace = "default"
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, req.Namespace) {
+		return
 	}
 
 	// 设置默认值
@@ -746,6 +774,9 @@ func (h *Handler) KubectlExecute(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
 
 	ctx := c.Request.Context()
 
@@ -781,6 +812,9 @@ func (h *Handler) KubectlQuery(c *gin.Context) {
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	if !authz.EnsureScope(c, "aiops", "view", uint(clusterID), "*") {
 		return
 	}
 

@@ -21,13 +21,67 @@ export interface Role {
   is_system: boolean
 }
 
+export type ClusterPermissionLevel = 'read' | 'write' | 'admin'
+
 export interface UserClusterAssignment {
   id?: number
   cluster_id: number
   cluster_name?: string
   cluster_display_name?: string
   namespace: string
-  permission_level: 'read' | 'write' | 'admin'
+  permission_level: ClusterPermissionLevel
+}
+
+export interface UserGroup {
+  id: number
+  name: string
+  description: string
+  status: number
+  member_count?: number
+  cluster_count?: number
+  created_at: string
+  updated_at?: string
+}
+
+export interface UserGroupMember {
+  user_id: number
+  username: string
+  email?: string
+  real_name?: string
+  id?: number
+  status?: number
+}
+
+export interface UserGroupClusterAssignment {
+  id?: number
+  group_id?: number
+  cluster_id: number
+  cluster_name?: string
+  cluster_display_name?: string
+  namespace: string
+  permission_level: ClusterPermissionLevel
+}
+
+export interface EffectivePermissionSource {
+  source_type: 'direct' | 'user_group'
+  source_id?: number
+  source_name: string
+  permission_level: ClusterPermissionLevel
+}
+
+export interface EffectiveUserClusterPermission {
+  cluster_id: number
+  cluster_name?: string
+  cluster_display_name?: string
+  namespace: string
+  permission_level: ClusterPermissionLevel
+  sources?: EffectivePermissionSource[]
+}
+
+export interface EffectiveUserClusterPermissionPreview {
+  user_id: number
+  cluster_ids: number[]
+  grants: EffectiveUserClusterPermission[]
 }
 
 export interface AuditLog {
@@ -97,6 +151,69 @@ export const replaceUserClusters = (id: number, assignments: UserClusterAssignme
       permission_level,
     })),
   })
+}
+
+export const getUserEffectiveClusterPermissions = (id: number) => {
+  return get<{
+    code: number
+    data: EffectiveUserClusterPermissionPreview | EffectiveUserClusterPermission[]
+  }>(`/system/users/${id}/effective-access`)
+}
+
+// User groups
+export const getUserGroups = (page = 1, size = 10) => {
+  return get<{ code: number; data: UserGroup[]; total: number; page: number; size: number }>(
+    '/system/user-groups',
+    { params: { page, size } },
+  )
+}
+
+export const getUserGroup = (id: number) => {
+  return get<{ code: number; data: UserGroup }>(`/system/user-groups/${id}`)
+}
+
+export const createUserGroup = (data: { name: string; description?: string; status?: number }) => {
+  return post<{ code: number; data: UserGroup }>('/system/user-groups', data)
+}
+
+export const updateUserGroup = (id: number, data: { name?: string; description?: string; status?: number }) => {
+  return put<{ code: number; data: UserGroup }>(`/system/user-groups/${id}`, data)
+}
+
+export const deleteUserGroup = (id: number) => {
+  return del(`/system/user-groups/${id}`)
+}
+
+export const getUserGroupMembers = (id: number) => {
+  return get<{ code: number; data: UserGroupMember[] }>(`/system/user-groups/${id}/members`)
+}
+
+export const replaceUserGroupMembers = (id: number, userIds: number[]) => {
+  return put<{ code: number; data: UserGroupMember[] }>(`/system/user-groups/${id}/members`, {
+    user_ids: userIds,
+  })
+}
+
+export const getUserGroupClusters = (id: number) => {
+  return get<{ code: number; data: UserGroupClusterAssignment[] }>(
+    `/system/user-groups/${id}/clusters`,
+  )
+}
+
+export const replaceUserGroupClusters = (
+  id: number,
+  assignments: UserGroupClusterAssignment[],
+) => {
+  return put<{ code: number; data: UserGroupClusterAssignment[] }>(
+    `/system/user-groups/${id}/clusters`,
+    {
+      assignments: assignments.map(({ cluster_id, namespace, permission_level }) => ({
+        cluster_id,
+        namespace,
+        permission_level,
+      })),
+    },
+  )
 }
 
 // Roles

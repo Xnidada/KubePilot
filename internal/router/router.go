@@ -18,6 +18,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/llm"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
@@ -44,6 +45,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	// Initialize JWT manager
 	jwtManager := utils.NewJWTManager(cfg.JWT.Secret, cfg.JWT.ExpireTime, cfg.JWT.Issuer)
 	webSocketTicketManager := wsticket.NewManager(cacheInstance)
+	_, authorizer := SetupAuthorizer(model.DB)
 
 	// Initialize services
 	authSvc := authService.NewService(model.DB, jwtManager)
@@ -107,7 +109,12 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 		// Protected routes
 		protected := v1.Group("")
 		protected.Use(middleware.AuthMiddleware(jwtManager))
-		protected.Use(middleware.AutoRBACMiddleware()) // 启用RBAC权限检查
+		protected.Use(func(c *gin.Context) {
+			c.Set(authz.ContextAuthorizerKey, authorizer)
+			c.Set("authz_grant_resolver", authorizer)
+			c.Next()
+		})
+		protected.Use(middleware.PolicyAuthzMiddleware(authorizer))
 		{
 			// User profile
 			protected.GET("/profile", authHandler.GetProfile)
@@ -144,6 +151,19 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 					middleware.RBACMiddleware(),
 					systemHandler.ReplaceUserClusters,
 				)
+
+				// User groups
+				systemGroup.GET("/user-groups", systemHandler.ListUserGroups)
+				systemGroup.POST("/user-groups", systemHandler.CreateUserGroup)
+				systemGroup.GET("/user-groups/:id", systemHandler.GetUserGroup)
+				systemGroup.PUT("/user-groups/:id", systemHandler.UpdateUserGroup)
+				systemGroup.DELETE("/user-groups/:id", systemHandler.DeleteUserGroup)
+				systemGroup.GET("/user-groups/:id/members", systemHandler.ListUserGroupMembers)
+				systemGroup.PUT("/user-groups/:id/members", systemHandler.ReplaceUserGroupMembers)
+				systemGroup.GET("/user-groups/:id/clusters", systemHandler.ListUserGroupClusters)
+				systemGroup.PUT("/user-groups/:id/clusters", systemHandler.ReplaceUserGroupClusters)
+				systemGroup.GET("/users/:id/effective-cluster-permissions", systemHandler.GetUserEffectiveClusterPermissions)
+				systemGroup.GET("/users/:id/effective-access", systemHandler.GetUserEffectiveClusterPermissions)
 
 				// Role management
 				systemGroup.GET("/roles", systemHandler.ListRoles)
@@ -571,17 +591,15 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	r.POST(
 		"/api/v1/ws/tickets/pod/:id/:ns/:name",
 		middleware.AuthMiddleware(jwtManager),
-		middleware.RequirePermission("pods", "exec"),
-		middleware.RBACMiddleware(),
-		middleware.RequireClusterAccess("write"),
+		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
+		middleware.PolicyAuthzMiddleware(authorizer),
 		webSocketTicketHandler.IssuePod,
 	)
 	r.POST(
 		"/api/v1/ws/tickets/node/:id/:name",
 		middleware.AuthMiddleware(jwtManager),
-		middleware.RequirePermission("nodes", "admin"),
-		middleware.RBACMiddleware(),
-		middleware.RequireClusterAccess("admin"),
+		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
+		middleware.PolicyAuthzMiddleware(authorizer),
 		webSocketTicketHandler.IssueNode,
 	)
 
@@ -590,17 +608,15 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	r.GET(
 		"/api/v1/ws/terminal/:id/:ns/:name",
 		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "pod"),
-		middleware.RequirePermission("pods", "exec"),
-		middleware.RBACMiddleware(),
-		middleware.RequireClusterAccess("write"),
+		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
+		middleware.PolicyAuthzMiddleware(authorizer),
 		workloadHandler.PodTerminal,
 	)
 	r.GET(
 		"/api/v1/ws/node-shell/:id/:name",
 		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "node"),
-		middleware.RequirePermission("nodes", "admin"),
-		middleware.RBACMiddleware(),
-		middleware.RequireClusterAccess("admin"),
+		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
+		middleware.PolicyAuthzMiddleware(authorizer),
 		workloadHandler.NodeShell,
 	)
 

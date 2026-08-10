@@ -44,12 +44,12 @@ func (Role) TableName() string {
 
 type UserCluster struct {
 	ID              uint      `json:"id" gorm:"primaryKey"`
-	UserID          uint      `json:"user_id" gorm:"index;not null"`
+	UserID          uint      `json:"user_id" gorm:"not null;uniqueIndex:idx_user_cluster_namespace"`
 	User            User      `json:"user" gorm:"foreignKey:UserID"`
-	ClusterID       uint      `json:"cluster_id" gorm:"index;not null"`
+	ClusterID       uint      `json:"cluster_id" gorm:"not null;uniqueIndex:idx_user_cluster_namespace;index"`
 	Cluster         Cluster   `json:"cluster" gorm:"foreignKey:ClusterID"`
-	Namespace       string    `json:"namespace" gorm:"size:64;default:'*'"`
-	PermissionLevel string    `json:"permission_level" gorm:"size:20;default:'read'"` // read, write, admin
+	Namespace       string    `json:"namespace" gorm:"size:64;not null;default:'*';uniqueIndex:idx_user_cluster_namespace"`
+	PermissionLevel string    `json:"permission_level" gorm:"size:20;not null;default:'read'"` // read, write, admin
 	CreatedAt       time.Time `json:"created_at"`
 }
 

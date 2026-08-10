@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +26,9 @@ func (h *Handler) GetResourceYAML(c *gin.Context) {
 	resourceType := c.Param("type")
 	namespace := c.Param("ns")
 	name := c.Param("name")
+	if !authz.EnsureScope(c, "deployments", "view", uint(clusterID), namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -182,6 +186,9 @@ func (h *Handler) ApplyResourceYAML(c *gin.Context) {
 		response.BadRequest(c, "invalid cluster id")
 		return
 	}
+	if !authz.EnsureScope(c, "deployments", "edit", uint(clusterID), "*") {
+		return
+	}
 
 	if h.kubectlExecutor == nil {
 		response.InternalError(c, "kubectl executor not initialized")
@@ -218,6 +225,9 @@ func (h *Handler) DeleteResourceYAML(c *gin.Context) {
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		response.BadRequest(c, "invalid cluster id")
+		return
+	}
+	if !authz.EnsureScope(c, "deployments", "delete", uint(clusterID), "*") {
 		return
 	}
 

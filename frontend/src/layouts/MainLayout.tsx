@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, Avatar, Dropdown, Space, Button, theme, Tooltip } from 'antd'
 import {
@@ -254,6 +254,10 @@ const menuItems: MenuProps['items'] = [
         label: '用户管理',
       },
       {
+        key: '/system/user-groups',
+        label: '用户组管理',
+      },
+      {
         key: '/system/roles',
         label: '角色管理',
       },
@@ -273,12 +277,49 @@ const menuItems: MenuProps['items'] = [
   },
 ]
 
+const menuPermissionMap: Record<string, { resource: string; action: string }> = {
+  '/system/users': { resource: 'users', action: 'view' },
+  '/system/user-groups': { resource: 'user_groups', action: 'view' },
+  '/system/roles': { resource: 'roles', action: 'view' },
+  '/system/backup': { resource: 'backups', action: 'view' },
+  '/system/webhooks': { resource: 'webhooks', action: 'view' },
+  '/aiops/agent': { resource: 'aiops', action: 'execute' },
+  '/aiops/diagnosis': { resource: 'aiops', action: 'execute' },
+  '/aiops/tools': { resource: 'aiops', action: 'execute' },
+  '/aiops/settings': { resource: 'aiops_config', action: 'view' },
+  '/scheduler': { resource: 'scheduler', action: 'view' },
+  '/cluster/inspection': { resource: 'inspection', action: 'view' },
+  '/cluster/event-forward': { resource: 'event_forward', action: 'view' },
+}
+
 const MainLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, logout } = useAuthStore()
+  const { user, logout, hasPermission } = useAuthStore()
   const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken()
+
+  const visibleMenuItems = useMemo(() => {
+    const filterItems = (items: MenuProps['items']): MenuProps['items'] => {
+      if (!items) return items
+      return items
+        .map(item => {
+          if (!item || item.type === 'divider') return item
+          const key = 'key' in item ? String(item.key || '') : ''
+          const children = 'children' in item ? item.children : undefined
+          if (children) {
+            const filteredChildren = filterItems(children)
+            if (!filteredChildren || filteredChildren.length === 0) return null
+            return { ...item, children: filteredChildren }
+          }
+          const required = menuPermissionMap[key]
+          if (!required) return item
+          return hasPermission(required.resource, required.action) ? item : null
+        })
+        .filter(Boolean) as MenuProps['items']
+    }
+    return filterItems(menuItems)
+  }, [hasPermission, user])
 
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
     navigate(key)
@@ -396,7 +437,7 @@ const MainLayout: React.FC = () => {
           mode="inline"
           selectedKeys={getSelectedKeys()}
           defaultOpenKeys={getOpenKeys()}
-          items={menuItems}
+          items={visibleMenuItems}
           onClick={handleMenuClick}
         />
       </Sider>

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -314,6 +315,9 @@ func (h *Handler) CreateTask(c *gin.Context) {
 	if req.Namespace == "" {
 		req.Namespace = "default"
 	}
+	if !authz.EnsureScope(c, "scheduler", "create", req.ClusterID, req.Namespace) {
+		return
+	}
 	if req.Replicas == 0 {
 		req.Replicas = 1
 	}
@@ -405,6 +409,9 @@ func (h *Handler) GetTask(c *gin.Context) {
 		response.NotFound(c, "task not found")
 		return
 	}
+	if !authz.EnsureScope(c, "scheduler", "view", task.ClusterID, task.Namespace) {
+		return
+	}
 
 	// 获取最近日志
 	var logs []model.TaskLog
@@ -424,6 +431,9 @@ func (h *Handler) CancelTask(c *gin.Context) {
 	var task model.Task
 	if err := h.db.First(&task, id).Error; err != nil {
 		response.NotFound(c, "task not found")
+		return
+	}
+	if !authz.EnsureScope(c, "scheduler", "execute", task.ClusterID, task.Namespace) {
 		return
 	}
 
@@ -457,6 +467,9 @@ func (h *Handler) RetryTask(c *gin.Context) {
 	var task model.Task
 	if err := h.db.First(&task, id).Error; err != nil {
 		response.NotFound(c, "task not found")
+		return
+	}
+	if !authz.EnsureScope(c, "scheduler", "execute", task.ClusterID, task.Namespace) {
 		return
 	}
 
@@ -494,6 +507,9 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 		response.NotFound(c, "task not found")
 		return
 	}
+	if !authz.EnsureScope(c, "scheduler", "delete", task.ClusterID, task.Namespace) {
+		return
+	}
 
 	// 如果任务正在运行，先取消
 	if task.Status == "running" || task.Status == "queued" {
@@ -524,6 +540,9 @@ func (h *Handler) GetTaskLogs(c *gin.Context) {
 	var task model.Task
 	if err := h.db.First(&task, id).Error; err != nil {
 		response.NotFound(c, "task not found")
+		return
+	}
+	if !authz.EnsureScope(c, "scheduler", "view", task.ClusterID, task.Namespace) {
 		return
 	}
 

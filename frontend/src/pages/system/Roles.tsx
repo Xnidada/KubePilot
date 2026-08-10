@@ -32,20 +32,57 @@ const { Title, Text } = Typography
 const resourceLabels: Record<string, string> = {
   clusters: '集群管理',
   deployments: 'Deployment',
+  statefulsets: 'StatefulSet',
+  daemonsets: 'DaemonSet',
+  replicasets: 'ReplicaSet',
+  jobs: 'Job',
+  cronjobs: 'CronJob',
+  hpas: 'HPA 自动伸缩',
   pods: 'Pod',
   services: 'Service',
+  ingresses: 'Ingress',
+  networkpolicies: 'NetworkPolicy',
   configmaps: 'ConfigMap',
   secrets: 'Secret',
   pvcs: 'PVC',
   pvs: 'PV',
+  storageclasses: 'StorageClass',
+  crds: 'CRD',
+  custom_resources: '自定义资源',
   namespaces: '命名空间',
   nodes: '节点',
   events: '事件',
+  metrics: '指标监控',
+  operations: '运维操作',
+  cost: '资源成本',
   alerts: '告警',
   users: '用户管理',
+  user_groups: '用户组管理',
+  'user-groups': '用户组管理',
+  user_group_members: '用户组成员',
+  group_clusters: '用户组集群授权',
+  user_clusters: '用户直接集群授权',
+  cluster_access: '集群访问授权',
+  effective_permissions: '用户有效权限',
   roles: '角色管理',
   audit_logs: '审计日志',
   appstore: '应用商店',
+  scheduler: '任务调度',
+  inspection: '集群巡检',
+  event_forward: '事件转发',
+  aiops: 'AI 智能运维',
+  aiops_config: 'AI 配置',
+  backups: '备份管理',
+  webhooks: 'Webhook 通知',
+  tenants: '租户管理',
+}
+
+const getResourceLabel = (resource: string) => {
+  if (resourceLabels[resource]) return resourceLabels[resource]
+  const readableName = resource
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, character => character.toUpperCase())
+  return `其他资源：${readableName}`
 }
 
 const actionLabels: Record<string, string> = {
@@ -53,7 +90,8 @@ const actionLabels: Record<string, string> = {
   create: '创建',
   edit: '编辑',
   delete: '删除',
-  exec: '执行',
+  execute: '执行业务操作',
+  exec: '打开终端',
   admin: '管理',
 }
 
@@ -71,7 +109,7 @@ const SystemRoles: React.FC = () => {
   const buildTreeData = useCallback((resources: string[], actions: string[]) => {
     if (!resources.length || !actions.length) return []
     return resources.map(resource => ({
-      title: resourceLabels[resource] || resource,
+      title: getResourceLabel(resource),
       key: resource,
       children: actions.map(action => ({
         title: actionLabels[action] || action,

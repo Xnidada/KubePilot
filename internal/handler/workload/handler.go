@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	appsv1 "k8s.io/api/apps/v1"
@@ -77,8 +78,14 @@ func (h *Handler) ListDeployments(c *gin.Context) {
 		Images    []string `json:"images"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]DeploymentInfo, 0, len(deployments.Items))
 	for _, d := range deployments.Items {
+		if allowed != nil {
+			if _, ok := allowed[d.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		for _, c := range d.Spec.Template.Spec.Containers {
 			images = append(images, c.Image)
@@ -948,8 +955,14 @@ func (h *Handler) ListPods(c *gin.Context) {
 		IP        string `json:"ip"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]PodInfo, 0, len(pods.Items))
 	for _, p := range pods.Items {
+		if allowed != nil {
+			if _, ok := allowed[p.Namespace]; !ok {
+				continue
+			}
+		}
 		readyCount := 0
 		totalCount := len(p.Spec.Containers)
 		var restarts int32
@@ -2861,6 +2874,16 @@ func (h *Handler) BatchOperation(c *gin.Context) {
 		return
 	}
 
+	for _, res := range req.Resources {
+		ns := res.Namespace
+		if strings.ToLower(res.Kind) == "node" {
+			ns = "*"
+		}
+		if !authz.EnsureScope(c, "operations", "execute", req.ClusterID, ns) {
+			return
+		}
+	}
+
 	client, err := k8s.Manager.GetClient(req.ClusterID)
 	if err != nil {
 		response.InternalError(c, err.Error())
@@ -3031,6 +3054,21 @@ func (h *Handler) CompareResources(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	nsA := req.NamespaceA
+	if nsA == "" {
+		nsA = "*"
+	}
+	nsB := req.NamespaceB
+	if nsB == "" {
+		nsB = "*"
+	}
+	if !authz.EnsureScope(c, "operations", "view", req.ClusterA, nsA) {
+		return
+	}
+	if !authz.EnsureScope(c, "operations", "view", req.ClusterB, nsB) {
 		return
 	}
 

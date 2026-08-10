@@ -29,6 +29,7 @@ import AISettings from './pages/aiops/Settings'
 import AIAgent from './pages/aiops/Agent'
 import AITools from './pages/aiops/AITools'
 import SystemUsers from './pages/system/Users'
+import SystemUserGroups from './pages/system/UserGroups'
 import SystemRoles from './pages/system/Roles'
 import TwoFactorAuth from './pages/system/TwoFactorAuth'
 import Backup from './pages/system/Backup'
@@ -96,6 +97,7 @@ function App() {
         <Route path="aiops/tools" element={<AITools />} />
         <Route path="aiops/settings" element={<AISettings />} />
         <Route path="system/users" element={<SystemUsers />} />
+        <Route path="system/user-groups" element={<SystemUserGroups />} />
         <Route path="system/roles" element={<SystemRoles />} />
         <Route path="system/2fa" element={<TwoFactorAuth />} />
         <Route path="system/backup" element={<Backup />} />

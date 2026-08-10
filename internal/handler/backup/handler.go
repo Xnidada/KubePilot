@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -96,6 +97,9 @@ func (h *Handler) CreateBackup(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "backups", "create", req.ClusterID, "*") {
+		return
+	}
 
 	if req.TTL == "" {
 		req.TTL = "720h"
@@ -163,6 +167,9 @@ func (h *Handler) GetBackupRecord(c *gin.Context) {
 		response.NotFound(c, "backup not found")
 		return
 	}
+	if !authz.EnsureScope(c, "backups", "view", record.ClusterID, "*") {
+		return
+	}
 	response.Success(c, record)
 }
 
@@ -181,6 +188,12 @@ func (h *Handler) CreateRestore(c *gin.Context) {
 	var backup model.BackupRecord
 	if err := h.db.First(&backup, req.BackupID).Error; err != nil {
 		response.NotFound(c, "backup not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "execute", backup.ClusterID, "*") {
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "execute", req.ClusterID, "*") {
 		return
 	}
 

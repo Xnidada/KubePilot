@@ -18,6 +18,8 @@ interface LoginResponse {
       real_name: string
       role_id: number
       role_name: string
+      is_system?: boolean
+      permissions?: Array<{ resource: string; actions: string[] }>
     }
   }
 }

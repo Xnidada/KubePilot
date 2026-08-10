@@ -4,7 +4,9 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
+	"github.com/kubepilot/kubepilot/internal/service/access"
 	"github.com/kubepilot/kubepilot/internal/service/cluster"
 )
 
@@ -102,6 +104,30 @@ func (h *Handler) List(c *gin.Context) {
 		return
 	}
 
+	roleID, _ := c.Get("role_id")
+	userID, _ := c.Get("user_id")
+	var role model.Role
+	if err := model.DB.First(&role, roleID).Error; err == nil && !(role.IsSystem || role.Name == "admin") {
+		accessSvc := access.NewService(model.DB)
+		allowed, err := accessSvc.ClusterIDs(c.Request.Context(), userID.(uint), access.PermissionRead)
+		if err != nil {
+			response.InternalError(c, "failed to resolve cluster access")
+			return
+		}
+		allowedSet := make(map[uint]struct{}, len(allowed))
+		for _, id := range allowed {
+			allowedSet[id] = struct{}{}
+		}
+		filtered := make([]cluster.ClusterResponse, 0, len(result))
+		for _, item := range result {
+			if _, ok := allowedSet[item.ID]; ok {
+				filtered = append(filtered, item)
+			}
+		}
+		result = filtered
+		total = int64(len(filtered))
+	}
+
 	response.PageSuccess(c, result, total, page, size)
 }
 
@@ -147,6 +173,22 @@ func (h *Handler) GetNamespaces(c *gin.Context) {
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if raw, ok := c.Get("authz_allowed_namespaces"); ok {
+		if allowed, castOK := raw.([]string); castOK && len(allowed) > 0 && !(len(allowed) == 1 && allowed[0] == "*") {
+			allowedSet := make(map[string]struct{}, len(allowed))
+			for _, ns := range allowed {
+				allowedSet[ns] = struct{}{}
+			}
+			filtered := make([]string, 0, len(result))
+			for _, ns := range result {
+				if _, ok := allowedSet[ns]; ok {
+					filtered = append(filtered, ns)
+				}
+			}
+			result = filtered
+		}
 	}
 
 	response.Success(c, result)

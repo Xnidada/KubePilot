@@ -35,12 +35,14 @@ type LoginResponse struct {
 }
 
 type UserInfo struct {
-	ID       uint   `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	RealName string `json:"real_name"`
-	RoleID   uint   `json:"role_id"`
-	RoleName string `json:"role_name"`
+	ID          uint                 `json:"id"`
+	Username    string               `json:"username"`
+	Email       string               `json:"email"`
+	RealName    string               `json:"real_name"`
+	RoleID      uint                 `json:"role_id"`
+	RoleName    string               `json:"role_name"`
+	IsSystem    bool                 `json:"is_system"`
+	Permissions model.PermissionList `json:"permissions"`
 }
 
 type RegisterRequest struct {
@@ -72,25 +74,16 @@ func (s *Service) Login(req *LoginRequest) (*LoginResponse, error) {
 		return nil, err
 	}
 
-	// Update last login
 	s.userRepo.UpdateLastLogin(user.ID)
 
 	return &LoginResponse{
 		Token:     token,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
-		User: UserInfo{
-			ID:       user.ID,
-			Username: user.Username,
-			Email:    user.Email,
-			RealName: user.RealName,
-			RoleID:   user.RoleID,
-			RoleName: user.Role.Name,
-		},
+		User:      buildUserInfo(user),
 	}, nil
 }
 
 func (s *Service) Register(req *RegisterRequest) (*UserInfo, error) {
-	// Check if username exists
 	_, err := s.userRepo.GetByUsername(req.Username)
 	if err == nil {
 		return nil, errors.New("username already exists")
@@ -99,7 +92,6 @@ func (s *Service) Register(req *RegisterRequest) (*UserInfo, error) {
 		return nil, err
 	}
 
-	// Check if email exists
 	_, err = s.userRepo.GetByEmail(req.Email)
 	if err == nil {
 		return nil, errors.New("email already exists")
@@ -126,13 +118,8 @@ func (s *Service) Register(req *RegisterRequest) (*UserInfo, error) {
 		return nil, err
 	}
 
-	return &UserInfo{
-		ID:       user.ID,
-		Username: user.Username,
-		Email:    user.Email,
-		RealName: user.RealName,
-		RoleID:   user.RoleID,
-	}, nil
+	info := buildUserInfo(user)
+	return &info, nil
 }
 
 func (s *Service) GetUserByID(id uint) (*UserInfo, error) {
@@ -140,15 +127,22 @@ func (s *Service) GetUserByID(id uint) (*UserInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	info := buildUserInfo(user)
+	return &info, nil
+}
 
-	return &UserInfo{
-		ID:       user.ID,
-		Username: user.Username,
-		Email:    user.Email,
-		RealName: user.RealName,
-		RoleID:   user.RoleID,
-		RoleName: user.Role.Name,
-	}, nil
+func buildUserInfo(user *model.User) UserInfo {
+	permissions, _ := model.ParsePermissions(user.Role.Permissions)
+	return UserInfo{
+		ID:          user.ID,
+		Username:    user.Username,
+		Email:       user.Email,
+		RealName:    user.RealName,
+		RoleID:      user.RoleID,
+		RoleName:    user.Role.Name,
+		IsSystem:    user.Role.IsSystem,
+		Permissions: permissions,
+	}
 }
 
 func (s *Service) ChangePassword(userID uint, oldPassword, newPassword string) error {
@@ -182,19 +176,11 @@ func (s *Service) GenerateTokenForUser(userID uint) (*LoginResponse, error) {
 		return nil, err
 	}
 
-	// Update last login
 	s.userRepo.UpdateLastLogin(user.ID)
 
 	return &LoginResponse{
 		Token:     token,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
-		User: UserInfo{
-			ID:       user.ID,
-			Username: user.Username,
-			Email:    user.Email,
-			RealName: user.RealName,
-			RoleID:   user.RoleID,
-			RoleName: user.Role.Name,
-		},
+		User:      buildUserInfo(user),
 	}, nil
 }

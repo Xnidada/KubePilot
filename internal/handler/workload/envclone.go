@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +36,12 @@ func (h *Handler) CloneNamespace(c *gin.Context) {
 
 	if req.Source == req.Target {
 		response.BadRequest(c, "source and target cannot be the same")
+		return
+	}
+	if !authz.EnsureScope(c, "namespaces", "execute", uint(clusterID), req.Source) {
+		return
+	}
+	if !authz.EnsureScope(c, "namespaces", "execute", uint(clusterID), req.Target) {
 		return
 	}
 

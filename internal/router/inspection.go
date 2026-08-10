@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -46,6 +47,9 @@ func (h *InspectionHandler) CreateRule(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "inspection", "create", rule.ClusterID, "*") {
+		return
+	}
 
 	rule.Enabled = true
 	if err := h.db.Create(&rule).Error; err != nil {
@@ -64,6 +68,9 @@ func (h *InspectionHandler) GetRule(c *gin.Context) {
 		response.NotFound(c, "rule not found")
 		return
 	}
+	if !authz.EnsureScope(c, "inspection", "view", rule.ClusterID, "*") {
+		return
+	}
 
 	response.Success(c, rule)
 }
@@ -74,6 +81,9 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 	var rule model.InspectionRule
 	if err := h.db.First(&rule, id).Error; err != nil {
 		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "inspection", "edit", rule.ClusterID, "*") {
 		return
 	}
 
@@ -133,7 +143,15 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 // DeleteRule 删除巡检规则
 func (h *InspectionHandler) DeleteRule(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.db.Delete(&model.InspectionRule{}, id).Error; err != nil {
+	var rule model.InspectionRule
+	if err := h.db.First(&rule, id).Error; err != nil {
+		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "inspection", "delete", rule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Delete(&rule).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -147,6 +165,9 @@ func (h *InspectionHandler) RunInspection(c *gin.Context) {
 	var rule model.InspectionRule
 	if err := h.db.First(&rule, ruleID).Error; err != nil {
 		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "inspection", "execute", rule.ClusterID, "*") {
 		return
 	}
 
@@ -439,6 +460,9 @@ func (h *InspectionHandler) GetReport(c *gin.Context) {
 		response.NotFound(c, "report not found")
 		return
 	}
+	if !authz.EnsureScope(c, "inspection", "view", report.ClusterID, "*") {
+		return
+	}
 
 	response.Success(c, report)
 }
@@ -446,6 +470,14 @@ func (h *InspectionHandler) GetReport(c *gin.Context) {
 // GetReportResults 获取巡检报告结果
 func (h *InspectionHandler) GetReportResults(c *gin.Context) {
 	id := c.Param("id")
+	var report model.InspectionReport
+	if err := h.db.First(&report, id).Error; err != nil {
+		response.NotFound(c, "report not found")
+		return
+	}
+	if !authz.EnsureScope(c, "inspection", "view", report.ClusterID, "*") {
+		return
+	}
 	var results []model.InspectionResult
 	if err := h.db.Where("report_id = ?", id).Find(&results).Error; err != nil {
 		response.InternalError(c, err.Error())
