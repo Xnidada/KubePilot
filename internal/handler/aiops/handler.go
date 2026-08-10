@@ -74,6 +74,9 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if req.ClusterID > 0 && !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
 
 	ch, err := h.service.ChatStream(c.Request.Context(), userID.(uint), &req)
 	if err != nil {
@@ -200,6 +203,13 @@ func (h *Handler) DiagnoseResource(c *gin.Context) {
 	var req DiagnoseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ns := req.Namespace
+	if ns == "" {
+		ns = "*"
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, ns) {
 		return
 	}
 

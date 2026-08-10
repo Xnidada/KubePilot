@@ -857,6 +857,9 @@ func (h *Handler) CreateDeployment(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "deployments", "create", uint(clusterID), req.Namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -1097,6 +1100,9 @@ func (h *Handler) CreatePod(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "pods", "create", uint(clusterID), req.Namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -1178,8 +1184,14 @@ func (h *Handler) ListServices(c *gin.Context) {
 		Age        string `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]ServiceInfo, 0, len(services.Items))
 	for _, s := range services.Items {
+		if allowed != nil {
+			if _, ok := allowed[s.Namespace]; !ok {
+				continue
+			}
+		}
 		ports := ""
 		for i, p := range s.Spec.Ports {
 			if i > 0 {
@@ -1374,6 +1386,9 @@ func (h *Handler) CreateService(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "services", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -1758,8 +1773,14 @@ func (h *Handler) ListNamespaces(c *gin.Context) {
 		Age    string `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]NamespaceInfo, 0, len(namespaces.Items))
 	for _, ns := range namespaces.Items {
+		if allowed != nil {
+			if _, ok := allowed[ns.Name]; !ok {
+				continue
+			}
+		}
 		// 检查是否处于Terminating状态
 		status := string(ns.Status.Phase)
 		if ns.DeletionTimestamp != nil {
@@ -1802,7 +1823,7 @@ func (h *Handler) ListNamespaceNames(c *gin.Context) {
 		result = append(result, ns.Name)
 	}
 
-	response.Success(c, result)
+	response.Success(c, authz.FilterNamespaces(c, result))
 }
 
 // Event handlers
@@ -1841,8 +1862,14 @@ func (h *Handler) ListEvents(c *gin.Context) {
 		Age       string `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]EventInfo, 0, len(events.Items))
 	for _, e := range events.Items {
+		if allowed != nil {
+			if _, ok := allowed[e.Namespace]; !ok {
+				continue
+			}
+		}
 		result = append(result, EventInfo{
 			Type:      e.Type,
 			Reason:    e.Reason,
@@ -2102,8 +2129,14 @@ func (h *Handler) ListPVCs(c *gin.Context) {
 		Age          string `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]PVCInfo, 0, len(pvcs.Items))
 	for _, pvc := range pvcs.Items {
+		if allowed != nil {
+			if _, ok := allowed[pvc.Namespace]; !ok {
+				continue
+			}
+		}
 		accessModes := ""
 		for i, mode := range pvc.Spec.AccessModes {
 			if i > 0 {
@@ -2181,6 +2214,9 @@ func (h *Handler) CreatePVC(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "pvcs", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -2683,8 +2719,14 @@ func (h *Handler) ListHPAs(c *gin.Context) {
 		Age            string `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]HPAInfo, 0, len(hpas.Items))
 	for _, hpa := range hpas.Items {
+		if allowed != nil {
+			if _, ok := allowed[hpa.Namespace]; !ok {
+				continue
+			}
+		}
 		info := HPAInfo{
 			Name:      hpa.Name,
 			Namespace: hpa.Namespace,
@@ -2756,6 +2798,9 @@ func (h *Handler) CreateHPA(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "hpas", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 

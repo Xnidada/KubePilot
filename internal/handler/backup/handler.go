@@ -47,6 +47,9 @@ func (h *Handler) CreateBackupSchedule(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "backups", "create", req.ClusterID, "*") {
+		return
+	}
 
 	if req.TTL == "" {
 		req.TTL = "720h" // 30 天
@@ -77,7 +80,15 @@ func (h *Handler) CreateBackupSchedule(c *gin.Context) {
 // DeleteBackupSchedule 删除备份计划
 func (h *Handler) DeleteBackupSchedule(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.db.Delete(&model.BackupSchedule{}, id).Error; err != nil {
+	var schedule model.BackupSchedule
+	if err := h.db.First(&schedule, id).Error; err != nil {
+		response.NotFound(c, "schedule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "delete", schedule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Delete(&schedule).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}

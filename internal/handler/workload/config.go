@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	corev1 "k8s.io/api/core/v1"
@@ -51,8 +52,14 @@ func (h *Handler) ListConfigMaps(c *gin.Context) {
 		Age       string   `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]ConfigMapInfo, 0, len(configMaps.Items))
 	for _, cm := range configMaps.Items {
+		if allowed != nil {
+			if _, ok := allowed[cm.Namespace]; !ok {
+				continue
+			}
+		}
 		keys := make([]string, 0)
 		for k := range cm.Data {
 			keys = append(keys, k)
@@ -119,6 +126,9 @@ func (h *Handler) CreateConfigMap(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "configmaps", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -260,8 +270,14 @@ func (h *Handler) ListSecrets(c *gin.Context) {
 		Age       string   `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]SecretInfo, 0, len(secrets.Items))
 	for _, s := range secrets.Items {
+		if allowed != nil {
+			if _, ok := allowed[s.Namespace]; !ok {
+				continue
+			}
+		}
 		keys := make([]string, 0)
 		for k := range s.Data {
 			keys = append(keys, k)
@@ -340,6 +356,9 @@ func (h *Handler) CreateSecret(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "secrets", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -498,8 +517,14 @@ func (h *Handler) ListIngresses(c *gin.Context) {
 		Age       string   `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]IngressInfo, 0, len(ingresses.Items))
 	for _, ing := range ingresses.Items {
+		if allowed != nil {
+			if _, ok := allowed[ing.Namespace]; !ok {
+				continue
+			}
+		}
 		hosts := make([]string, 0)
 		paths := make([]string, 0)
 		for _, rule := range ing.Spec.Rules {
@@ -596,6 +621,9 @@ func (h *Handler) CreateIngress(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "ingresses", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 

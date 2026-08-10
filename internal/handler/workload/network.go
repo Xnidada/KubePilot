@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -47,8 +48,14 @@ func (h *Handler) ListNetworkPolicies(c *gin.Context) {
 		Age       string   `json:"age"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]PolicyInfo, 0, len(policies.Items))
 	for _, np := range policies.Items {
+		if allowed != nil {
+			if _, ok := allowed[np.Namespace]; !ok {
+				continue
+			}
+		}
 		pods := make([]string, 0)
 		for k, v := range np.Spec.PodSelector.MatchLabels {
 			pods = append(pods, fmt.Sprintf("%s=%s", k, v))
@@ -115,6 +122,9 @@ func (h *Handler) CreateNetworkPolicy(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "networkpolicies", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 

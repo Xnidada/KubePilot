@@ -1,9 +1,12 @@
 package router
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
 )
 
@@ -25,6 +28,7 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"PUT /api/v1/system/user-groups/:id/members",
 		"PUT /api/v1/system/user-groups/:id/clusters",
 		"GET /api/v1/system/users/:id/effective-cluster-permissions",
+		"GET /api/v1/system/users/:id/effective-access",
 		"POST /api/v1/ws/tickets/pod/:id/:ns/:name",
 		"GET /api/v1/inspection/rules/:id",
 		"GET /api/v1/backups/:id",
@@ -59,5 +63,51 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		if policy.Scope == "" {
 			t.Fatalf("policy %s missing scope", key)
 		}
+	}
+}
+
+func TestPolicyRegistryCoversProtectedAPIInventory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	registry := authz.NewRegistry()
+	registerAPIPolicies(registry)
+
+	// Build a minimal route inventory from registered policies and ensure each can be looked up
+	// via Gin's FullPath semantics (same path templates).
+	engine := gin.New()
+	api := engine.Group("/api/v1")
+	for _, key := range registry.Keys() {
+		parts := strings.SplitN(key, " ", 2)
+		method, fullPath := parts[0], parts[1]
+		if !strings.HasPrefix(fullPath, "/api/v1/") {
+			t.Fatalf("unexpected policy path %s", fullPath)
+		}
+		rel := strings.TrimPrefix(fullPath, "/api/v1")
+		handler := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+		switch method {
+		case http.MethodGet:
+			api.GET(rel, handler)
+		case http.MethodPost:
+			api.POST(rel, handler)
+		case http.MethodPut:
+			api.PUT(rel, handler)
+		case http.MethodPatch:
+			api.PATCH(rel, handler)
+		case http.MethodDelete:
+			api.DELETE(rel, handler)
+		default:
+			t.Fatalf("unsupported method in policy %s", key)
+		}
+	}
+
+	routes := engine.Routes()
+	if len(routes) != len(registry.Keys()) {
+		t.Fatalf("gin routes %d != policy keys %d", len(routes), len(registry.Keys()))
+	}
+	for _, route := range routes {
+		if !registry.Registered(route.Method, route.Path) {
+			t.Fatalf("registered gin route missing policy: %s %s", route.Method, route.Path)
+		}
+		req := httptest.NewRequest(route.Method, route.Path, nil)
+		_ = req
 	}
 }

@@ -78,3 +78,19 @@ func NamespaceAllowed(c *gin.Context, namespace string) bool {
 	_, ok := set[namespace]
 	return ok
 }
+
+// FilterNamespaces keeps only namespaces present in the caller-allowed set.
+// When unrestricted, the input slice is returned unchanged.
+func FilterNamespaces(c *gin.Context, namespaces []string) []string {
+	set := AllowedNamespaceSet(c)
+	if set == nil {
+		return namespaces
+	}
+	out := make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		if _, ok := set[ns]; ok {
+			out = append(out, ns)
+		}
+	}
+	return out
+}

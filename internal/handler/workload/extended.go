@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	appsv1 "k8s.io/api/apps/v1"
@@ -53,8 +54,14 @@ func (h *Handler) ListStatefulSets(c *gin.Context) {
 		Images    []string `json:"images"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]StatefulSetInfo, 0, len(statefulSets.Items))
 	for _, sts := range statefulSets.Items {
+		if allowed != nil {
+			if _, ok := allowed[sts.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		for _, c := range sts.Spec.Template.Spec.Containers {
 			images = append(images, c.Image)
@@ -150,8 +157,14 @@ func (h *Handler) ListDaemonSets(c *gin.Context) {
 		Images    []string `json:"images"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]DaemonSetInfo, 0, len(daemonSets.Items))
 	for _, ds := range daemonSets.Items {
+		if allowed != nil {
+			if _, ok := allowed[ds.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		for _, c := range ds.Spec.Template.Spec.Containers {
 			images = append(images, c.Image)
@@ -242,8 +255,14 @@ func (h *Handler) ListJobs(c *gin.Context) {
 		Images      []string `json:"images"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]JobInfo, 0, len(jobs.Items))
 	for _, job := range jobs.Items {
+		if allowed != nil {
+			if _, ok := allowed[job.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		for _, c := range job.Spec.Template.Spec.Containers {
 			images = append(images, c.Image)
@@ -345,8 +364,14 @@ func (h *Handler) ListCronJobs(c *gin.Context) {
 		Args         []string `json:"args"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]CronJobInfo, 0, len(cronJobs.Items))
 	for _, cj := range cronJobs.Items {
+		if allowed != nil {
+			if _, ok := allowed[cj.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		command := make([]string, 0)
 		args := make([]string, 0)
@@ -451,8 +476,14 @@ func (h *Handler) ListReplicaSets(c *gin.Context) {
 		Owner     string   `json:"owner"`
 	}
 
+	allowed := authz.AllowedNamespaceSet(c)
 	result := make([]ReplicaSetInfo, 0, len(replicaSets.Items))
 	for _, rs := range replicaSets.Items {
+		if allowed != nil {
+			if _, ok := allowed[rs.Namespace]; !ok {
+				continue
+			}
+		}
 		images := make([]string, 0)
 		for _, c := range rs.Spec.Template.Spec.Containers {
 			images = append(images, c.Image)
@@ -659,6 +690,9 @@ func (h *Handler) CreateStatefulSet(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "statefulsets", "create", uint(clusterID), req.Namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -804,6 +838,9 @@ func (h *Handler) CreateDaemonSet(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "daemonsets", "create", uint(clusterID), req.Namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -944,6 +981,9 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "jobs", "create", uint(clusterID), req.Namespace) {
+		return
+	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -1031,6 +1071,9 @@ func (h *Handler) CreateCronJob(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "cronjobs", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
