@@ -357,6 +357,10 @@ export const deleteInspectionRule = (id: number) => {
   return del(`/inspection/rules/${id}`)
 }
 
+export const clearInspectionSchedule = (id: number) => {
+  return del<{ code: number; data: InspectionRule }>(`/inspection/rules/${id}/schedule`)
+}
+
 export const runInspection = (ruleId: number) => {
   return post<{ code: number; data: { report_id: number; status: string } }>(`/inspection/rules/${ruleId}/run`)
 }
@@ -436,6 +440,114 @@ export const listEventForwardLogs = (ruleId?: number, status?: string) => {
   if (status) params += `status=${status}&`
   return get<{ code: number; data: EventForwardLog[] }>(`/event-forward/logs${params}`)
 }
+
+export interface EventForwardStats {
+  watchers_active: number
+  events_seen: number
+  events_matched: number
+  forward_ok: number
+  forward_fail: number
+}
+
+export const getEventForwardStats = () => {
+  return get<{ code: number; data: EventForwardStats }>('/event-forward/stats')
+}
+
+export const resetEventForwardStats = () => {
+  return post<{ code: number; data: EventForwardStats }>('/event-forward/stats/reset')
+}
+
+// ==================== 备份 ====================
+
+export interface BackupScheduleItem {
+  id: number
+  name: string
+  cluster_id: number
+  namespaces: string
+  resources: string
+  schedule: string
+  ttl: string
+  status: string
+  storage_location?: string
+  last_backup: string
+  created_at: string
+}
+
+export interface BackupRecordItem {
+  id: number
+  backup_name: string
+  cluster_id: number
+  namespaces: string
+  resources: string
+  status: string
+  volume_snapshots: number
+  errors: number
+  warnings: number
+  started_at: string
+  completed_at: string
+  created_at: string
+}
+
+export interface RestoreRecordItem {
+  id: number
+  backup_id: number
+  cluster_id: number
+  restore_name: string
+  namespaces: string
+  status: string
+  errors: number
+  warnings: number
+  started_at: string
+  completed_at: string
+  created_at: string
+}
+
+export const listBackupSchedules = () =>
+  get<{ code: number; data: BackupScheduleItem[] }>('/backups/schedules')
+
+export const createBackupSchedule = (data: {
+  name: string
+  cluster_id: number
+  schedule: string
+  namespaces?: string[]
+  resources?: string[]
+  ttl?: string
+  storage_location?: string
+}) => post<{ code: number; data: BackupScheduleItem }>('/backups/schedules', data)
+
+export const updateBackupSchedule = (id: number, data: Record<string, unknown>) =>
+  put<{ code: number; data: BackupScheduleItem }>(`/backups/schedules/${id}`, data)
+
+export const deleteBackupSchedule = (id: number) => del(`/backups/schedules/${id}`)
+
+export const pauseBackupSchedule = (id: number) =>
+  post<{ code: number; data: BackupScheduleItem }>(`/backups/schedules/${id}/pause`)
+
+export const resumeBackupSchedule = (id: number) =>
+  post<{ code: number; data: BackupScheduleItem }>(`/backups/schedules/${id}/resume`)
+
+export const clearBackupCron = (id: number) =>
+  del<{ code: number; data: BackupScheduleItem }>(`/backups/schedules/${id}/cron`)
+
+export const listBackupRecords = () =>
+  get<{ code: number; data: BackupRecordItem[] }>('/backups')
+
+export const createBackupRecord = (data: {
+  cluster_id: number
+  backup_name: string
+  namespaces?: string[]
+  resources?: string[]
+  ttl?: string
+}) => post<{ code: number; data: BackupRecordItem }>('/backups', data)
+
+export const listRestoreRecords = () =>
+  get<{ code: number; data: RestoreRecordItem[] }>('/backups/restores')
+
+export const createRestore = (data: {
+  backup_id: number
+  cluster_id: number
+  namespaces?: string[]
+}) => post<{ code: number; data: RestoreRecordItem }>('/backups/restore', data)
 
 // ==================== SSO/OAuth ====================
 

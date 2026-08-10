@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Card,
   Table,
@@ -31,31 +31,38 @@ import {
   deleteQueue,
   TaskQueue,
 } from '../../api/scheduler'
+import { useInterval } from '../../hooks/useInterval'
+import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
 
 const { Title, Text } = Typography
+
+const QUEUE_REFRESH_MS = 10000
 
 const Queues: React.FC = () => {
   const [queues, setQueues] = useState<TaskQueue[]>([])
   const [loading, setLoading] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
   const [editingQueue, setEditingQueue] = useState<TaskQueue | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
   const [form] = Form.useForm()
 
-  useEffect(() => {
-    fetchQueues()
-  }, [])
-
-  const fetchQueues = async () => {
-    setLoading(true)
+  const fetchQueues = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const res = await listQueues()
       setQueues(res.data || [])
     } catch (error) {
       console.error('Failed to fetch queues:', error)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    fetchQueues()
+  }, [fetchQueues])
+
+  useInterval(() => { fetchQueues(true) }, QUEUE_REFRESH_MS, autoRefresh)
 
   const handleCreate = () => {
     setEditingQueue(null)
@@ -221,7 +228,11 @@ const Queues: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={4}>队列管理</Title>
         <Space>
-          <Button icon={<SyncOutlined />} onClick={fetchQueues}>
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
+            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+          </Space>
+          <Button icon={<SyncOutlined />} onClick={() => fetchQueues()}>
             刷新
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
@@ -229,6 +240,13 @@ const Queues: React.FC = () => {
           </Button>
         </Space>
       </div>
+
+      <ModuleHealthAlert
+        module="scheduler"
+        title="调度模块异常"
+        fixPath="/system/modules"
+        fixLabel="查看模块详情"
+      />
 
       <Card>
         <Table columns={columns} dataSource={queues} rowKey="id" loading={loading} />

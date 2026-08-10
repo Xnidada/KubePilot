@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Card,
   Table,
@@ -14,6 +14,7 @@ import {
   Tabs,
   Badge,
   Tooltip,
+  Switch,
 } from 'antd'
 import {
   PlusOutlined,
@@ -25,6 +26,7 @@ import {
   CloseCircleOutlined,
   WarningOutlined,
   FileTextOutlined,
+  ClearOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
 import {
@@ -32,6 +34,7 @@ import {
   createInspectionRule,
   updateInspectionRule,
   deleteInspectionRule,
+  clearInspectionSchedule,
   runInspection,
   listInspectionReports,
   getInspectionResults,
@@ -39,8 +42,14 @@ import {
   InspectionReport,
   InspectionResult,
 } from '../../api/system'
+import { useQueryTab } from '../../hooks/useQueryTab'
+import { useInterval } from '../../hooks/useInterval'
+import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
 
 const { Title, Text } = Typography
+
+const INSPECTION_TABS = ['rules', 'reports'] as const
+const REFRESH_MS = 10000
 
 const Inspection: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
@@ -53,7 +62,32 @@ const Inspection: React.FC = () => {
   const [showResultsModal, setShowResultsModal] = useState(false)
   const [editingRule, setEditingRule] = useState<InspectionRule | null>(null)
   const [selectedReport, setSelectedReport] = useState<InspectionReport | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [activeTab, setActiveTab] = useQueryTab(INSPECTION_TABS, 'rules')
   const [form] = Form.useForm()
+
+  const fetchRules = useCallback(async () => {
+    if (!selectedCluster) return
+    setLoading(true)
+    try {
+      const res = await listInspectionRules(selectedCluster)
+      setRules(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch rules:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [selectedCluster])
+
+  const fetchReports = useCallback(async () => {
+    if (!selectedCluster) return
+    try {
+      const res = await listInspectionReports(selectedCluster)
+      setReports(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch reports:', error)
+    }
+  }, [selectedCluster])
 
   useEffect(() => {
     fetchClusters()
@@ -64,7 +98,11 @@ const Inspection: React.FC = () => {
       fetchRules()
       fetchReports()
     }
-  }, [selectedCluster])
+  }, [selectedCluster, fetchRules, fetchReports])
+
+  useInterval(() => {
+    if (selectedCluster) fetchReports()
+  }, REFRESH_MS, autoRefresh && !!selectedCluster)
 
   const fetchClusters = async () => {
     try {
@@ -75,27 +113,6 @@ const Inspection: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to fetch clusters:', error)
-    }
-  }
-
-  const fetchRules = async () => {
-    setLoading(true)
-    try {
-      const res = await listInspectionRules(selectedCluster)
-      setRules(res.data || [])
-    } catch (error) {
-      console.error('Failed to fetch rules:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchReports = async () => {
-    try {
-      const res = await listInspectionReports(selectedCluster)
-      setReports(res.data || [])
-    } catch (error) {
-      console.error('Failed to fetch reports:', error)
     }
   }
 
@@ -149,6 +166,16 @@ const Inspection: React.FC = () => {
       setTimeout(fetchReports, 2000)
     } catch (error) {
       message.error('启动巡检失败')
+    }
+  }
+
+  const handleClearSchedule = async (id: number) => {
+    try {
+      await clearInspectionSchedule(id)
+      message.success('已清空调度')
+      fetchRules()
+    } catch (error) {
+      message.error('清空调度失败')
     }
   }
 
@@ -214,6 +241,21 @@ const Inspection: React.FC = () => {
               onClick={() => handleEdit(record)}
             />
           </Tooltip>
+          {record.schedule ? (
+            <Tooltip title="清空调度">
+              <Button
+                type="link"
+                icon={<ClearOutlined />}
+                onClick={() => {
+                  Modal.confirm({
+                    title: '清空调度',
+                    content: '清空后该规则仅可手动执行，确定继续？',
+                    onOk: () => handleClearSchedule(record.id),
+                  })
+                }}
+              />
+            </Tooltip>
+          ) : null}
           <Tooltip title="删除">
             <Button
               type="link"
@@ -300,13 +342,26 @@ const Inspection: React.FC = () => {
             placeholder="选择集群"
             options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
           />
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>报告自动刷新</Text>
+            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+          </Space>
           <Button icon={<ReloadOutlined />} onClick={() => { fetchRules(); fetchReports() }}>
             刷新
           </Button>
         </Space>
       </div>
 
+      <ModuleHealthAlert
+        module="inspection"
+        title="巡检模块异常"
+        fixPath="/system/modules"
+        fixLabel="查看模块详情"
+      />
+
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'rules',
@@ -331,7 +386,12 @@ const Inspection: React.FC = () => {
           },
           {
             key: 'reports',
-            label: '巡检报告',
+            label: (
+              <span>
+                巡检报告
+                {reports.some(r => r.status === 'running') ? <Badge status="processing" style={{ marginLeft: 6 }} /> : null}
+              </span>
+            ),
             children: (
               <Card title="巡检报告">
                 <Table

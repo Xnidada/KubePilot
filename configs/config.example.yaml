@@ -27,6 +27,28 @@ jwt:
   expire_time: 24h
   issuer: "kubepilot"
 
+# Independent from jwt.secret. Used to encrypt/decrypt kubeconfig at rest.
+# Keep this stable when rotating JWT; otherwise existing cluster credentials
+# cannot be decrypted. If omitted, jwt.secret is used (legacy compatibility).
+security:
+  encrypt_key: "your_encrypt_key_here"
+
+# In-process feature modules (default enabled when omitted)
+modules:
+  aiops: { enabled: true }
+  inspection: { enabled: true }
+  eventforward:
+    enabled: true
+    # Mark unhealthy only after sustained high fail rate
+    fail_rate_threshold: 0.9
+    min_matched: 20
+    health_sustain: 2m
+    # disable_fail_rate_check: true
+  scheduler: { enabled: true }
+  backup: { enabled: true }
+  webhook: { enabled: true }
+  appstore: { enabled: true }
+
 log:
   level: "info"  # debug, info, warn, error
   format: "json"  # json, console

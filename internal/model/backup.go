@@ -63,19 +63,20 @@ func (BackupRecord) TableName() string {
 
 // RestoreRecord 恢复记录
 type RestoreRecord struct {
-	ID          uint   `json:"id" gorm:"primaryKey"`
-	BackupID    uint   `json:"backup_id" gorm:"index;not null"`
+	ID          uint         `json:"id" gorm:"primaryKey"`
+	BackupID    uint         `json:"backup_id" gorm:"index;not null"`
 	Backup      BackupRecord `json:"backup" gorm:"foreignKey:BackupID"`
-	ClusterID   uint   `json:"cluster_id" gorm:"index;not null"`
-	RestoreName string `json:"restore_name" gorm:"size:128;not null"`
+	ClusterID   uint         `json:"cluster_id" gorm:"index;not null"`
+	Cluster     Cluster      `json:"cluster" gorm:"foreignKey:ClusterID"`
+	RestoreName string       `json:"restore_name" gorm:"size:128;not null"`
 
 	// 恢复配置
-	Namespaces  string `json:"namespaces" gorm:"type:text"`
+	Namespaces string `json:"namespaces" gorm:"type:text"`
 
 	// 状态
-	Status      string     `json:"status" gorm:"size:20;not null"`
-	Errors      int        `json:"errors"`
-	Warnings    int        `json:"warnings"`
+	Status   string `json:"status" gorm:"size:20;not null"`
+	Errors   int    `json:"errors"`
+	Warnings int    `json:"warnings"`
 
 	// 时间
 	StartedAt   time.Time  `json:"started_at"`

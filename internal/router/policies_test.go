@@ -8,11 +8,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
+	"github.com/kubepilot/kubepilot/internal/module"
+	"github.com/kubepilot/kubepilot/internal/modules"
 )
 
 func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 	registry := authz.NewRegistry()
 	registerAPIPolicies(registry)
+	modReg := module.NewRegistry(nil, nil)
+	modules.RegisterAll(modReg)
+	if err := modReg.RegisterPolicies(registry); err != nil {
+		t.Fatal(err)
+	}
 
 	required := []string{
 		"GET /api/v1/clusters",
@@ -70,6 +77,11 @@ func TestPolicyRegistryCoversProtectedAPIInventory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	registry := authz.NewRegistry()
 	registerAPIPolicies(registry)
+	modReg := module.NewRegistry(nil, nil)
+	modules.RegisterAll(modReg)
+	if err := modReg.RegisterPolicies(registry); err != nil {
+		t.Fatal(err)
+	}
 
 	// Build a minimal route inventory from registered policies and ensure each can be looked up
 	// via Gin's FullPath semantics (same path templates).

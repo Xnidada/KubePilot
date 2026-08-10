@@ -55,8 +55,9 @@ func SeedData() error {
 			"description": r.Description,
 			"is_system":   r.IsSystem,
 		}
-		// Only force-sync the immutable admin template. Other roles preserve custom edits.
-		if r.IsSystem || r.Name == "admin" {
+		// Keep built-in role templates (admin/operator/user/viewer) synchronized.
+		// Custom roles created by administrators are not in RoleTemplates and are left untouched.
+		if _, isBuiltin := RoleTemplates[r.Name]; isBuiltin {
 			updates["permissions"] = permissions
 		}
 		if err := DB.Model(&existingRole).Updates(updates).Error; err != nil {

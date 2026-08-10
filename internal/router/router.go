@@ -4,34 +4,30 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/config"
-	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
 	"github.com/kubepilot/kubepilot/internal/handler/alert"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
-	"github.com/kubepilot/kubepilot/internal/handler/backup"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
 	opsHandler "github.com/kubepilot/kubepilot/internal/handler/ops"
-	schedulerHandler "github.com/kubepilot/kubepilot/internal/handler/scheduler"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
 	"github.com/kubepilot/kubepilot/internal/handler/tenant"
-	whHandler "github.com/kubepilot/kubepilot/internal/handler/webhook"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
-	"github.com/kubepilot/kubepilot/internal/llm"
-	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/module"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
+	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/pkg/utils"
 	"github.com/kubepilot/kubepilot/internal/pkg/wsticket"
-	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	authService "github.com/kubepilot/kubepilot/internal/service/auth"
 	clusterService "github.com/kubepilot/kubepilot/internal/service/cluster"
 	"go.uber.org/zap"
 )
 
-func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
+func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registry) *gin.Engine {
 	gin.SetMode(cfg.Server.Mode)
 
 	r := gin.New()
@@ -45,46 +41,38 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 	// Initialize JWT manager
 	jwtManager := utils.NewJWTManager(cfg.JWT.Secret, cfg.JWT.ExpireTime, cfg.JWT.Issuer)
 	webSocketTicketManager := wsticket.NewManager(cacheInstance)
-	_, authorizer := SetupAuthorizer(model.DB)
 
-	// Initialize services
+	var policyExtra func(*authz.Registry) error
+	if modReg != nil {
+		policyExtra = modReg.RegisterPolicies
+	}
+	_, authorizer := SetupAuthorizer(model.DB, policyExtra)
+
+	// Initialize core services / handlers
+	encryptKey := cfg.EncryptKey()
 	authSvc := authService.NewService(model.DB, jwtManager)
-	clusterSvc := clusterService.NewService(model.DB, cfg.JWT.Secret)
+	clusterSvc := clusterService.NewService(model.DB, encryptKey)
 
-	// Initialize AIOps service
-	llmConfig := &llm.LLMConfig{
-		Provider:    llm.LLMProvider(cfg.LLM.Provider),
-		APIKey:      cfg.LLM.APIKey,
-		BaseURL:     cfg.LLM.BaseURL,
-		Model:       cfg.LLM.Model,
-		Temperature: cfg.LLM.Temperature,
-		MaxTokens:   cfg.LLM.MaxTokens,
-		Timeout:     cfg.LLM.Timeout,
-	}
-	aiopsSvc, err := aiopsService.NewService(model.DB, llmConfig, cfg.JWT.Secret, cacheInstance)
-	if err != nil {
-		// Log warning but continue - AI features will be unavailable
-		logger.Warn("failed to initialize AIOps service", zap.Error(err))
-	}
-
-	// Initialize handlers
 	authHandler := auth.NewHandler(authSvc, model.DB)
 	webSocketTicketHandler := auth.NewWebSocketTicketHandler(webSocketTicketManager)
 	twoFactorHandler := auth.NewTwoFactorHandler(model.DB)
 	clusterHandler := cluster.NewHandler(clusterSvc)
 	workloadHandler := workload.NewHandler()
-	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(cfg.JWT.Secret))
+	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(encryptKey))
 	systemHandler := system.NewHandler(model.DB)
 	alertHandler := alert.NewHandler(model.DB)
-	aiopsHandler := aiopsHandler.NewHandler(aiopsSvc, model.DB)
-	inspectionHandler := NewInspectionHandler(model.DB)
-	eventForwardHandler := NewEventForwardHandler(model.DB)
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
-	schedulerHandler := schedulerHandler.NewHandler(model.DB)
 	opsHandler := opsHandler.NewHandler()
 	tenantHandler := tenant.NewHandler(model.DB)
-	backupHandler := backup.NewHandler(model.DB)
-	webhookHandler := whHandler.NewHandler(model.DB)
+
+	host := &module.Host{
+		DB:         model.DB,
+		Config:     cfg,
+		Cache:      cacheInstance,
+		EncryptKey: encryptKey,
+		Logger:     logger.GetLogger(),
+	}
+	modCtx := &module.Context{Host: host}
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -119,6 +107,23 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 			// User profile
 			protected.GET("/profile", authHandler.GetProfile)
 			protected.PUT("/profile/password", authHandler.ChangePassword)
+
+			if modReg != nil {
+				protected.GET("/modules", func(c *gin.Context) {
+					response.Success(c, modReg.Status(c.Request.Context()))
+				})
+				protected.GET("/modules/menus", func(c *gin.Context) {
+					response.Success(c, modReg.Menus())
+				})
+				protected.GET("/modules/:name", func(c *gin.Context) {
+					st, ok := modReg.StatusOne(c.Request.Context(), c.Param("name"))
+					if !ok {
+						response.NotFound(c, "module not found")
+						return
+					}
+					response.Success(c, st)
+				})
+			}
 
 			// Two-Factor Authentication
 			twoFactorGroup := protected.Group("/2fa")
@@ -440,105 +445,11 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				opsGroup.POST("/idle-resources/clean", opsHandler.CleanIdleResource)
 			}
 
-			// AIOps routes
-			aiopsGroup := protected.Group("/aiops")
-			{
-				// LLM Config
-				aiopsGroup.GET("/configs", aiopsHandler.ListLLMConfigs)
-				aiopsGroup.POST("/configs", aiopsHandler.SaveLLMConfig)
-				aiopsGroup.GET("/configs/default", aiopsHandler.GetLLMConfig)
-				aiopsGroup.GET("/configs/:id", aiopsHandler.GetLLMConfigByID)
-				aiopsGroup.PUT("/configs/:id", aiopsHandler.UpdateLLMConfig)
-				aiopsGroup.DELETE("/configs/:id", aiopsHandler.DeleteLLMConfig)
-				aiopsGroup.POST("/configs/:id/set-default", aiopsHandler.SetDefaultLLMConfig)
-				aiopsGroup.POST("/configs/test", aiopsHandler.TestLLMConfig)
-
-				// Conversations
-				aiopsGroup.GET("/conversations", aiopsHandler.ListConversations)
-				aiopsGroup.POST("/conversations", aiopsHandler.CreateConversation)
-				aiopsGroup.GET("/conversations/:id", aiopsHandler.GetConversation)
-				aiopsGroup.PUT("/conversations/:id", aiopsHandler.UpdateConversation)
-				aiopsGroup.DELETE("/conversations/:id", aiopsHandler.DeleteConversation)
-				aiopsGroup.POST("/conversations/:id/clear", aiopsHandler.ClearConversation)
-
-				// Messages
-				aiopsGroup.GET("/conversations/:id/messages", aiopsHandler.ListMessages)
-				aiopsGroup.POST("/conversations/:id/messages", aiopsHandler.AddMessage)
-				aiopsGroup.DELETE("/conversations/:id/messages/:msgId", aiopsHandler.DeleteMessage)
-
-				// Chat
-				aiopsGroup.POST("/chat", aiopsHandler.Chat)
-				aiopsGroup.POST("/chat/stream", aiopsHandler.ChatStream)
-
-				// AI 驱动功能
-				aiopsGroup.POST("/explain", aiopsHandler.ExplainText)
-				aiopsGroup.POST("/explain/stream", aiopsHandler.ExplainTextStream)
-				aiopsGroup.POST("/resource-guide", aiopsHandler.GetResourceGuide)
-				aiopsGroup.POST("/translate-yaml", aiopsHandler.TranslateYAML)
-				aiopsGroup.POST("/analyze-logs", aiopsHandler.AnalyzeLogs)
-
-				// Diagnosis
-				aiopsGroup.POST("/diagnose", aiopsHandler.Diagnose)
-
-				// Agent
-				aiopsGroup.POST("/agent", aiopsHandler.AgentChat)
-				aiopsGroup.POST("/agent/confirm/:actionId", aiopsHandler.AgentConfirmAction)
-				aiopsGroup.POST("/agent/execute", aiopsHandler.AgentExecute)
-
-				// Kubectl
-				aiopsGroup.POST("/kubectl", aiopsHandler.KubectlExecute)
-				aiopsGroup.GET("/kubectl/:id/query", aiopsHandler.KubectlQuery)
-			}
-
-			// Inspection routes
-			inspectionGroup := protected.Group("/inspection")
-			{
-				inspectionGroup.GET("/rules", inspectionHandler.ListRules)
-				inspectionGroup.POST("/rules", inspectionHandler.CreateRule)
-				inspectionGroup.GET("/rules/:id", inspectionHandler.GetRule)
-				inspectionGroup.PUT("/rules/:id", inspectionHandler.UpdateRule)
-				inspectionGroup.DELETE("/rules/:id", inspectionHandler.DeleteRule)
-				inspectionGroup.POST("/rules/:id/run", inspectionHandler.RunInspection)
-				inspectionGroup.GET("/reports", inspectionHandler.ListReports)
-				inspectionGroup.GET("/reports/:id", inspectionHandler.GetReport)
-				inspectionGroup.GET("/reports/:id/results", inspectionHandler.GetReportResults)
-			}
-
-			// Event Forward routes
-			eventForwardGroup := protected.Group("/event-forward")
-			{
-				eventForwardGroup.GET("/rules", eventForwardHandler.ListRules)
-				eventForwardGroup.POST("/rules", eventForwardHandler.CreateRule)
-				eventForwardGroup.GET("/rules/:id", eventForwardHandler.GetRule)
-				eventForwardGroup.PUT("/rules/:id", eventForwardHandler.UpdateRule)
-				eventForwardGroup.DELETE("/rules/:id", eventForwardHandler.DeleteRule)
-				eventForwardGroup.POST("/rules/:id/test", eventForwardHandler.TestRule)
-				eventForwardGroup.GET("/logs", eventForwardHandler.ListLogs)
-			}
-
-			// Scheduler routes
-			schedulerGroup := protected.Group("/scheduler")
-			{
-				// 队列管理
-				schedulerGroup.GET("/queues", schedulerHandler.ListQueues)
-				schedulerGroup.POST("/queues", schedulerHandler.CreateQueue)
-				schedulerGroup.GET("/queues/:id", schedulerHandler.GetQueue)
-				schedulerGroup.PUT("/queues/:id", schedulerHandler.UpdateQueue)
-				schedulerGroup.DELETE("/queues/:id", schedulerHandler.DeleteQueue)
-
-				// 任务管理
-				schedulerGroup.GET("/tasks", schedulerHandler.ListTasks)
-				schedulerGroup.POST("/tasks", schedulerHandler.CreateTask)
-				schedulerGroup.GET("/tasks/:id", schedulerHandler.GetTask)
-				schedulerGroup.POST("/tasks/:id/cancel", schedulerHandler.CancelTask)
-				schedulerGroup.POST("/tasks/:id/retry", schedulerHandler.RetryTask)
-				schedulerGroup.DELETE("/tasks/:id", schedulerHandler.DeleteTask)
-				schedulerGroup.GET("/tasks/:id/logs", schedulerHandler.GetTaskLogs)
-
-				// 资源预留
-				schedulerGroup.GET("/reservations", schedulerHandler.ListReservations)
-				schedulerGroup.POST("/reservations", schedulerHandler.CreateReservation)
-				schedulerGroup.DELETE("/reservations/:id", schedulerHandler.DeleteReservation)
+			// Feature modules (aiops/inspection/eventforward/scheduler/backup/webhook/appstore)
+			if modReg != nil {
+				if err := modReg.RegisterRoutes(modCtx, protected); err != nil {
+					logger.Warn("failed to register module routes", zap.Error(err))
+				}
 			}
 
 			// 多租户管理
@@ -555,29 +466,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				tenantGroup.DELETE("/:id/namespaces/:nsId", tenantHandler.DeleteTenantNamespace)
 			}
 
-			// 备份管理
-			backupGroup := protected.Group("/backups")
-			{
-				backupGroup.GET("/schedules", backupHandler.ListBackupSchedules)
-				backupGroup.POST("/schedules", backupHandler.CreateBackupSchedule)
-				backupGroup.DELETE("/schedules/:id", backupHandler.DeleteBackupSchedule)
-				backupGroup.POST("", backupHandler.CreateBackup)
-				backupGroup.GET("", backupHandler.ListBackupRecords)
-				backupGroup.GET("/:id", backupHandler.GetBackupRecord)
-				backupGroup.POST("/restore", backupHandler.CreateRestore)
-				backupGroup.GET("/restores", backupHandler.ListRestoreRecords)
-			}
-
-			// Webhook 管理
-			webhookGroup := protected.Group("/webhooks")
-			{
-				webhookGroup.GET("", webhookHandler.ListWebhooks)
-				webhookGroup.POST("", webhookHandler.CreateWebhook)
-				webhookGroup.PUT("/:id", webhookHandler.UpdateWebhook)
-				webhookGroup.DELETE("/:id", webhookHandler.DeleteWebhook)
-				webhookGroup.POST("/:id/test", webhookHandler.TestWebhook)
-				webhookGroup.GET("/logs", webhookHandler.ListWebhookLogs)
-			}
 		}
 	}
 

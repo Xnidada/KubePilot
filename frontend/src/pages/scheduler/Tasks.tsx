@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Card,
   Table,
@@ -17,6 +17,7 @@ import {
   List,
   Alert,
   Segmented,
+  Switch,
 } from 'antd'
 import {
   PlusOutlined,
@@ -44,9 +45,12 @@ import {
   TaskQueue,
   TaskLog,
 } from '../../api/scheduler'
+import { useInterval } from '../../hooks/useInterval'
+import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
+const TASK_REFRESH_MS = 10000
 
 // YAML 示例模板
 const YAML_TEMPLATES = {
@@ -147,6 +151,25 @@ const Tasks: React.FC = () => {
   const [yamlContent, setYamlContent] = useState(YAML_TEMPLATES.job)
   const [yamlError, setYamlError] = useState<string>('')
   const [selectedTemplate, setSelectedTemplate] = useState<string>('job')
+  const [autoRefresh, setAutoRefresh] = useState(true)
+
+  const fetchTasks = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await listTasks({
+        page,
+        size: pageSize,
+        queue_id: queueFilter,
+        status: statusFilter || undefined,
+      })
+      setTasks(res.data || [])
+      setTotal(res.total || 0)
+    } catch (error) {
+      console.error('Failed to fetch tasks:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [page, pageSize, statusFilter, queueFilter])
 
   useEffect(() => {
     fetchClusters()
@@ -155,7 +178,9 @@ const Tasks: React.FC = () => {
 
   useEffect(() => {
     fetchTasks()
-  }, [page, pageSize, statusFilter, queueFilter])
+  }, [fetchTasks])
+
+  useInterval(() => { fetchTasks() }, TASK_REFRESH_MS, autoRefresh)
 
   const fetchClusters = async () => {
     try {
@@ -172,24 +197,6 @@ const Tasks: React.FC = () => {
       setQueues(res.data || [])
     } catch (error) {
       console.error('Failed to fetch queues:', error)
-    }
-  }
-
-  const fetchTasks = async () => {
-    setLoading(true)
-    try {
-      const res = await listTasks({
-        page,
-        size: pageSize,
-        queue_id: queueFilter,
-        status: statusFilter,
-      })
-      setTasks(res.data || [])
-      setTotal(res.total || 0)
-    } catch (error) {
-      console.error('Failed to fetch tasks:', error)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -512,6 +519,10 @@ const Tasks: React.FC = () => {
               { label: '已取消', value: 'cancelled' },
             ]}
           />
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
+            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+          </Space>
           <Button icon={<SyncOutlined />} onClick={fetchTasks}>
             刷新
           </Button>
@@ -520,6 +531,8 @@ const Tasks: React.FC = () => {
           </Button>
         </Space>
       </div>
+
+      <ModuleHealthAlert module="scheduler" title="调度模块异常" />
 
       {/* 批量操作栏 */}
       {selectedRowKeys.length > 0 && (

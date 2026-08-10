@@ -1,4 +1,4 @@
-package router
+package inspection
 
 import (
 	"context"
@@ -16,11 +16,21 @@ import (
 
 // InspectionHandler 集群巡检处理器
 type InspectionHandler struct {
-	db *gorm.DB
+	db        *gorm.DB
+	scheduler *Scheduler
 }
 
-func NewInspectionHandler(db *gorm.DB) *InspectionHandler {
-	return &InspectionHandler{db: db}
+func NewInspectionHandler(db *gorm.DB, scheduler ...*Scheduler) *InspectionHandler {
+	h := &InspectionHandler{db: db}
+	if len(scheduler) > 0 {
+		h.scheduler = scheduler[0]
+	}
+	return h
+}
+
+// SetScheduler attaches the cron scheduler used by the inspection module.
+func (h *InspectionHandler) SetScheduler(scheduler *Scheduler) {
+	h.scheduler = scheduler
 }
 
 // ListRules 获取巡检规则列表
@@ -51,10 +61,23 @@ func (h *InspectionHandler) CreateRule(c *gin.Context) {
 		return
 	}
 
+	if err := ValidateCron(rule.Schedule); err != nil {
+		response.BadRequest(c, "invalid cron schedule: "+err.Error())
+		return
+	}
+
 	rule.Enabled = true
 	if err := h.db.Create(&rule).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if h.scheduler != nil {
+		if err := h.scheduler.Sync(rule); err != nil {
+			_ = h.db.Delete(&rule).Error
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
 	}
 
 	response.Created(c, rule)
@@ -88,15 +111,16 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 	}
 
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Resource    string `json:"resource"`
-		CheckType   string `json:"check_type"`
-		Condition   string `json:"condition"`
-		Threshold   string `json:"threshold"`
-		Script      string `json:"script"`
-		Enabled     *bool  `json:"enabled"`
-		Schedule    string `json:"schedule"`
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		Resource    string  `json:"resource"`
+		CheckType   string  `json:"check_type"`
+		Condition   string  `json:"condition"`
+		Threshold   string  `json:"threshold"`
+		Script      string  `json:"script"`
+		Enabled     *bool   `json:"enabled"`
+		// Schedule: omit = no change; "" = clear (manual-only); non-empty = set cron.
+		Schedule *string `json:"schedule"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -128,13 +152,27 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 	if req.Enabled != nil {
 		updates["enabled"] = *req.Enabled
 	}
-	if req.Schedule != "" {
-		updates["schedule"] = req.Schedule
+	if req.Schedule != nil {
+		if err := ValidateCron(*req.Schedule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+		updates["schedule"] = *req.Schedule
 	}
 
 	if err := h.db.Model(&rule).Updates(updates).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+	if err := h.db.First(&rule, rule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		if err := h.scheduler.Sync(rule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
 	}
 
 	response.Success(c, rule)
@@ -151,12 +189,40 @@ func (h *InspectionHandler) DeleteRule(c *gin.Context) {
 	if !authz.EnsureScope(c, "inspection", "delete", rule.ClusterID, "*") {
 		return
 	}
+	if h.scheduler != nil {
+		h.scheduler.Remove(rule.ID)
+	}
 	if err := h.db.Delete(&rule).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
 	response.SuccessWithMessage(c, "rule deleted", nil)
+}
+
+// ClearSchedule removes the cron expression so the rule becomes manual-only.
+func (h *InspectionHandler) ClearSchedule(c *gin.Context) {
+	id := c.Param("id")
+	var rule model.InspectionRule
+	if err := h.db.First(&rule, id).Error; err != nil {
+		response.NotFound(c, "rule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "inspection", "edit", rule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Model(&rule).Update("schedule", "").Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.db.First(&rule, rule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		h.scheduler.Remove(rule.ID)
+	}
+	response.Success(c, rule)
 }
 
 // RunInspection 执行巡检
@@ -187,6 +253,20 @@ func (h *InspectionHandler) RunInspection(c *gin.Context) {
 		"report_id": report.ID,
 		"status":    "running",
 	})
+}
+
+// RunScheduledInspection creates a report and runs the rule asynchronously.
+func (h *InspectionHandler) RunScheduledInspection(rule *model.InspectionRule) {
+	report := model.InspectionReport{
+		RuleID:    rule.ID,
+		ClusterID: rule.ClusterID,
+		Status:    "running",
+		StartedAt: time.Now(),
+	}
+	if err := h.db.Create(&report).Error; err != nil {
+		return
+	}
+	go h.executeInspection(&report, rule)
 }
 
 // executeInspection 执行巡检逻辑

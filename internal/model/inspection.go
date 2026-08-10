@@ -16,7 +16,7 @@ type InspectionRule struct {
 	Condition   string    `json:"condition" gorm:"size:32"`          // ==, !=, >, <, >=, <=
 	Threshold   string    `json:"threshold" gorm:"size:128"`         // 阈值
 	Script      string    `json:"script" gorm:"type:text"`           // Lua 脚本或自定义脚本
-	Schedule    string    `json:"schedule" gorm:"size:32"`           // cron 表达式, 空表示手动执行
+	Schedule    string    `json:"schedule" gorm:"size:64"`           // cron 表达式, 空表示手动执行
 	Enabled     bool      `json:"enabled" gorm:"default:true"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`

@@ -3,6 +3,7 @@ package backup
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,12 +15,22 @@ import (
 
 // Handler 备份处理器
 type Handler struct {
-	db *gorm.DB
+	db        *gorm.DB
+	scheduler *Scheduler
 }
 
 // NewHandler 创建备份处理器
-func NewHandler(db *gorm.DB) *Handler {
-	return &Handler{db: db}
+func NewHandler(db *gorm.DB, scheduler ...*Scheduler) *Handler {
+	h := &Handler{db: db}
+	if len(scheduler) > 0 {
+		h.scheduler = scheduler[0]
+	}
+	return h
+}
+
+// SetScheduler attaches a cron scheduler (used by the backup module Start hook).
+func (h *Handler) SetScheduler(scheduler *Scheduler) {
+	h.scheduler = scheduler
 }
 
 // ListBackupSchedules 获取备份计划列表
@@ -51,9 +62,18 @@ func (h *Handler) CreateBackupSchedule(c *gin.Context) {
 		return
 	}
 
-	if req.TTL == "" {
-		req.TTL = "720h" // 30 天
-	}
+		if req.TTL == "" {
+			req.TTL = "720h" // 30 天
+		}
+
+		if err := ValidateCron(req.Schedule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+		if strings.TrimSpace(req.Schedule) == "" {
+			response.BadRequest(c, "invalid cron schedule: empty cron expression")
+			return
+		}
 
 	namespacesJSON, _ := json.Marshal(req.Namespaces)
 	resourcesJSON, _ := json.Marshal(req.Resources)
@@ -74,6 +94,14 @@ func (h *Handler) CreateBackupSchedule(c *gin.Context) {
 		return
 	}
 
+	if h.scheduler != nil {
+		if err := h.scheduler.Add(schedule); err != nil {
+			_ = h.db.Delete(&schedule).Error
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+	}
+
 	response.Created(c, schedule)
 }
 
@@ -92,7 +120,180 @@ func (h *Handler) DeleteBackupSchedule(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
-	response.SuccessWithMessage(c, "schedule deleted", nil)
+		if h.scheduler != nil {
+			h.scheduler.Remove(schedule.ID)
+		}
+		response.SuccessWithMessage(c, "schedule deleted", nil)
+}
+
+// UpdateBackupSchedule updates a backup schedule. Schedule: omit=no change, ""=clear cron.
+func (h *Handler) UpdateBackupSchedule(c *gin.Context) {
+	id := c.Param("id")
+	var schedule model.BackupSchedule
+	if err := h.db.First(&schedule, id).Error; err != nil {
+		response.NotFound(c, "schedule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "create", schedule.ClusterID, "*") {
+		return
+	}
+
+	var req struct {
+		Name            string  `json:"name"`
+		Namespaces      *[]string `json:"namespaces"`
+		Resources       *[]string `json:"resources"`
+		Schedule        *string `json:"schedule"`
+		TTL             string  `json:"ttl"`
+		StorageLocation string  `json:"storage_location"`
+		Status          *string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.Namespaces != nil {
+		b, _ := json.Marshal(*req.Namespaces)
+		updates["namespaces"] = string(b)
+	}
+	if req.Resources != nil {
+		b, _ := json.Marshal(*req.Resources)
+		updates["resources"] = string(b)
+	}
+	if req.TTL != "" {
+		updates["ttl"] = req.TTL
+	}
+	if req.StorageLocation != "" {
+		updates["storage_location"] = req.StorageLocation
+	}
+	if req.Status != nil {
+		st := strings.TrimSpace(*req.Status)
+		if st != "active" && st != "paused" {
+			response.BadRequest(c, "status must be active or paused")
+			return
+		}
+		updates["status"] = st
+	}
+	if req.Schedule != nil {
+		if err := ValidateCron(*req.Schedule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+		updates["schedule"] = *req.Schedule
+		if strings.TrimSpace(*req.Schedule) == "" {
+			// Clearing cron also pauses the schedule.
+			updates["status"] = "paused"
+		}
+	}
+
+	if len(updates) == 0 {
+		response.Success(c, schedule)
+		return
+	}
+	if err := h.db.Model(&schedule).Updates(updates).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.db.First(&schedule, schedule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		if err := h.scheduler.Sync(schedule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+	}
+	response.Success(c, schedule)
+}
+
+// PauseBackupSchedule stops cron for a schedule without deleting it.
+func (h *Handler) PauseBackupSchedule(c *gin.Context) {
+	id := c.Param("id")
+	var schedule model.BackupSchedule
+	if err := h.db.First(&schedule, id).Error; err != nil {
+		response.NotFound(c, "schedule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "create", schedule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Model(&schedule).Update("status", "paused").Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.db.First(&schedule, schedule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		h.scheduler.Remove(schedule.ID)
+	}
+	response.Success(c, schedule)
+}
+
+// ResumeBackupSchedule re-registers cron for a paused schedule.
+func (h *Handler) ResumeBackupSchedule(c *gin.Context) {
+	id := c.Param("id")
+	var schedule model.BackupSchedule
+	if err := h.db.First(&schedule, id).Error; err != nil {
+		response.NotFound(c, "schedule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "create", schedule.ClusterID, "*") {
+		return
+	}
+	if strings.TrimSpace(schedule.Schedule) == "" {
+		response.BadRequest(c, "cannot resume: cron schedule is empty")
+		return
+	}
+	if err := h.db.Model(&schedule).Update("status", "active").Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.db.First(&schedule, schedule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		if err := h.scheduler.Add(schedule); err != nil {
+			response.BadRequest(c, "invalid cron schedule: "+err.Error())
+			return
+		}
+	}
+	response.Success(c, schedule)
+}
+
+// ClearBackupCron clears the cron expression and pauses the schedule.
+func (h *Handler) ClearBackupCron(c *gin.Context) {
+	id := c.Param("id")
+	var schedule model.BackupSchedule
+	if err := h.db.First(&schedule, id).Error; err != nil {
+		response.NotFound(c, "schedule not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "create", schedule.ClusterID, "*") {
+		return
+	}
+	if err := h.db.Model(&schedule).Updates(map[string]interface{}{
+		"schedule": "",
+		"status":   "paused",
+	}).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.db.First(&schedule, schedule.ID).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if h.scheduler != nil {
+		h.scheduler.Remove(schedule.ID)
+	}
+	response.Success(c, schedule)
 }
 
 // CreateBackup 创建手动备份
@@ -158,6 +359,25 @@ func (h *Handler) executeBackup(record *model.BackupRecord, ttl string) {
 	now := time.Now()
 	record.CompletedAt = &now
 	h.db.Save(record)
+}
+
+// RunScheduledBackup creates a backup record from a schedule and executes it.
+func (h *Handler) RunScheduledBackup(schedule *model.BackupSchedule) {
+	now := time.Now()
+	sid := schedule.ID
+	record := model.BackupRecord{
+		ScheduleID:  &sid,
+		ClusterID:   schedule.ClusterID,
+		BackupName:  fmt.Sprintf("%s-%d", schedule.Name, now.Unix()),
+		Namespaces:  schedule.Namespaces,
+		Resources:   schedule.Resources,
+		Status:      "pending",
+		StartedAt:   now,
+	}
+	if err := h.db.Create(&record).Error; err != nil {
+		return
+	}
+	h.executeBackup(&record, schedule.TTL)
 }
 
 // ListBackupRecords 获取备份记录列表

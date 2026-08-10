@@ -9,14 +9,27 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Log      LogConfig      `mapstructure:"log"`
-	K8S      K8SConfig      `mapstructure:"k8s"`
-	LLM      LLMConfig      `mapstructure:"llm"`
-	Cache    CacheConfig    `mapstructure:"cache"`
+	Server   ServerConfig             `mapstructure:"server"`
+	Database DatabaseConfig           `mapstructure:"database"`
+	Redis    RedisConfig              `mapstructure:"redis"`
+	JWT      JWTConfig                `mapstructure:"jwt"`
+	Security SecurityConfig           `mapstructure:"security"`
+	Log      LogConfig                `mapstructure:"log"`
+	K8S      K8SConfig                `mapstructure:"k8s"`
+	LLM      LLMConfig                `mapstructure:"llm"`
+	Cache    CacheConfig              `mapstructure:"cache"`
+	Modules  map[string]ModuleConfig  `mapstructure:"modules"`
+}
+
+// ModuleConfig controls in-process feature modules.
+type ModuleConfig struct {
+	Enabled *bool `mapstructure:"enabled"`
+
+	// Optional health tuning (used by modules that support it, e.g. eventforward).
+	FailRateThreshold    float64 `mapstructure:"fail_rate_threshold"`     // 0-1, default 0.9
+	MinMatched           int64   `mapstructure:"min_matched"`             // default 20
+	HealthSustain        string  `mapstructure:"health_sustain"`          // e.g. "2m"; must stay bad this long before unhealthy
+	DisableFailRateCheck *bool   `mapstructure:"disable_fail_rate_check"` // skip fail-rate based health
 }
 
 type ServerConfig struct {
@@ -50,6 +63,13 @@ type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	ExpireTime time.Duration `mapstructure:"expire_time"`
 	Issuer     string        `mapstructure:"issuer"`
+}
+
+// SecurityConfig holds secrets that must remain stable across JWT rotations.
+// Kubeconfig ciphertext in the database is sealed with EncryptKey; changing
+// JWT.Secret alone must not invalidate cluster credentials.
+type SecurityConfig struct {
+	EncryptKey string `mapstructure:"encrypt_key"`
 }
 
 type LogConfig struct {
@@ -115,17 +135,54 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// EncryptKey returns the key used to seal kubeconfig (and similar secrets) at rest.
+// Prefer security.encrypt_key; fall back to jwt.secret for older deployments that
+// historically reused the JWT secret so existing ciphertext keeps decrypting.
+func (c *Config) EncryptKey() string {
+	if key := strings.TrimSpace(c.Security.EncryptKey); key != "" {
+		return key
+	}
+	return strings.TrimSpace(c.JWT.Secret)
+}
+
+// ModuleEnabled reports whether an internal module should run.
+// Missing or unset entries default to enabled for backward compatibility.
+func (c *Config) ModuleEnabled(name string) bool {
+	if c == nil || c.Modules == nil {
+		return true
+	}
+	mc, ok := c.Modules[name]
+	if !ok || mc.Enabled == nil {
+		return true
+	}
+	return *mc.Enabled
+}
+
+// ModuleSettings returns per-module config (zero value when unset).
+func (c *Config) ModuleSettings(name string) ModuleConfig {
+	if c == nil || c.Modules == nil {
+		return ModuleConfig{}
+	}
+	return c.Modules[name]
+}
+
 // Validate 验证配置
 func (c *Config) Validate() error {
-	// 检查 JWT 密钥是否为默认值
-	defaultSecrets := []string{
-		"kubepilot-secret-key",
-		"kubepilot-secret-key-change-me",
-		"",
+	secret := strings.TrimSpace(c.JWT.Secret)
+	if secret == "" || secret == "kubepilot-secret-key" {
+		return fmt.Errorf("jwt.secret must be set to a non-default value for security")
 	}
-	for _, s := range defaultSecrets {
-		if c.JWT.Secret == s {
-			return fmt.Errorf("jwt.secret must be set to a non-default value for security")
+	if len(secret) < 16 {
+		return fmt.Errorf("jwt.secret must be at least 16 characters")
+	}
+
+	encryptKey := strings.TrimSpace(c.Security.EncryptKey)
+	if encryptKey != "" {
+		if encryptKey == "kubepilot-encrypt-key" || encryptKey == "change-me" {
+			return fmt.Errorf("security.encrypt_key must be set to a non-default value for security")
+		}
+		if len(encryptKey) < 16 {
+			return fmt.Errorf("security.encrypt_key must be at least 16 characters")
 		}
 	}
 
@@ -169,6 +226,9 @@ func setDefaults() {
 	viper.SetDefault("jwt.secret", "kubepilot-secret-key")
 	viper.SetDefault("jwt.expire_time", 24*time.Hour)
 	viper.SetDefault("jwt.issuer", "kubepilot")
+
+	// Security defaults (empty = fall back to jwt.secret for compatibility)
+	viper.SetDefault("security.encrypt_key", "")
 
 	// Log defaults
 	viper.SetDefault("log.level", "info")

@@ -1,16 +1,22 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Card, Table, Button, Space, Typography, message, Tag, Modal, Form, Input, Select,
   Switch, Popconfirm, Tabs
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, SendOutlined,
-  HistoryOutlined, BellOutlined
+  HistoryOutlined, BellOutlined, ReloadOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { get, post, put, del } from '../../api/request'
+import { useQueryTab } from '../../hooks/useQueryTab'
+import { useInterval } from '../../hooks/useInterval'
+import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
 
-const { Title } = Typography
+const { Title, Text } = Typography
+
+const WEBHOOK_TABS = ['webhooks', 'logs'] as const
+const REFRESH_MS = 10000
 
 interface Webhook {
   id: number
@@ -41,25 +47,32 @@ const Webhooks: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
   const [editingWebhook, setEditingWebhook] = useState<Webhook | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [activeTab, setActiveTab] = useQueryTab(WEBHOOK_TABS, 'webhooks')
   const [form] = Form.useForm()
 
-  useEffect(() => { fetchWebhooks(); fetchLogs() }, [])
-
-  const fetchWebhooks = async () => {
+  const fetchWebhooks = useCallback(async () => {
     setLoading(true)
     try {
       const res = await get<{ code: number; data: Webhook[] }>('/webhooks')
       setWebhooks(res.data || [])
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
-  }
+  }, [])
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     try {
       const res = await get<{ code: number; data: WebhookLog[] }>('/webhooks/logs')
       setLogs(res.data || [])
     } catch (e) { console.error(e) }
-  }
+  }, [])
+
+  useEffect(() => { fetchWebhooks(); fetchLogs() }, [fetchWebhooks, fetchLogs])
+
+  useInterval(() => {
+    if (activeTab === 'logs') fetchLogs()
+    else fetchWebhooks()
+  }, REFRESH_MS, autoRefresh)
 
   const handleCreate = () => {
     setEditingWebhook(null)
@@ -111,6 +124,7 @@ const Webhooks: React.FC = () => {
       await post(`/webhooks/${id}/test`)
       message.success('测试消息已发送')
       fetchLogs()
+      setActiveTab('logs')
     } catch (e) { message.error('测试失败') }
   }
 
@@ -175,9 +189,24 @@ const Webhooks: React.FC = () => {
 
   return (
     <div>
-      <Title level={4}><BellOutlined /> Webhook 通知</Title>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Title level={4} style={{ margin: 0 }}><BellOutlined /> Webhook 通知</Title>
+        <Space>
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
+            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+          </Space>
+          <Button icon={<ReloadOutlined />} onClick={() => { fetchWebhooks(); fetchLogs() }}>
+            刷新
+          </Button>
+        </Space>
+      </div>
+
+      <ModuleHealthAlert module="webhook" title="Webhook 模块异常" />
 
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'webhooks',

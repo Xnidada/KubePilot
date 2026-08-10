@@ -49,6 +49,14 @@ func InitDatabase(driver, dsn string, maxIdle, maxOpen int) error {
 }
 
 func AutoMigrate() error {
+	if err := AutoMigrateCore(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AutoMigrateCore migrates platform tables that are not owned by feature modules.
+func AutoMigrateCore() error {
 	if err := DB.AutoMigrate(
 		&User{},
 		&Role{},
@@ -63,44 +71,17 @@ func AutoMigrate() error {
 		&AlertRule{},
 		&AlertHistory{},
 		&NotificationChannel{},
-		&AppTemplate{},
-		&AppDeployment{},
-		&ChartRepository{},
-		&ChatConversation{},
-		&ChatMessage{},
-		&AgentAction{},
-		&LLMConfig{},
 		// 两步验证
 		&UserTwoFactor{},
-		// 集群巡检
-		&InspectionRule{},
-		&InspectionReport{},
-		&InspectionResult{},
-		// Event 转发
-		&EventForwardRule{},
-		&EventForwardLog{},
 		// SSO/OAuth
 		&OAuthConfig{},
 		&OAuthUser{},
 		// 成本配置
 		&CostConfig{},
-		// 任务调度
-		&TaskQueue{},
-		&Task{},
-		&TaskLog{},
-		&ResourceReservation{},
-		&SchedulePolicy{},
-		// 多租户
+		// 多租户（暂留核心）
 		&Tenant{},
 		&TenantNamespace{},
 		&TenantMember{},
-		// 备份
-		&BackupSchedule{},
-		&BackupRecord{},
-		&RestoreRecord{},
-		// Webhook
-		&WebhookConfig{},
-		&WebhookLog{},
 	); err != nil {
 		return err
 	}

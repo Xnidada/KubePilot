@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Card,
   Table,
@@ -14,6 +14,9 @@ import {
   Switch,
   Tabs,
   Tooltip,
+  Statistic,
+  Row,
+  Col,
 } from 'antd'
 import {
   PlusOutlined,
@@ -33,32 +36,81 @@ import {
   deleteEventForwardRule,
   testEventForwardRule,
   listEventForwardLogs,
+  getEventForwardStats,
+  resetEventForwardStats,
   EventForwardRule,
   EventForwardLog,
+  EventForwardStats,
 } from '../../api/system'
+import { useQueryTab } from '../../hooks/useQueryTab'
+import { useInterval } from '../../hooks/useInterval'
+import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
 
-const { Title } = Typography
+const { Title, Text } = Typography
+
+const EF_TABS = ['rules', 'logs'] as const
+const REFRESH_MS = 10000
 
 const EventForward: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [rules, setRules] = useState<EventForwardRule[]>([])
   const [logs, setLogs] = useState<EventForwardLog[]>([])
+  const [stats, setStats] = useState<EventForwardStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [showRuleModal, setShowRuleModal] = useState(false)
   const [editingRule, setEditingRule] = useState<EventForwardRule | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [activeTab, setActiveTab] = useQueryTab(EF_TABS, 'rules')
   const [form] = Form.useForm()
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await getEventForwardStats()
+      setStats(res.data || null)
+    } catch (error) {
+      console.error('Failed to fetch stats:', error)
+    }
+  }, [])
+
+  const fetchLogs = useCallback(async () => {
+    try {
+      const res = await listEventForwardLogs()
+      setLogs(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch logs:', error)
+    }
+  }, [])
+
+  const fetchRules = useCallback(async () => {
+    if (!selectedCluster) return
+    setLoading(true)
+    try {
+      const res = await listEventForwardRules(selectedCluster)
+      setRules(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch rules:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [selectedCluster])
 
   useEffect(() => {
     fetchClusters()
-  }, [])
+    fetchStats()
+  }, [fetchStats])
 
   useEffect(() => {
     if (selectedCluster) {
       fetchRules()
       fetchLogs()
     }
-  }, [selectedCluster])
+  }, [selectedCluster, fetchRules, fetchLogs])
+
+  useInterval(() => {
+    fetchStats()
+    if (activeTab === 'logs') fetchLogs()
+  }, REFRESH_MS, autoRefresh)
 
   const fetchClusters = async () => {
     try {
@@ -69,27 +121,6 @@ const EventForward: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to fetch clusters:', error)
-    }
-  }
-
-  const fetchRules = async () => {
-    setLoading(true)
-    try {
-      const res = await listEventForwardRules(selectedCluster)
-      setRules(res.data || [])
-    } catch (error) {
-      console.error('Failed to fetch rules:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchLogs = async () => {
-    try {
-      const res = await listEventForwardLogs()
-      setLogs(res.data || [])
-    } catch (error) {
-      console.error('Failed to fetch logs:', error)
     }
   }
 
@@ -276,13 +307,74 @@ const EventForward: React.FC = () => {
             placeholder="选择集群"
             options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
           />
-          <Button icon={<ReloadOutlined />} onClick={() => { fetchRules(); fetchLogs() }}>
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
+            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
+          </Space>
+          <Button icon={<ReloadOutlined />} onClick={() => { fetchRules(); fetchLogs(); fetchStats() }}>
             刷新
           </Button>
         </Space>
       </div>
 
+      <ModuleHealthAlert
+        module="eventforward"
+        title="Event 转发模块异常"
+        fixPath="/system/modules"
+        fixLabel="查看模块详情"
+      />
+
+      {stats && (
+        <Card
+          size="small"
+          style={{ marginBottom: 16 }}
+          extra={
+            <Button
+              size="small"
+              onClick={async () => {
+                try {
+                  const res = await resetEventForwardStats()
+                  setStats(res.data || null)
+                  message.success('计数已重置')
+                } catch {
+                  message.error('重置失败')
+                }
+              }}
+            >
+              重置计数
+            </Button>
+          }
+        >
+          <Row gutter={16}>
+            <Col span={4}><Statistic title="活跃 Watcher" value={stats.watchers_active} /></Col>
+            <Col span={4}><Statistic title="事件已见" value={stats.events_seen} /></Col>
+            <Col span={4}><Statistic title="已匹配" value={stats.events_matched} /></Col>
+            <Col span={4}><Statistic title="转发成功" value={stats.forward_ok} valueStyle={{ color: '#3f8600' }} /></Col>
+            <Col span={4}><Statistic title="转发失败" value={stats.forward_fail} valueStyle={{ color: '#cf1322' }} /></Col>
+            <Col span={4}>
+              <Statistic
+                title="失败率"
+                value={
+                  (stats.forward_ok + stats.forward_fail) > 0
+                    ? Math.round((stats.forward_fail / (stats.forward_ok + stats.forward_fail)) * 100)
+                    : 0
+                }
+                suffix="%"
+                valueStyle={{
+                  color: (stats.forward_ok + stats.forward_fail) > 0
+                    && stats.forward_fail / (stats.forward_ok + stats.forward_fail) >= 0.9
+                    ? '#cf1322'
+                    : undefined,
+                }}
+              />
+            </Col>
+          </Row>
+        </Card>
+      )}
+
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'rules',

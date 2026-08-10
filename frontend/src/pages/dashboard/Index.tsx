@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Row, Col, Card, Statistic, Table, Tag, Typography, Space, Progress } from 'antd'
+import { useEffect, useState, useCallback } from 'react'
+import { Row, Col, Card, Statistic, Table, Tag, Typography, Space, Progress, Button } from 'antd'
 import {
   ClusterOutlined,
   CloudServerOutlined,
@@ -7,22 +7,43 @@ import {
   CheckCircleOutlined,
   WarningOutlined,
   CloseCircleOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useNavigate } from 'react-router-dom'
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getClusterOverview, ClusterOverview } from '../../api/metrics'
+import { listModules, ModuleStatus } from '../../api/modules'
+import { useInterval } from '../../hooks/useInterval'
+import { moduleHomePath } from '../../constants/modules'
 
 const { Title, Text } = Typography
 
+const MODULE_REFRESH_MS = 20000
+
 const Dashboard: React.FC = () => {
+  const navigate = useNavigate()
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [overview, setOverview] = useState<ClusterOverview | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
+  const [modules, setModules] = useState<ModuleStatus[]>([])
+
+  const fetchModules = useCallback(async () => {
+    try {
+      const res = await listModules()
+      setModules(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch modules:', error)
+    }
+  }, [])
 
   useEffect(() => {
     fetchClusters()
-  }, [])
+    fetchModules()
+  }, [fetchModules])
+
+  useInterval(fetchModules, MODULE_REFRESH_MS, true)
 
   useEffect(() => {
     if (selectedCluster) {
@@ -53,6 +74,10 @@ const Dashboard: React.FC = () => {
       console.error('Failed to fetch overview:', error)
     }
   }
+
+  const enabledMods = modules.filter((m) => m.enabled)
+  const unhealthy = enabledMods.filter((m) => !m.healthy)
+  const warned = enabledMods.filter((m) => m.healthy && typeof m.details?.health_warning === 'string')
 
   const getStatusTag = (status: string) => {
     const statusMap: Record<string, { color: string; icon: React.ReactNode }> = {
@@ -111,6 +136,54 @@ const Dashboard: React.FC = () => {
       <Title level={4} style={{ marginBottom: 24 }}>
         仪表盘
       </Title>
+
+      {enabledMods.length > 0 && (
+        <Card
+          size="small"
+          style={{ marginBottom: 24 }}
+          title={
+            <Space>
+              <AppstoreOutlined />
+              <span>模块健康</span>
+            </Space>
+          }
+          extra={
+            <Button type="link" size="small" onClick={() => navigate('/system/modules')}>
+              全部模块
+            </Button>
+          }
+        >
+          <Space wrap size={[8, 8]}>
+            <Tag color="success">健康 {enabledMods.length - unhealthy.length}/{enabledMods.length}</Tag>
+            {unhealthy.map((m) => (
+              <Tag
+                key={m.name}
+                color="error"
+                icon={<CloseCircleOutlined />}
+                style={{ cursor: 'pointer' }}
+                onClick={() => navigate(moduleHomePath(m.name))}
+              >
+                {m.name}: {m.health_error || '异常'}
+              </Tag>
+            ))}
+            {warned.map((m) => (
+              <Tag
+                key={`w-${m.name}`}
+                color="warning"
+                icon={<WarningOutlined />}
+                style={{ cursor: 'pointer' }}
+                onClick={() => navigate(moduleHomePath(m.name))}
+              >
+                {m.name}: {String(m.details?.health_warning)}
+              </Tag>
+            ))}
+            {unhealthy.length === 0 && warned.length === 0 && (
+              <Text type="secondary">所有已启用模块运行正常</Text>
+            )}
+          </Space>
+        </Card>
+      )}
+
       <Row gutter={[24, 24]}>
         <Col xs={24} sm={12} lg={6}>
           <Card hoverable>
