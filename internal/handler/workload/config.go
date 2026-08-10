@@ -128,9 +128,6 @@ func (h *Handler) CreateConfigMap(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
-	if !authz.EnsureScope(c, "configmaps", "create", uint(clusterID), req.Namespace) {
-		return
-	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -356,9 +353,6 @@ func (h *Handler) CreateSecret(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	if !authz.EnsureScope(c, "secrets", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -621,9 +615,6 @@ func (h *Handler) CreateIngress(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	if !authz.EnsureScope(c, "ingresses", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 

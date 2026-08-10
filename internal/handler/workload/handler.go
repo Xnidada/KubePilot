@@ -857,9 +857,6 @@ func (h *Handler) CreateDeployment(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
-	if !authz.EnsureScope(c, "deployments", "create", uint(clusterID), req.Namespace) {
-		return
-	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -1098,9 +1095,6 @@ func (h *Handler) CreatePod(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	if !authz.EnsureScope(c, "pods", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -1386,9 +1380,6 @@ func (h *Handler) CreateService(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	if !authz.EnsureScope(c, "services", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
@@ -2216,9 +2207,6 @@ func (h *Handler) CreatePVC(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
-	if !authz.EnsureScope(c, "pvcs", "create", uint(clusterID), req.Namespace) {
-		return
-	}
 
 	client, err := k8s.Manager.GetClient(uint(clusterID))
 	if err != nil {
@@ -2798,9 +2786,6 @@ func (h *Handler) CreateHPA(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	if !authz.EnsureScope(c, "hpas", "create", uint(clusterID), req.Namespace) {
 		return
 	}
 
