@@ -28,13 +28,13 @@ func SeedData() error {
 		{
 			Name:        "operator",
 			Description: "运维人员，管理工作负载和告警",
-			Permissions: `[{"resource":"deployments","actions":["view","create","edit","delete"]},{"resource":"pods","actions":["view","create","delete"]},{"resource":"services","actions":["view","create","edit","delete"]},{"resource":"configmaps","actions":["view","create","edit","delete"]},{"resource":"secrets","actions":["view","create","edit","delete"]},{"resource":"namespaces","actions":["view"]},{"resource":"nodes","actions":["view"]},{"resource":"events","actions":["view"]},{"resource":"alerts","actions":["view","edit"]},{"resource":"scheduler","actions":["view","create","edit","delete"]}]`,
+			Permissions: `[{"resource":"deployments","actions":["view","create","edit","delete"]},{"resource":"pods","actions":["view","create","delete","exec"]},{"resource":"services","actions":["view","create","edit","delete"]},{"resource":"configmaps","actions":["view","create","edit","delete"]},{"resource":"secrets","actions":["view","create","edit","delete"]},{"resource":"namespaces","actions":["view"]},{"resource":"nodes","actions":["view"]},{"resource":"events","actions":["view"]},{"resource":"alerts","actions":["view","edit"]},{"resource":"scheduler","actions":["view","create","edit","delete"]}]`,
 			IsSystem:    false,
 		},
 		{
 			Name:        "user",
 			Description: "开发人员，查看和创建工作负载",
-			Permissions: `[{"resource":"deployments","actions":["view","create"]},{"resource":"pods","actions":["view"]},{"resource":"services","actions":["view"]},{"resource":"configmaps","actions":["view"]},{"resource":"namespaces","actions":["view"]},{"resource":"scheduler","actions":["view","create"]}]`,
+			Permissions: `[{"resource":"deployments","actions":["view","create"]},{"resource":"pods","actions":["view","exec"]},{"resource":"services","actions":["view"]},{"resource":"configmaps","actions":["view"]},{"resource":"namespaces","actions":["view"]},{"resource":"scheduler","actions":["view","create"]}]`,
 			IsSystem:    false,
 		},
 		{

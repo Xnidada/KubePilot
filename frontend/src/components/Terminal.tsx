@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Modal, Spin } from 'antd'
-import { Terminal as XTerminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
-import 'xterm/css/xterm.css'
+import { Terminal as XTerminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
+import { createPodTerminalTicket } from '../api/terminal'
 
 interface TerminalProps {
   visible: boolean
@@ -40,7 +41,7 @@ const Terminal: React.FC<TerminalProps> = ({
     }
   }, [visible, containerName])
 
-  const connectTerminal = () => {
+  const connectTerminal = async () => {
     cleanup()
     setConnecting(true)
     setError(null)
@@ -65,12 +66,26 @@ const Terminal: React.FC<TerminalProps> = ({
 
     termRef.current = term
 
-    // 获取 token
-    const token = getAuthToken()
+    let ticket: string
+    try {
+      const response = await createPodTerminalTicket(clusterId, namespace, podName)
+      ticket = response.data.ticket
+    } catch {
+      setConnecting(false)
+      setError('无法获取终端连接凭证')
+      term.dispose()
+      termRef.current = null
+      return
+    }
+    if (termRef.current !== term) return
 
     // 构建 WebSocket URL
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/terminal/${clusterId}/${namespace}/${podName}?container=${containerName || ''}&token=${token}`
+    const params = new URLSearchParams({
+      container: containerName || '',
+      ticket,
+    })
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/terminal/${clusterId}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}?${params}`
 
     // 连接 WebSocket
     const ws = new WebSocket(wsUrl)
@@ -160,17 +175,6 @@ const Terminal: React.FC<TerminalProps> = ({
       )}
     </Modal>
   )
-}
-
-function getAuthToken(): string {
-  const token = localStorage.getItem('auth-storage')
-  if (token) {
-    try {
-      const authData = JSON.parse(token)
-      return authData?.state?.token || ''
-    } catch { return '' }
-  }
-  return ''
 }
 
 export default Terminal

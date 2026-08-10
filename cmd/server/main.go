@@ -59,12 +59,15 @@ func main() {
 	logger.Info("seed data initialized")
 
 	// Initialize cache
-	cacheInstance := cache.New(cache.Config{
+	cacheInstance, err := cache.New(cache.Config{
 		Type:     cfg.Cache.Type,
 		Addr:     cfg.Cache.Addr,
 		Password: cfg.Cache.Password,
 		DB:       cfg.Cache.DB,
 	})
+	if err != nil {
+		logger.Fatal("failed to initialize cache", zap.Error(err))
+	}
 	defer cacheInstance.Close()
 	logger.Info("cache initialized", zap.String("type", cfg.Cache.Type))
 

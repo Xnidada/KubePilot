@@ -21,14 +21,23 @@ export interface Role {
   is_system: boolean
 }
 
+export interface UserClusterAssignment {
+  id?: number
+  cluster_id: number
+  cluster_name?: string
+  cluster_display_name?: string
+  namespace: string
+  permission_level: 'read' | 'write' | 'admin'
+}
+
 export interface AuditLog {
   id: number
-  user_id: number
+  user_id: number | null
   username: string
   action: string
   resource_type: string
   resource_name: string
-  cluster_id: number
+  cluster_id: number | null
   namespace: string
   request_body: string
   response_code: number
@@ -74,6 +83,20 @@ export const deleteUser = (id: number) => {
 
 export const resetPassword = (id: number, newPassword?: string) => {
   return post(`/system/users/${id}/reset-password`, { new_password: newPassword })
+}
+
+export const getUserClusters = (id: number) => {
+  return get<{ code: number; data: UserClusterAssignment[] }>(`/system/users/${id}/clusters`)
+}
+
+export const replaceUserClusters = (id: number, assignments: UserClusterAssignment[]) => {
+  return put<{ code: number; data: UserClusterAssignment[] }>(`/system/users/${id}/clusters`, {
+    assignments: assignments.map(({ cluster_id, namespace, permission_level }) => ({
+      cluster_id,
+      namespace,
+      permission_level,
+    })),
+  })
 }
 
 // Roles

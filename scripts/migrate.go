@@ -1,3 +1,5 @@
+//go:build ignore
+
 package main
 
 import (
@@ -25,7 +27,12 @@ func main() {
 	}
 
 	// Initialize database
-	if err := model.InitDatabase(cfg.Database.DSN()); err != nil {
+	if err := model.InitDatabase(
+		cfg.Database.Driver,
+		cfg.Database.DSN(),
+		cfg.Database.MaxIdleConns,
+		cfg.Database.MaxOpenConns,
+	); err != nil {
 		logger.Fatal("failed to connect to database", zap.Error(err))
 	}
 

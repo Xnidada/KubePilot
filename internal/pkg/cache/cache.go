@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Cache 缓存接口
@@ -16,6 +18,8 @@ type Cache interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
 	// Delete 删除缓存
 	Delete(ctx context.Context, key string) error
+	// Take 原子获取并删除缓存，用于一次性令牌
+	Take(ctx context.Context, key string) (string, error)
 	// Exists 检查缓存是否存在
 	Exists(ctx context.Context, key string) (bool, error)
 	// SetNX 仅在 key 不存在时设置
@@ -32,9 +36,9 @@ type Cache interface {
 
 // MemoryCache 内存缓存
 type MemoryCache struct {
-	mu      sync.RWMutex
-	items   map[string]*cacheItem
-	stopCh  chan struct{}
+	mu     sync.RWMutex
+	items  map[string]*cacheItem
+	stopCh chan struct{}
 }
 
 type cacheItem struct {
@@ -131,6 +135,21 @@ func (mc *MemoryCache) Delete(ctx context.Context, key string) error {
 	defer mc.mu.Unlock()
 	delete(mc.items, key)
 	return nil
+}
+
+func (mc *MemoryCache) Take(ctx context.Context, key string) (string, error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	item, ok := mc.items[key]
+	if !ok {
+		return "", fmt.Errorf("key not found: %s", key)
+	}
+	delete(mc.items, key)
+	if item.Expiration > 0 && item.Expiration <= time.Now().Unix() {
+		return "", fmt.Errorf("key expired: %s", key)
+	}
+	return item.Value, nil
 }
 
 func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
@@ -233,13 +252,7 @@ func (mc *MemoryCache) Close() error {
 	return nil
 }
 
-// ==================== Redis 缓存实现（需要安装 go-redis） ====================
-
-// Redis 实现需要安装: go get github.com/redis/go-redis/v9
-// 安装后取消注释以下代码并使用 NewRedisCache 创建实例
-
-/*
-import "github.com/redis/go-redis/v9"
+// ==================== Redis 缓存实现 ====================
 
 type RedisCache struct {
 	client *redis.Client
@@ -255,15 +268,60 @@ func NewRedisCache(addr, password string, db int) *RedisCache {
 }
 
 func (rc *RedisCache) Get(ctx context.Context, key string) (string, error) {
-	return rc.client.Get(ctx).Result()
+	return rc.client.Get(ctx, key).Result()
 }
 
 func (rc *RedisCache) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	return rc.client.Set(ctx, key, value, expiration).Err()
+	serialized, err := serializeValue(value)
+	if err != nil {
+		return err
+	}
+	return rc.client.Set(ctx, key, serialized, expiration).Err()
 }
 
-// ... 其他方法实现
-*/
+func (rc *RedisCache) Delete(ctx context.Context, key string) error {
+	return rc.client.Del(ctx, key).Err()
+}
+
+func (rc *RedisCache) Take(ctx context.Context, key string) (string, error) {
+	return rc.client.GetDel(ctx, key).Result()
+}
+
+func (rc *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
+	count, err := rc.client.Exists(ctx, key).Result()
+	return count > 0, err
+}
+
+func (rc *RedisCache) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	serialized, err := serializeValue(value)
+	if err != nil {
+		return false, err
+	}
+	return rc.client.SetNX(ctx, key, serialized, expiration).Result()
+}
+
+func (rc *RedisCache) Increment(ctx context.Context, key string) (int64, error) {
+	return rc.client.Incr(ctx, key).Result()
+}
+
+func (rc *RedisCache) GetTTL(ctx context.Context, key string) (time.Duration, error) {
+	return rc.client.TTL(ctx, key).Result()
+}
+
+func (rc *RedisCache) Close() error {
+	return rc.client.Close()
+}
+
+func serializeValue(value interface{}) (interface{}, error) {
+	switch value := value.(type) {
+	case string:
+		return value, nil
+	case []byte:
+		return value, nil
+	default:
+		return json.Marshal(value)
+	}
+}
 
 // ==================== 工厂函数 ====================
 
@@ -275,15 +333,19 @@ type Config struct {
 	DB       int
 }
 
-// New 创建缓存实例
-func New(cfg Config) Cache {
+// New 创建缓存实例并验证外部缓存连接。
+func New(cfg Config) (Cache, error) {
 	switch cfg.Type {
 	case "redis":
-		// Redis 实现需要安装 go-redis 包
-		// 安装后使用: return NewRedisCache(cfg.Addr, cfg.Password, cfg.DB)
-		fmt.Println("Warning: Redis driver not installed, falling back to memory cache")
-		return NewMemoryCache()
+		redisCache := NewRedisCache(cfg.Addr, cfg.Password, cfg.DB)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := redisCache.client.Ping(ctx).Err(); err != nil {
+			_ = redisCache.Close()
+			return nil, fmt.Errorf("connect to redis at %s: %w", cfg.Addr, err)
+		}
+		return redisCache, nil
 	default:
-		return NewMemoryCache()
+		return NewMemoryCache(), nil
 	}
 }

@@ -35,30 +35,13 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// validateWebSocketAuth 验证 WebSocket 连接的 JWT token
-func validateWebSocketAuth(c *gin.Context) bool {
-	// 从 query 参数或 header 获取 token
-	token := c.Query("token")
-	if token == "" {
-		authHeader := c.GetHeader("Authorization")
-		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			token = authHeader[7:]
-		}
-	}
-	if token == "" {
-		return false
-	}
-	// token 会由中间件验证，这里只检查是否存在
-	return true
-}
-
 // PodTerminal Pod终端WebSocket连接
 func (h *Handler) PodTerminal(c *gin.Context) {
-	// 验证认证
-	if !validateWebSocketAuth(c) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	releaseSession, ok := beginTerminalSession(c)
+	if !ok {
 		return
 	}
+	defer releaseSession()
 
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -76,7 +59,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 	}
 
 	// 获取Pod信息
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "pod not found"})
@@ -89,12 +72,14 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 	}
 
 	// 升级WebSocket连接
-	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		logger.Error("failed to upgrade websocket", zap.Error(err))
 		return
 	}
-	defer ws.Close()
+	session := newWebsocketSession(conn)
+	defer session.Close()
+	ctx = session.Context()
 
 	// 尝试不同的shell
 	shells := []string{"/bin/sh", "/bin/bash", "/bin/ash", "sh", "bash"}
@@ -130,9 +115,8 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 	}
 
 	if shellCmd == "" {
-		ws.WriteMessage(websocket.TextMessage, []byte("错误: 容器中没有可用的shell (distroless镜像不支持终端连接)\r\n"))
-		ws.WriteMessage(websocket.TextMessage, []byte("提示: 此容器使用distroless基础镜像，不包含shell\r\n"))
-		ws.Close()
+		session.SendText("错误: 容器中没有可用的shell (distroless镜像不支持终端连接)\r\n")
+		session.SendText("提示: 此容器使用distroless基础镜像，不包含shell\r\n")
 		return
 	}
 
@@ -154,7 +138,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 	executor, err := remotecommand.NewSPDYExecutor(client.Config, "POST", req.URL())
 	if err != nil {
 		logger.Error("failed to create executor", zap.Error(err))
-		ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v", err)))
+		session.SendText(fmt.Sprintf("Error: %v", err))
 		return
 	}
 
@@ -171,7 +155,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 		defer wg.Done()
 		defer stdinWriter.Close()
 		for {
-			_, message, err := ws.ReadMessage()
+			_, message, err := session.ReadMessage()
 			if err != nil {
 				return
 			}
@@ -193,8 +177,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 			if err != nil {
 				return
 			}
-			err = ws.WriteMessage(websocket.TextMessage, buf[:n])
-			if err != nil {
+			if !session.Send(websocket.TextMessage, buf[:n]) {
 				return
 			}
 		}
@@ -211,8 +194,7 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 			if err != nil {
 				return
 			}
-			err = ws.WriteMessage(websocket.TextMessage, buf[:n])
-			if err != nil {
+			if !session.Send(websocket.TextMessage, buf[:n]) {
 				return
 			}
 		}
@@ -230,7 +212,8 @@ func (h *Handler) PodTerminal(c *gin.Context) {
 		logger.Error("stream error", zap.Error(err))
 	}
 
-	// 等待所有goroutine完成
+	// Closing the session unblocks the WebSocket reader before waiting.
+	session.Close()
 	stdinWriter.Close()
 	stdoutWriter.Close()
 	stderrWriter.Close()

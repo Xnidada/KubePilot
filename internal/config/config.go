@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -27,7 +28,7 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Driver       string `mapstructure:"driver"` // postgres, mysql, sqlite
+	Driver       string `mapstructure:"driver"` // postgres
 	Host         string `mapstructure:"host"`
 	Port         int    `mapstructure:"port"`
 	Username     string `mapstructure:"username"`
@@ -93,6 +94,7 @@ func Load() (*Config, error) {
 	// Enable environment variables
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("KUBEPILOT")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -128,6 +130,9 @@ func (c *Config) Validate() error {
 	}
 
 	// 检查数据库配置
+	if c.Database.Driver != "" && c.Database.Driver != "postgres" {
+		return fmt.Errorf("database.driver %q is not supported; only postgres is available", c.Database.Driver)
+	}
 	if c.Database.Host == "" {
 		return fmt.Errorf("database.host is required")
 	}
@@ -144,6 +149,7 @@ func setDefaults() {
 	viper.SetDefault("server.write_timeout", 30*time.Second)
 
 	// Database defaults
+	viper.SetDefault("database.driver", "postgres")
 	viper.SetDefault("database.host", "localhost")
 	viper.SetDefault("database.port", 5432)
 	viper.SetDefault("database.username", "kubepilot")
@@ -182,21 +188,8 @@ func setDefaults() {
 }
 
 func (d *DatabaseConfig) DSN() string {
-	switch d.Driver {
-	case "mysql":
-		// MySQL DSN: user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-			d.Username, d.Password, d.Host, d.Port, d.DBName)
-	case "sqlite":
-		// SQLite uses DBName as file path
-		if d.DBName == "" {
-			return "kubepilot.db"
-		}
-		return d.DBName
-	default: // postgres
-		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			d.Host, d.Port, d.Username, d.Password, d.DBName, d.SSLMode)
-	}
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		d.Host, d.Port, d.Username, d.Password, d.DBName, d.SSLMode)
 }
 
 func (r *RedisConfig) Addr() string {

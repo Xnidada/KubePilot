@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Modal, Spin } from 'antd'
-import { Terminal as XTerminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
-import 'xterm/css/xterm.css'
+import { Terminal as XTerminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
+import { createNodeShellTicket } from '../api/terminal'
 
 interface NodeShellProps {
   visible: boolean
@@ -34,7 +35,7 @@ const NodeShell: React.FC<NodeShellProps> = ({
     }
   }, [visible])
 
-  const connectTerminal = () => {
+  const connectTerminal = async () => {
     cleanup()
     setConnecting(true)
     setError(null)
@@ -58,9 +59,22 @@ const NodeShell: React.FC<NodeShellProps> = ({
 
     termRef.current = term
 
-    const token = getAuthToken()
+    let ticket: string
+    try {
+      const response = await createNodeShellTicket(clusterId, nodeName)
+      ticket = response.data.ticket
+    } catch {
+      setConnecting(false)
+      setError('无法获取节点终端连接凭证')
+      term.dispose()
+      termRef.current = null
+      return
+    }
+    if (termRef.current !== term) return
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/node-shell/${clusterId}/${nodeName}?token=${token}`
+    const params = new URLSearchParams({ ticket })
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/node-shell/${clusterId}/${encodeURIComponent(nodeName)}?${params}`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
@@ -142,17 +156,6 @@ const NodeShell: React.FC<NodeShellProps> = ({
       )}
     </Modal>
   )
-}
-
-function getAuthToken(): string {
-  const token = localStorage.getItem('auth-storage')
-  if (token) {
-    try {
-      const authData = JSON.parse(token)
-      return authData?.state?.token || ''
-    } catch { return '' }
-  }
-  return ''
 }
 
 export default NodeShell

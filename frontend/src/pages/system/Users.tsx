@@ -20,9 +20,11 @@ import {
   DeleteOutlined,
   UserOutlined,
   KeyOutlined,
+  ClusterOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getRoles, User, Role } from '../../api/system'
+import UserClusterAccessModal from '../../components/UserClusterAccessModal'
 
 const { Title } = Typography
 
@@ -36,6 +38,7 @@ const SystemUsers: React.FC = () => {
   const [modalVisible, setModalVisible] = useState(false)
   const [modalType, setModalType] = useState<'create' | 'edit'>('create')
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
+  const [clusterAccessUser, setClusterAccessUser] = useState<User | null>(null)
   const [form] = Form.useForm()
 
   useEffect(() => {
@@ -208,7 +211,7 @@ const SystemUsers: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 250,
+      width: 340,
       render: (_, record) => (
         <Space size="small">
           <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
@@ -220,6 +223,13 @@ const SystemUsers: React.FC = () => {
             onClick={() => handleResetPassword(record.username, record.id)}
           >
             重置密码
+          </Button>
+          <Button
+            type="link"
+            icon={<ClusterOutlined />}
+            onClick={() => setClusterAccessUser(record)}
+          >
+            集群权限
           </Button>
           {record.username !== 'admin' && (
             <Popconfirm
@@ -321,6 +331,12 @@ const SystemUsers: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <UserClusterAccessModal
+        open={clusterAccessUser !== null}
+        user={clusterAccessUser}
+        onClose={() => setClusterAccessUser(null)}
+      />
 
       {/* 重置密码弹窗 */}
       <Modal

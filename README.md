@@ -4,7 +4,7 @@
 
 **企业级 Kubernetes 智能运维管理平台**
 
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.24+-326CE5?style=flat&logo=kubernetes)](https://kubernetes.io/)
@@ -103,7 +103,7 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 - **集群巡检** - 自定义规则，定时巡检，生成报告
 - **Event 转发** - 转发 K8S 事件到 Webhook，支持过滤
 - **SSO/OAuth** - 支持 GitHub、GitLab、Google 等 OAuth2 登录
-- **多数据库** - 支持 PostgreSQL、MySQL、SQLite
+- **数据持久化** - 使用 PostgreSQL 存储平台配置与审计数据
 - **缓存系统** - 支持内存缓存和 Redis
 
 ### 📊 监控告警
@@ -132,7 +132,7 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 
 | 层级 | 技术 |
 |------|------|
-| **后端** | Go 1.21+, Gin, GORM, client-go |
+| **后端** | Go 1.26+, Gin, GORM, client-go |
 | **前端** | React 18, TypeScript, Ant Design 5, Zustand |
 | **数据库** | PostgreSQL 15, Redis 7 |
 | **AI** | OpenAI API, Anthropic API (可扩展) |
@@ -142,9 +142,9 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 
 ### 前置条件
 
-- Go 1.21+
+- Go 1.26+
 - Node.js 18+
-- PostgreSQL 15+ (或 SQLite/MySQL)
+- PostgreSQL 15+
 - Redis 7+ (可选，支持内存缓存)
 
 ### 方式一：Docker Compose（推荐）
@@ -266,7 +266,7 @@ server:
   mode: "release"  # debug, release, test
 
 database:
-  driver: "postgres"  # postgres, mysql, sqlite
+  driver: "postgres"  # 当前仅支持 PostgreSQL
   host: "localhost"
   port: 5432
   username: "kubepilot"

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -71,6 +72,68 @@ func RequirePermission(resource, action string) gin.HandlerFunc {
 	}
 }
 
+// RequireClusterAccess restricts a request to clusters explicitly assigned to
+// the current user. System administrators retain global access.
+func RequireClusterAccess(requiredLevel string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleID, roleExists := c.Get("role_id")
+		userID, userExists := c.Get("user_id")
+		if !roleExists || !userExists {
+			response.Forbidden(c, "missing user authorization context")
+			c.Abort()
+			return
+		}
+
+		var role model.Role
+		if err := model.DB.First(&role, roleID).Error; err != nil {
+			response.Forbidden(c, "role not found")
+			c.Abort()
+			return
+		}
+		if role.IsSystem || role.Name == "admin" {
+			c.Next()
+			return
+		}
+
+		clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+		if err != nil {
+			response.BadRequest(c, "invalid cluster id")
+			c.Abort()
+			return
+		}
+
+		query := model.DB.Model(&model.UserCluster{}).
+			Where("user_id = ? AND cluster_id = ?", userID, uint(clusterID))
+		if namespace := c.Param("ns"); namespace != "" {
+			query = query.Where("namespace IN ?", []string{"*", namespace})
+		} else {
+			query = query.Where("namespace = ?", "*")
+		}
+
+		switch requiredLevel {
+		case "write":
+			query = query.Where("permission_level IN ?", []string{"write", "admin"})
+		case "admin":
+			query = query.Where("permission_level = ?", "admin")
+		case "read":
+			query = query.Where("permission_level IN ?", []string{"read", "write", "admin"})
+		default:
+			response.Forbidden(c, "invalid cluster permission requirement")
+			c.Abort()
+			return
+		}
+
+		var count int64
+		if err := query.Count(&count).Error; err != nil || count == 0 {
+			response.Forbidden(c, "cluster access denied")
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // AutoRBACMiddleware 自动RBAC权限检查中间件
 func AutoRBACMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -122,22 +185,22 @@ func AutoRBACMiddleware() gin.HandlerFunc {
 // extractResourceFromPath 从路径中提取资源类型
 func extractResourceFromPath(path string) string {
 	resources := map[string]string{
-		"/clusters":     "clusters",
-		"/deployments":  "deployments",
-		"/pods":         "pods",
-		"/services":     "services",
-		"/configmaps":   "configmaps",
-		"/secrets":      "secrets",
-		"/pvcs":         "pvcs",
-		"/pvs":          "pvs",
-		"/namespaces":   "namespaces",
-		"/nodes":        "nodes",
-		"/events":       "events",
-		"/alerts":       "alerts",
-		"/users":        "users",
-		"/roles":        "roles",
-		"/audit-logs":   "audit_logs",
-		"/appstore":     "appstore",
+		"/clusters":    "clusters",
+		"/deployments": "deployments",
+		"/pods":        "pods",
+		"/services":    "services",
+		"/configmaps":  "configmaps",
+		"/secrets":     "secrets",
+		"/pvcs":        "pvcs",
+		"/pvs":         "pvs",
+		"/namespaces":  "namespaces",
+		"/nodes":       "nodes",
+		"/events":      "events",
+		"/alerts":      "alerts",
+		"/users":       "users",
+		"/roles":       "roles",
+		"/audit-logs":  "audit_logs",
+		"/appstore":    "appstore",
 	}
 
 	for pattern, resource := range resources {

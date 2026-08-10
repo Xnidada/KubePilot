@@ -5,8 +5,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/config"
-	"github.com/kubepilot/kubepilot/internal/handler/alert"
 	aiopsHandler "github.com/kubepilot/kubepilot/internal/handler/aiops"
+	"github.com/kubepilot/kubepilot/internal/handler/alert"
 	"github.com/kubepilot/kubepilot/internal/handler/auth"
 	"github.com/kubepilot/kubepilot/internal/handler/backup"
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
@@ -23,6 +23,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"github.com/kubepilot/kubepilot/internal/pkg/utils"
+	"github.com/kubepilot/kubepilot/internal/pkg/wsticket"
 	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	authService "github.com/kubepilot/kubepilot/internal/service/auth"
 	clusterService "github.com/kubepilot/kubepilot/internal/service/cluster"
@@ -42,6 +43,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 
 	// Initialize JWT manager
 	jwtManager := utils.NewJWTManager(cfg.JWT.Secret, cfg.JWT.ExpireTime, cfg.JWT.Issuer)
+	webSocketTicketManager := wsticket.NewManager(cacheInstance)
 
 	// Initialize services
 	authSvc := authService.NewService(model.DB, jwtManager)
@@ -65,6 +67,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 
 	// Initialize handlers
 	authHandler := auth.NewHandler(authSvc, model.DB)
+	webSocketTicketHandler := auth.NewWebSocketTicketHandler(webSocketTicketManager)
 	twoFactorHandler := auth.NewTwoFactorHandler(model.DB)
 	clusterHandler := cluster.NewHandler(clusterSvc)
 	workloadHandler := workload.NewHandler()
@@ -129,6 +132,18 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 				systemGroup.PUT("/users/:id", systemHandler.UpdateUser)
 				systemGroup.DELETE("/users/:id", systemHandler.DeleteUser)
 				systemGroup.POST("/users/:id/reset-password", systemHandler.ResetPassword)
+				systemGroup.GET(
+					"/users/:id/clusters",
+					middleware.RequirePermission("users", "admin"),
+					middleware.RBACMiddleware(),
+					systemHandler.ListUserClusters,
+				)
+				systemGroup.PUT(
+					"/users/:id/clusters",
+					middleware.RequirePermission("users", "admin"),
+					middleware.RBACMiddleware(),
+					systemHandler.ReplaceUserClusters,
+				)
 
 				// Role management
 				systemGroup.GET("/roles", systemHandler.ListRoles)
@@ -551,9 +566,43 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache) *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// WebSocket terminal (需要认证)
-	r.GET("/api/v1/ws/terminal/:id/:ns/:name", workloadHandler.PodTerminal)
-	r.GET("/api/v1/ws/node-shell/:id/:name", workloadHandler.NodeShell)
+	// Ticket issuance uses normal JWT authentication. The resulting ticket is
+	// short-lived, single-use, and bound to the exact terminal target.
+	r.POST(
+		"/api/v1/ws/tickets/pod/:id/:ns/:name",
+		middleware.AuthMiddleware(jwtManager),
+		middleware.RequirePermission("pods", "exec"),
+		middleware.RBACMiddleware(),
+		middleware.RequireClusterAccess("write"),
+		webSocketTicketHandler.IssuePod,
+	)
+	r.POST(
+		"/api/v1/ws/tickets/node/:id/:name",
+		middleware.AuthMiddleware(jwtManager),
+		middleware.RequirePermission("nodes", "admin"),
+		middleware.RBACMiddleware(),
+		middleware.RequireClusterAccess("admin"),
+		webSocketTicketHandler.IssueNode,
+	)
+
+	// WebSocket connections consume the ticket and repeat authorization checks
+	// so role or cluster grants revoked between issuance and use take effect.
+	r.GET(
+		"/api/v1/ws/terminal/:id/:ns/:name",
+		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "pod"),
+		middleware.RequirePermission("pods", "exec"),
+		middleware.RBACMiddleware(),
+		middleware.RequireClusterAccess("write"),
+		workloadHandler.PodTerminal,
+	)
+	r.GET(
+		"/api/v1/ws/node-shell/:id/:name",
+		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "node"),
+		middleware.RequirePermission("nodes", "admin"),
+		middleware.RBACMiddleware(),
+		middleware.RequireClusterAccess("admin"),
+		workloadHandler.NodeShell,
+	)
 
 	// Serve frontend static files
 	r.Static("/assets", "./web/assets")

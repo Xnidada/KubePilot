@@ -155,16 +155,16 @@ func AuditMiddleware() gin.HandlerFunc {
 
 		// 设置用户信息
 		if userID != nil {
-			auditLog.UserID = userID.(uint)
+			id := userID.(uint)
+			auditLog.UserID = &id
 			auditLog.Username = username.(string)
 		} else {
-			auditLog.UserID = 1
 			auditLog.Username = "anonymous"
 		}
 
 		// 设置集群ID（如果存在）
 		if clusterIDUint > 0 {
-			auditLog.ClusterID = clusterIDUint
+			auditLog.ClusterID = &clusterIDUint
 		}
 
 		// Save audit log asynchronously

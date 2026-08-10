@@ -11,25 +11,15 @@ import (
 var DB *gorm.DB
 
 // InitDatabase 初始化数据库连接
-// driver: postgres (默认), mysql, sqlite
-// 注意: mysql 和 sqlite 驱动需要额外安装:
-//
-//	go get gorm.io/driver/mysql
-//	go get gorm.io/driver/sqlite
+// driver 当前仅支持 postgres。
 func InitDatabase(driver, dsn string, maxIdle, maxOpen int) error {
 	var dialector gorm.Dialector
 
 	switch driver {
-	case "mysql":
-		// 需要安装: go get gorm.io/driver/mysql
-		// dialector = mysql.Open(dsn)
-		return fmt.Errorf("mysql driver not installed, run: go get gorm.io/driver/mysql")
-	case "sqlite":
-		// 需要安装: go get gorm.io/driver/sqlite
-		// dialector = sqlite.Open(dsn)
-		return fmt.Errorf("sqlite driver not installed, run: go get gorm.io/driver/sqlite")
-	default: // postgres
+	case "", "postgres":
 		dialector = postgres.Open(dsn)
+	default:
+		return fmt.Errorf("unsupported database driver %q; only postgres is available", driver)
 	}
 
 	var err error
@@ -59,7 +49,7 @@ func InitDatabase(driver, dsn string, maxIdle, maxOpen int) error {
 }
 
 func AutoMigrate() error {
-	return DB.AutoMigrate(
+	if err := DB.AutoMigrate(
 		&User{},
 		&Role{},
 		&Cluster{},
@@ -108,7 +98,20 @@ func AutoMigrate() error {
 		// Webhook
 		&WebhookConfig{},
 		&WebhookLog{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Audit logs are historical records and must survive user/cluster deletion.
+	// They also need to record attempted access to IDs that never existed.
+	for _, constraint := range []string{"fk_audit_logs_user", "fk_audit_logs_cluster"} {
+		if DB.Migrator().HasConstraint(&AuditLog{}, constraint) {
+			if err := DB.Migrator().DropConstraint(&AuditLog{}, constraint); err != nil {
+				return fmt.Errorf("drop audit log constraint %s: %w", constraint, err)
+			}
+		}
+	}
+	return nil
 }
 
 func Close() error {

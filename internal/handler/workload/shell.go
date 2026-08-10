@@ -34,11 +34,11 @@ const lastUsedAnnotation = "kubepilot/last-used"
 
 // NodeShell 节点终端WebSocket连接
 func (h *Handler) NodeShell(c *gin.Context) {
-	// 验证认证
-	if !validateWebSocketAuth(c) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	releaseSession, ok := beginTerminalSession(c)
+	if !ok {
 		return
 	}
+	defer releaseSession()
 
 	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -54,14 +54,15 @@ func (h *Handler) NodeShell(c *gin.Context) {
 	}
 
 	// 升级WebSocket连接
-	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		logger.Error("failed to upgrade websocket", zap.Error(err))
 		return
 	}
-	defer ws.Close()
+	session := newWebsocketSession(conn)
+	defer session.Close()
 
-	ctx := context.Background()
+	ctx := session.Context()
 	podName := nodeShellPodName(nodeName)
 
 	// 检查是否已存在 node-shell Pod
@@ -72,21 +73,20 @@ func (h *Handler) NodeShell(c *gin.Context) {
 		case corev1.PodRunning:
 			// Pod 正在运行，更新最后使用时间并复用
 			updateLastUsed(client, podName)
-			ws.WriteMessage(websocket.TextMessage, []byte("正在连接到现有终端...\r\n"))
+			session.SendText("正在连接到现有终端...\r\n")
 		case corev1.PodPending:
 			// Pod 还在启动中，等待
-			ws.WriteMessage(websocket.TextMessage, []byte("等待终端启动...\r\n"))
+			session.SendText("等待终端启动...\r\n")
 		default:
 			// Pod 状态异常，删除后重建
-			ws.WriteMessage(websocket.TextMessage, []byte("清理旧终端，重新启动...\r\n"))
+			session.SendText("清理旧终端，重新启动...\r\n")
 			client.Clientset.CoreV1().Pods("default").Delete(ctx, podName, metav1.DeleteOptions{})
 			time.Sleep(1 * time.Second)
 			existingPod = nil
 		}
 	} else if !errors.IsNotFound(err) {
 		// 获取 Pod 出错（非不存在）
-		ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v\r\n", err)))
-		ws.Close()
+		session.SendText(fmt.Sprintf("Error: %v\r\n", err))
 		return
 	} else {
 		// Pod 不存在，创建新的
@@ -95,7 +95,7 @@ func (h *Handler) NodeShell(c *gin.Context) {
 
 	// 如果 Pod 不存在，创建新的
 	if existingPod == nil {
-		ws.WriteMessage(websocket.TextMessage, []byte("正在启动节点终端...\r\n"))
+		session.SendText("正在启动节点终端...\r\n")
 
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -145,15 +145,14 @@ func (h *Handler) NodeShell(c *gin.Context) {
 
 		_, err = client.Clientset.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
 		if err != nil {
-			ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error creating shell pod: %v\r\n", err)))
-			ws.Close()
+			session.SendText(fmt.Sprintf("Error creating shell pod: %v\r\n", err))
 			return
 		}
 	}
 
 	// 等待 Pod 运行
 	if existingPod == nil || existingPod.Status.Phase != corev1.PodRunning {
-		ws.WriteMessage(websocket.TextMessage, []byte("等待终端就绪...\r\n"))
+		session.SendText("等待终端就绪...\r\n")
 		running := false
 		for i := 0; i < 30; i++ {
 			time.Sleep(2 * time.Second)
@@ -169,15 +168,13 @@ func (h *Handler) NodeShell(c *gin.Context) {
 				}
 			}
 			if p.Status.Phase == corev1.PodFailed {
-				ws.WriteMessage(websocket.TextMessage, []byte("终端启动失败\r\n"))
+				session.SendText("终端启动失败\r\n")
 				client.Clientset.CoreV1().Pods("default").Delete(ctx, podName, metav1.DeleteOptions{})
-				ws.Close()
 				return
 			}
 		}
 		if !running {
-			ws.WriteMessage(websocket.TextMessage, []byte("终端启动超时\r\n"))
-			ws.Close()
+			session.SendText("终端启动超时\r\n")
 			return
 		}
 	}
@@ -202,8 +199,7 @@ func (h *Handler) NodeShell(c *gin.Context) {
 
 	executor, err := remotecommand.NewSPDYExecutor(client.Config, "POST", req.URL())
 	if err != nil {
-		ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v\r\n", err)))
-		ws.Close()
+		session.SendText(fmt.Sprintf("Error: %v\r\n", err))
 		return
 	}
 
@@ -219,7 +215,7 @@ func (h *Handler) NodeShell(c *gin.Context) {
 		defer wg.Done()
 		defer stdinWriter.Close()
 		for {
-			_, message, err := ws.ReadMessage()
+			_, message, err := session.ReadMessage()
 			if err != nil {
 				return
 			}
@@ -241,8 +237,7 @@ func (h *Handler) NodeShell(c *gin.Context) {
 			if err != nil {
 				return
 			}
-			err = ws.WriteMessage(websocket.TextMessage, buf[:n])
-			if err != nil {
+			if !session.Send(websocket.TextMessage, buf[:n]) {
 				return
 			}
 		}
@@ -259,6 +254,7 @@ func (h *Handler) NodeShell(c *gin.Context) {
 		logger.Error("stream error", zap.Error(err))
 	}
 
+	session.Close()
 	stdinWriter.Close()
 	stdoutWriter.Close()
 	wg.Wait()

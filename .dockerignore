@@ -38,10 +38,7 @@ deploy/
 
 # Node modules
 frontend/node_modules/
+frontend/dist/
 
-# Frontend source (we only need dist)
-frontend/src/
-frontend/public/
-frontend/*.json
-frontend/*.js
-frontend/*.ts
+# Local tooling
+.codegraph/
