@@ -12,6 +12,9 @@ import {
   Modal,
   Popconfirm,
   Checkbox,
+  Collapse,
+  Tag,
+  Alert,
 } from 'antd'
 import {
   SendOutlined,
@@ -25,9 +28,10 @@ import {
   CloseCircleOutlined,
   ClearOutlined,
   CheckSquareOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { stageK8SOperation, confirmK8SOperation, ExecuteRequest } from '../../api/agent'
+import { confirmK8SOperation, PendingAction, ToolTraceItem } from '../../api/agent'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -35,19 +39,30 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 const { Title, Text } = Typography
 const { TextArea } = Input
 
-// 检测是否包含确认提示或 action 块
-const hasConfirmationPrompt = (text: string): boolean => {
-  if (text.includes('```action')) return true
-  const keywords = [
-    '请确认是否执行',
-    '是否执行此操作',
-    '确认执行',
-    '请确认',
-    '确认吗',
-  ]
-  return keywords.some(kw => text.includes(kw))
+/** 去掉历史消息里拼进去的旧版轨迹/待确认文本 */
+function stripLegacyAgentExtras(content: string): string {
+  if (!content) return content
+  return content
+    .replace(/\n*---\s*\n+\*\*待确认写操作\*\*[\s\S]*$/m, '')
+    .replace(/\n*<details>[\s\S]*?<\/details>\s*$/m, '')
+    .trim()
 }
 
+function summarizeToolTrace(trace: ToolTraceItem[]): { name: string; count: number; hasError: boolean }[] {
+  const map = new Map<string, { count: number; hasError: boolean }>()
+  for (const t of trace) {
+    const cur = map.get(t.name) || { count: 0, hasError: false }
+    cur.count += 1
+    cur.hasError = cur.hasError || !!t.is_error
+    map.set(t.name, cur)
+  }
+  return [...map.entries()].map(([name, v]) => ({ name, ...v }))
+}
+
+type MessageExtras = {
+  toolTrace?: ToolTraceItem[]
+  pendingActions?: PendingAction[]
+}
 const AIAgent: React.FC = () => {
   const {
     conversations,
@@ -76,6 +91,10 @@ const AIAgent: React.FC = () => {
   const [hoveredMsgId, setHoveredMsgId] = useState<number | null>(null)
   const [msgSelectMode, setMsgSelectMode] = useState(false)
   const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([])
+  /** 当前会话待确认写操作（后端 stage_mutation 产物） */
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
+  /** 按消息 id 挂载工具轨迹 / 待确认面板（会话内有效） */
+  const [messageExtras, setMessageExtras] = useState<Record<number, MessageExtras>>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -87,10 +106,12 @@ const AIAgent: React.FC = () => {
     scrollToBottom()
   }, [activeConversation?.messages])
 
-  // 切换会话时退出消息多选
+  // 切换会话时退出消息多选，并清空待确认写操作
   useEffect(() => {
     setMsgSelectMode(false)
     setSelectedMsgIds([])
+    setPendingActions([])
+    setMessageExtras({})
   }, [activeId])
 
   useEffect(() => {
@@ -182,11 +203,27 @@ const AIAgent: React.FC = () => {
 
       if (!response.ok || !res || res.code !== 0) {
         const errMsg = res?.message || `HTTP ${response.status}` || '未知错误'
+        setPendingActions([])
         await addMessage(currentId, 'assistant', '❌ 请求失败: ' + errMsg)
         message.error(errMsg)
         return
       }
-      await addMessage(currentId, 'assistant', res.data?.content || '')
+
+      const reply = res.data?.content || '抱歉，我无法理解您的请求。'
+      const pending: PendingAction[] = res.data?.pending_actions || []
+      const trace: ToolTraceItem[] = res.data?.tool_trace || []
+      setPendingActions(pending)
+
+      const saved = await addMessage(currentId, 'assistant', reply)
+      if (saved?.id && (pending.length > 0 || trace.length > 0)) {
+        setMessageExtras((prev) => ({
+          ...prev,
+          [saved.id]: {
+            toolTrace: trace.length > 0 ? trace : undefined,
+            pendingActions: pending.length > 0 ? pending : undefined,
+          },
+        }))
+      }
     } catch (error: any) {
       if (error.name === 'AbortError') {
         console.log('Request aborted')
@@ -202,107 +239,82 @@ const AIAgent: React.FC = () => {
     }
   }
 
-  // 确认执行操作 - 调用后端 API 真正执行
+  // 确认执行：直接消费后端 pending_actions（已 dry-run 暂存）
   const handleConfirm = async () => {
-    if (!activeId || !activeConversation) return
+    if (!activeId) return
 
-    const lastAssistantMsg = [...activeConversation.messages]
-      .reverse()
-      .find(m => m.role === 'assistant')
-
-    if (!lastAssistantMsg) return
-
-    const content = lastAssistantMsg.content
-
-    // 解析所有 ```action JSON 块
-    const actionRegex = /```action\s*\n([\s\S]*?)\n```/g
-    const actions: any[] = []
-    let match
-
-    while ((match = actionRegex.exec(content)) !== null) {
-      try {
-        const actionData = JSON.parse(match[1])
-        actions.push(actionData)
-      } catch (e) {
-        console.error('Failed to parse action:', e)
-      }
-    }
-
-    if (actions.length === 0) {
-      await handleSend('确认执行以上操作')
+    if (pendingActions.length === 0) {
+      message.warning('没有待确认的写操作（请重新发起变更请求）')
       return
     }
 
-    setLoading(true)
-    await addMessage(activeId, 'user', '请求 dry-run 预览')
-
-    const staged: { id: number; dryRun: string; label: string }[] = []
-    const stageErrors: string[] = []
-
-    for (const action of actions) {
-      const label = `${action.action} ${action.name || action.resource_name || ''}`
-      try {
-        const request: ExecuteRequest = {
-          cluster_id: selectedCluster,
-          action: action.action,
-          name: action.name || action.resource_name,
-          namespace: action.namespace || 'default',
-          image: action.image || 'nginx:latest',
-          replicas: action.replicas || 1,
-          ports: action.ports || (action.container_port ? [action.container_port] : []),
-          service_type: action.service_type || action.type || 'ClusterIP',
-          port: action.port || 80,
-          target_port: action.target_port || action.container_port || 80,
-          node_port: action.node_port || action.nodePort,
-          selector: action.selector || (action.name ? { app: action.name } : {}),
-          conversation_id: activeId || undefined,
-        }
-        const res = await stageK8SOperation(request)
-        if (res.code === 0 && res.data?.action_id) {
-          staged.push({ id: res.data.action_id, dryRun: res.data.dry_run, label })
-        } else {
-          stageErrors.push(`❌ ${label}: 暂存失败`)
-        }
-      } catch (error: any) {
-        stageErrors.push(`❌ ${label}: ${error?.response?.data?.message || error.message || 'dry-run 失败'}`)
-      }
-    }
-
-    const preview = [
-      ...staged.map((s) => `🔎 ${s.dryRun}`),
-      ...stageErrors,
-    ].join('\n')
-    await addMessage(activeId, 'assistant', preview || '没有可执行的操作')
-    setLoading(false)
-
-    if (staged.length === 0) return
-
+    const staged = [...pendingActions]
     Modal.confirm({
-      title: '确认执行写操作？',
-      width: 640,
+      title: `确认执行 ${staged.length} 项写操作？`,
+      width: 560,
+      icon: <WarningOutlined style={{ color: '#faad14' }} />,
       content: (
-        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto' }}>
-          {staged.map((s) => s.dryRun).join('\n')}
-        </pre>
+        <div style={{ marginTop: 12 }}>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            确认后将真正变更集群，此操作不可自动回滚。
+          </Text>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflow: 'auto' }}>
+            {staged.map((s) => (
+              <div
+                key={s.action_id || s.id}
+                style={{
+                  padding: '10px 12px',
+                  background: '#fffbe6',
+                  border: '1px solid #ffe58f',
+                  borderRadius: 8,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                  <Tag color="orange">{s.action}</Tag>
+                  <Text strong>
+                    {s.namespace}/{s.name}
+                  </Text>
+                </div>
+                <Text type="secondary" style={{ fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                  {s.dry_run || s.description}
+                </Text>
+              </div>
+            ))}
+          </div>
+        </div>
       ),
       okText: '确认执行',
       cancelText: '取消',
+      okButtonProps: { danger: true },
       onOk: async () => {
         setLoading(true)
         await addMessage(activeId, 'user', '确认执行')
         const results: string[] = []
         for (const item of staged) {
+          const actionId = item.action_id || item.id
+          const label = `${item.action} ${item.namespace}/${item.name}`
           try {
-            const res = await confirmK8SOperation(item.id)
+            const res = await confirmK8SOperation(actionId)
             if (res.code === 0 && res.data?.success) {
               results.push(`✅ ${res.data.message}`)
             } else {
-              results.push(`❌ ${item.label}: 执行失败`)
+              results.push(`❌ ${label}: 执行失败`)
             }
           } catch (error: any) {
-            results.push(`❌ ${item.label}: ${error?.response?.data?.message || error.message || '执行失败'}`)
+            results.push(`❌ ${label}: ${error?.response?.data?.message || error.message || '执行失败'}`)
           }
         }
+        setPendingActions([])
+        setMessageExtras((prev) => {
+          const next = { ...prev }
+          for (const id of Object.keys(next)) {
+            const key = Number(id)
+            if (next[key]?.pendingActions) {
+              next[key] = { ...next[key], pendingActions: undefined }
+            }
+          }
+          return next
+        })
         await addMessage(activeId, 'assistant', results.join('\n\n'))
         setLoading(false)
       },
@@ -315,6 +327,7 @@ const AIAgent: React.FC = () => {
       currentId = await createConversation()
       if (!currentId) return
     }
+    setPendingActions([])
     await addMessage(currentId, 'assistant', '❌ 操作已取消')
   }
 
@@ -328,9 +341,25 @@ const AIAgent: React.FC = () => {
   const renderMessage = (msg: any, index: number) => {
     const isUser = msg.role === 'user'
     const isEmpty = !msg.content && !isUser
-    const needsConfirm = !isUser && hasConfirmationPrompt(msg.content)
+    const isLastAssistant =
+      !isUser &&
+      activeConversation?.messages &&
+      [...activeConversation.messages].reverse().find((m) => m.role === 'assistant')?.id === msg.id
+    const extras = !isUser ? messageExtras[msg.id] : undefined
+    const showPending =
+      !isUser &&
+      isLastAssistant &&
+      pendingActions.length > 0 &&
+      (extras?.pendingActions?.length || pendingActions.length) > 0
+    const pendingForPanel =
+      isLastAssistant && pendingActions.length > 0
+        ? pendingActions
+        : extras?.pendingActions || []
+    const toolTrace = extras?.toolTrace || []
+    const needsConfirm = showPending && pendingForPanel.length > 0
     const showDelete = !msgSelectMode && hoveredMsgId === msg.id
     const checked = selectedMsgIds.includes(msg.id)
+    const displayContent = isUser ? msg.content : stripLegacyAgentExtras(msg.content || '')
 
     return (
       <div
@@ -352,7 +381,7 @@ const AIAgent: React.FC = () => {
         onClick={() => {
           if (!msgSelectMode || messageBatchDeleting) return
           setSelectedMsgIds(prev =>
-            prev.includes(msg.id) ? prev.filter(id => id !== msg.id) : [...prev, msg.id]
+            prev.includes(msg.id) ? prev.filter(id => msg.id !== id) : [...prev, msg.id]
           )
         }}
       >
@@ -375,48 +404,206 @@ const AIAgent: React.FC = () => {
             style={{ backgroundColor: '#722ed1', marginRight: msgSelectMode ? 0 : 12, flexShrink: 0 }}
           />
         )}
-        <div style={{ maxWidth: msgSelectMode ? '70%' : '75%', position: 'relative' }}>
+        <div
+          style={{
+            maxWidth: msgSelectMode ? '70%' : '75%',
+            position: 'relative',
+            minWidth: 0,
+            width: isUser ? 'fit-content' : '100%',
+            display: 'flex',
+            flexDirection: isUser ? 'row-reverse' : 'row',
+            alignItems: 'flex-start',
+            gap: 4,
+          }}
+        >
           <div
             style={{
-              padding: '12px 16px',
+              padding: isUser ? '10px 14px' : '12px 16px',
               borderRadius: 12,
               backgroundColor: isUser ? '#722ed1' : '#f0f2f5',
               color: isUser ? '#fff' : '#333',
               boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
               outline: msgSelectMode && checked ? '2px solid #ff4d4f' : undefined,
+              maxWidth: '100%',
+              boxSizing: 'border-box',
+              minWidth: 0,
+              flex: isUser ? '0 1 auto' : '1 1 auto',
             }}
           >
             {isEmpty ? (
               <Spin size="small" />
             ) : isUser ? (
-              <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              <div
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  overflowWrap: 'anywhere',
+                  lineHeight: 1.5,
+                }}
+              >
+                {displayContent}
+              </div>
             ) : (
               <div className="markdown-body">
-                <MarkdownRenderer content={msg.content} />
+                <MarkdownRenderer content={displayContent} />
               </div>
             )}
 
-            {/* 确认/取消按钮 */}
+            {!isUser && !isEmpty && toolTrace.length > 0 && (
+              <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
+                <Collapse
+                  size="small"
+                  ghost
+                  items={[
+                    {
+                      key: 'tools',
+                      label: (
+                        <Space size={6} wrap>
+                          <ToolOutlined style={{ color: '#722ed1' }} />
+                          <Text style={{ fontSize: 13 }}>工具调用</Text>
+                          <Tag style={{ margin: 0 }}>{toolTrace.length}</Tag>
+                          {summarizeToolTrace(toolTrace).map((t) => (
+                            <Tag
+                              key={t.name}
+                              color={t.hasError ? 'error' : 'purple'}
+                              style={{ margin: 0 }}
+                            >
+                              {t.name}
+                              {t.count > 1 ? ` ×${t.count}` : ''}
+                            </Tag>
+                          ))}
+                        </Space>
+                      ),
+                      children: (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {toolTrace.map((t, i) => (
+                            <div
+                              key={`${t.name}-${i}`}
+                              style={{
+                                background: '#fff',
+                                borderRadius: 8,
+                                border: '1px solid #e8e8e8',
+                                padding: '8px 10px',
+                              }}
+                            >
+                              <Space size={8} style={{ marginBottom: 4 }}>
+                                <Tag color={t.is_error ? 'error' : 'processing'}>{t.name}</Tag>
+                                {t.is_error && <Text type="danger" style={{ fontSize: 12 }}>失败</Text>}
+                              </Space>
+                              {t.args && (
+                                <div style={{ marginBottom: 6 }}>
+                                  <Text type="secondary" style={{ fontSize: 11 }}>参数</Text>
+                                  <pre
+                                    style={{
+                                      margin: '2px 0 0',
+                                      padding: 8,
+                                      background: '#fafafa',
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      maxHeight: 96,
+                                      overflow: 'auto',
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-all',
+                                    }}
+                                  >
+                                    {t.args}
+                                  </pre>
+                                </div>
+                              )}
+                              {t.result && (
+                                <div>
+                                  <Text type="secondary" style={{ fontSize: 11 }}>结果摘要</Text>
+                                  <pre
+                                    style={{
+                                      margin: '2px 0 0',
+                                      padding: 8,
+                                      background: '#fafafa',
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      maxHeight: 120,
+                                      overflow: 'auto',
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-all',
+                                    }}
+                                  >
+                                    {t.result}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+
             {needsConfirm && !msgSelectMode && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e5e5' }}>
-                <Space>
-                  <Button
-                    type="primary"
-                    size="small"
-                    icon={<CheckCircleOutlined />}
-                    onClick={handleConfirm}
-                  >
-                    确认执行
-                  </Button>
-                  <Button
-                    danger
-                    size="small"
-                    icon={<CloseCircleOutlined />}
-                    onClick={handleCancel}
-                  >
-                    取消
-                  </Button>
-                </Space>
+              <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
+                <Alert
+                  type="warning"
+                  showIcon
+                  icon={<WarningOutlined />}
+                  message={
+                    <Text strong>
+                      待确认写操作（{pendingForPanel.length}）
+                    </Text>
+                  }
+                  description={
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                        {pendingForPanel.map((p) => (
+                          <div
+                            key={p.action_id || p.id}
+                            style={{
+                              background: '#fff',
+                              borderRadius: 8,
+                              border: '1px solid #ffe58f',
+                              padding: '8px 10px',
+                            }}
+                          >
+                            <Space wrap size={6} style={{ marginBottom: 4 }}>
+                              <Tag color="orange">{p.action}</Tag>
+                              <Text code>
+                                {p.namespace}/{p.name}
+                              </Text>
+                            </Space>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: '#666',
+                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              {p.dry_run || p.description}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <Space>
+                        <Button
+                          type="primary"
+                          size="small"
+                          danger
+                          icon={<CheckCircleOutlined />}
+                          onClick={handleConfirm}
+                        >
+                          确认执行
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<CloseCircleOutlined />}
+                          onClick={handleCancel}
+                        >
+                          取消
+                        </Button>
+                      </Space>
+                    </div>
+                  }
+                />
               </div>
             )}
 
@@ -435,13 +622,11 @@ const AIAgent: React.FC = () => {
           {!msgSelectMode && (
             <div
               style={{
-                position: 'absolute',
-                top: 4,
-                right: isUser ? undefined : -36,
-                left: isUser ? -36 : undefined,
+                flexShrink: 0,
                 opacity: showDelete ? 1 : 0,
                 pointerEvents: showDelete ? 'auto' : 'none',
                 transition: 'opacity 0.15s',
+                marginTop: 4,
               }}
             >
               <Popconfirm

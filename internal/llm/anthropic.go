@@ -15,23 +15,44 @@ type AnthropicClient struct {
 	baseClient
 }
 
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+type anthropicContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+type anthropicMessage struct {
+	Role    string                  `json:"role"`
+	Content []anthropicContentBlock `json:"content"`
+}
+
 // AnthropicRequest Anthropic请求格式
 type AnthropicRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature,omitempty"`
-	System      string    `json:"system,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	Model       string            `json:"model"`
+	Messages    []anthropicMessage `json:"messages"`
+	MaxTokens   int               `json:"max_tokens"`
+	Temperature float64           `json:"temperature,omitempty"`
+	System      string            `json:"system,omitempty"`
+	Tools       []anthropicTool   `json:"tools,omitempty"`
+	Stream      bool              `json:"stream,omitempty"`
 }
 
 // AnthropicResponse Anthropic响应格式
 type AnthropicResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Usage struct {
+	Content    []anthropicContentBlock `json:"content"`
+	StopReason string                  `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -53,7 +74,71 @@ func NewAnthropicClient(cfg *LLMConfig) *AnthropicClient {
 	}
 }
 
-// Chat 对话
+func toAnthropicTools(tools []ToolDefinition) []anthropicTool {
+	out := make([]anthropicTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, anthropicTool{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			InputSchema: t.Function.Parameters,
+		})
+	}
+	return out
+}
+
+func toAnthropicMessages(msgs []Message) (system string, out []anthropicMessage) {
+	var systemParts []string
+	for _, msg := range msgs {
+		switch msg.Role {
+		case "system":
+			if strings.TrimSpace(msg.Content) != "" {
+				systemParts = append(systemParts, msg.Content)
+			}
+		case "assistant":
+			blocks := []anthropicContentBlock{}
+			if strings.TrimSpace(msg.Content) != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
+			}
+			for _, tc := range msg.ToolCalls {
+				input := json.RawMessage(tc.Function.Arguments)
+				if !json.Valid(input) {
+					input = json.RawMessage("{}")
+				}
+				blocks = append(blocks, anthropicContentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: input,
+				})
+			}
+			if len(blocks) == 0 {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: ""})
+			}
+			out = append(out, anthropicMessage{Role: "assistant", Content: blocks})
+		case "tool":
+			blocks := []anthropicContentBlock{{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.Content,
+			}}
+			// Anthropic expects tool_result inside a user message
+			if len(out) > 0 && out[len(out)-1].Role == "user" {
+				out[len(out)-1].Content = append(out[len(out)-1].Content, blocks...)
+			} else {
+				out = append(out, anthropicMessage{Role: "user", Content: blocks})
+			}
+		default: // user
+			out = append(out, anthropicMessage{
+				Role:    "user",
+				Content: []anthropicContentBlock{{Type: "text", Text: msg.Content}},
+			})
+		}
+	}
+	system = strings.Join(systemParts, "\n\n")
+	return system, out
+}
+
+// Chat 对话（支持 tools）
 func (c *AnthropicClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	baseURL := c.config.BaseURL
 	if baseURL == "" {
@@ -65,26 +150,23 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResp
 		model = "claude-3-sonnet-20240229"
 	}
 
-	temperature := c.config.Temperature
+	temperature := req.Temperature
+	if temperature == 0 {
+		temperature = c.config.Temperature
+	}
 	if temperature == 0 {
 		temperature = 0.7
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = c.config.MaxTokens
+	}
 	if maxTokens == 0 {
 		maxTokens = 2048
 	}
 
-	// 提取系统消息
-	systemPrompt := ""
-	var messages []Message
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			systemPrompt = msg.Content
-		} else {
-			messages = append(messages, msg)
-		}
-	}
+	systemPrompt, messages := toAnthropicMessages(req.Messages)
 
 	anthropicReq := AnthropicRequest{
 		Model:       model,
@@ -92,6 +174,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResp
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		System:      systemPrompt,
+		Tools:       toAnthropicTools(req.Tools),
 		Stream:      false,
 	}
 
@@ -119,13 +202,39 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResp
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	content := ""
-	if len(anthropicResp.Content) > 0 {
-		content = anthropicResp.Content[0].Text
+	var contentParts []string
+	var toolCalls []ToolCall
+	for _, block := range anthropicResp.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				contentParts = append(contentParts, block.Text)
+			}
+		case "tool_use":
+			args := string(block.Input)
+			if args == "" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      block.Name,
+					Arguments: args,
+				},
+			})
+		}
+	}
+
+	finish := anthropicResp.StopReason
+	if finish == "tool_use" {
+		finish = "tool_calls"
 	}
 
 	return &ChatResponse{
-		Content: content,
+		Content:      strings.Join(contentParts, "\n"),
+		ToolCalls:    toolCalls,
+		FinishReason: finish,
 		Usage: Usage{
 			PromptTokens:     anthropicResp.Usage.InputTokens,
 			CompletionTokens: anthropicResp.Usage.OutputTokens,
@@ -151,21 +260,15 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 		temperature = 0.7
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = c.config.MaxTokens
+	}
 	if maxTokens == 0 {
 		maxTokens = 2048
 	}
 
-	// 提取系统消息
-	systemPrompt := ""
-	var messages []Message
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			systemPrompt = msg.Content
-		} else {
-			messages = append(messages, msg)
-		}
-	}
+	systemPrompt, messages := toAnthropicMessages(req.Messages)
 
 	anthropicReq := AnthropicRequest{
 		Model:       model,

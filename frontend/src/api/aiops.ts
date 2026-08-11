@@ -56,6 +56,22 @@ export interface AgentAction {
 export interface AgentChatResponse {
   content: string
   actions?: AgentAction[]
+  pending_actions?: Array<{
+    id: number
+    action_id: number
+    action: string
+    name: string
+    namespace: string
+    description: string
+    dry_run: string
+    need_confirm: boolean
+  }>
+  tool_trace?: Array<{
+    name: string
+    args: string
+    result: string
+    is_error?: boolean
+  }>
 }
 
 // Chat API

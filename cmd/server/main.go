@@ -13,6 +13,8 @@ import (
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/module"
+	"github.com/kubepilot/kubepilot/internal/modules"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"github.com/kubepilot/kubepilot/internal/router"
@@ -93,7 +95,9 @@ func main() {
 	}()
 
 	// Setup router
-	r := router.Setup(cfg, cacheInstance)
+	modReg := module.NewRegistry(nil, nil)
+	modules.RegisterAll(modReg)
+	r := router.Setup(cfg, cacheInstance, modReg)
 
 	// Create HTTP server
 	srv := &http.Server{

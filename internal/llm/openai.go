@@ -18,18 +18,20 @@ type OpenAIClient struct {
 
 // OpenAIRequest OpenAI请求格式
 type OpenAIRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	Temperature float64          `json:"temperature,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
 }
 
 // OpenAIResponse OpenAI响应格式
 type OpenAIResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -57,7 +59,7 @@ func NewOpenAIClient(cfg *LLMConfig) *OpenAIClient {
 	}
 }
 
-// Chat 对话
+// Chat 对话（支持 tools / tool_calls）
 func (c *OpenAIClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	baseURL := c.config.BaseURL
 	if baseURL == "" {
@@ -88,6 +90,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 	openAIReq := OpenAIRequest{
 		Model:       model,
 		Messages:    req.Messages,
+		Tools:       req.Tools,
 		Temperature: temperature,
 		MaxTokens:   maxTokens,
 		Stream:      false,
@@ -120,8 +123,11 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 		return nil, fmt.Errorf("no response from API")
 	}
 
+	choice := openAIResp.Choices[0]
 	return &ChatResponse{
-		Content: openAIResp.Choices[0].Message.Content,
+		Content:      choice.Message.Content,
+		ToolCalls:    choice.Message.ToolCalls,
+		FinishReason: choice.FinishReason,
 		Usage: Usage{
 			PromptTokens:     openAIResp.Usage.PromptTokens,
 			CompletionTokens: openAIResp.Usage.CompletionTokens,
@@ -194,13 +200,13 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 				break
 			}
 
-			line = trimSpace(line)
+			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
 			}
 
-			if hasPrefix(line, "data: ") {
-				data := trimPrefix(line, "data: ")
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
 				if data == "[DONE]" {
 					ch <- StreamChunk{Content: "", Done: true}
 					break
@@ -220,24 +226,4 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 	}()
 
 	return ch, nil
-}
-
-// Helper functions
-func trimSpace(s string) string {
-	return strings.TrimSpace(s)
-}
-
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
-}
-
-func trimPrefix(s, prefix string) string {
-	if hasPrefix(s, prefix) {
-		return s[len(prefix):]
-	}
-	return s
-}
-
-func strings_TrimSpace(s string) string {
-	return strings.TrimSpace(s)
 }

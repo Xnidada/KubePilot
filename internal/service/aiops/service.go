@@ -1351,8 +1351,10 @@ func (s *Service) getPodLogs(ctx context.Context, clusterID uint, namespace, pod
 
 // AgentChatResponse Agent对话响应
 type AgentChatResponse struct {
-	Content string                   `json:"content"`
-	Actions []AgentActionInfo        `json:"actions,omitempty"`
+	Content        string              `json:"content"`
+	Actions        []AgentActionInfo   `json:"actions,omitempty"` // compat: filled from pending_actions
+	PendingActions []PendingActionInfo `json:"pending_actions,omitempty"`
+	ToolTrace      []ToolTraceItem     `json:"tool_trace,omitempty"`
 }
 
 // AgentActionInfo Agent动作信息
@@ -1364,135 +1366,200 @@ type AgentActionInfo struct {
 	Namespace    string `json:"namespace"`
 	Description  string `json:"description"`
 	NeedConfirm  bool   `json:"need_confirm"`
+	DryRun       string `json:"dry_run,omitempty"`
 }
 
-// AgentChat Agent对话
+const agentSystemPrompt = `你是 KubePilot AI Agent，只能通过【原生工具调用】查询与变更 Kubernetes 集群。
+
+## 硬性规则
+1. 涉及集群现状、资源用途、镜像、标签、控制器时，必须先调用工具（list/get/describe/events/logs），禁止仅凭名称猜测。
+2. 没有本轮工具结果时，只能说明「尚未查询」或继续调用工具，不能断言资源是否存在。
+3. 写操作必须：先 list/get 确认准确名称 → 再调用 stage_mutation。禁止声称已经删除/创建/扩缩容。
+4. 【严禁】在回复中输出 JSON action、` + "```action" + ` 代码块、或伪工具协议。写操作只能通过 stage_mutation 工具完成。
+5. 批量删除/变更：在同一次助手回合中并行多次调用 stage_mutation（每个资源一次），不要只列名单让用户确认。
+6. propose_mutation 仅预览；需要用户确认时必须 stage_mutation。
+7. 用户指定命名空间时，工具参数必须带上该 namespace。
+8. Secret 值不可读取明文。
+9. 用中文回答；最终回复只总结工具结果，并标明依据。
+
+## 工具
+- 查询：list_resources / get_resource / get_events / get_pod_logs / describe_resource
+- 预览：propose_mutation
+- 暂存待确认：stage_mutation（UI 确认后才会真正执行）
+`
+
+// AgentChat Agent对话（原生 Tool Calling 循环）
 func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, message string, conversationID uint) (*AgentChatResponse, error) {
 	if s.llmClient == nil {
 		return nil, fmt.Errorf("LLM service not configured")
 	}
 
-	// 获取集群上下文
 	clusterContext, _ := s.getClusterContext(clusterID)
 
-	// 获取对话历史（截断过长内容，避免上下文膨胀）
 	historyMessages := s.getConversationHistory(conversationID, 10)
 	for i := range historyMessages {
-		historyMessages[i].Content = truncateAgentText(historyMessages[i].Content, 2000)
+		// Drop legacy fake-action fences so the model is not reinforced by old turns.
+		historyMessages[i].Content = truncateRunes(sanitizeAgentHistory(historyMessages[i].Content), 2000)
+	}
+	// Avoid duplicating the user message already persisted by the frontend.
+	if len(historyMessages) > 0 {
+		last := historyMessages[len(historyMessages)-1]
+		if last.Role == "user" && strings.TrimSpace(last.Content) == strings.TrimSpace(message) {
+			historyMessages = historyMessages[:len(historyMessages)-1]
+		}
 	}
 
-	// 查询真实数据作为 LLM 上下文（回答仍由 LLM 生成）
-	realData := s.queryRealData(ctx, clusterID, message)
-
-	// 构建Agent系统提示
-	systemPrompt := `你是 KubePilot AI Agent，一个专业的 Kubernetes 运维助手。
-
-## 核心规则
-
-1. **必须使用真实数据** - 系统会提供集群的真实数据，你必须基于这些数据回答，绝对不能编造
-2. **删除前必须查询** - 执行删除操作前，必须先确认资源的真实名称
-3. **使用准确的资源名称** - 从系统提供的数据中获取资源名称，不要猜测
-4. **按用户范围回答** - 若用户指定了命名空间，只回答该命名空间的资源，不要罗列其他命名空间
-5. **故障诊断必须基于事件/日志/配置** - 当系统提供了 Pod describe、Events、Logs、ConfigMap/Secret 时，必须据此给出具体原因；禁止说“无法查看日志/事件/配置”，禁止只给通用排查清单而不下结论
-6. **Secret 已脱敏** - Secret 值以脱敏形式提供，可依据 key 是否存在、长度、配置结构判断问题，不要要求用户粘贴明文密钥
-
-## 操作格式
-
-对于需要执行的操作，在回复末尾包含 action 代码块。每个操作一个代码块，多个操作多个代码块。
-
-### create_deployment 格式：
-` + "```" + `action
-{"action": "create_deployment", "namespace": "default", "name": "my-app", "image": "nginx:latest", "replicas": 2, "ports": [80]}
-` + "```" + `
-
-### create_service 格式：
-` + "```" + `action
-{"action": "create_service", "namespace": "default", "name": "my-app-svc", "service_type": "NodePort", "selector": {"app": "my-app"}, "port": 80, "target_port": 80, "node_port": 30080}
-` + "```" + `
-
-### delete_deployment 格式：
-` + "```" + `action
-{"action": "delete_deployment", "namespace": "default", "name": "my-app"}
-` + "```" + `
-
-### delete_service 格式：
-` + "```" + `action
-{"action": "delete_service", "namespace": "default", "name": "my-app-svc"}
-` + "```" + `
-
-### delete_pod 格式：
-` + "```" + `action
-{"action": "delete_pod", "namespace": "default", "name": "my-app-xxx"}
-` + "```" + `
-
-### scale_deployment 格式：
-` + "```" + `action
-{"action": "scale_deployment", "namespace": "default", "name": "my-app", "replicas": 3}
-` + "```" + `
-
-## 重要提示
-
-- 创建 Deployment 时必须包含 image 字段
-- 创建 Service 时必须包含 selector、port、target_port 字段
-- 使用 NodePort 类型时，node_port 范围是 30000-32767
-- 多个操作时，每个操作单独一个 action 代码块
-
-## 示例
-
-用户：创建一个 nginx deployment，2个副本，然后创建 NodePort service 对外暴露 30880 端口
-
-回复：我将为您创建 nginx deployment 和 service：
-
-` + "```" + `action
-{"action": "create_deployment", "namespace": "default", "name": "nginx-deployment", "image": "nginx:latest", "replicas": 2, "ports": [80]}
-` + "```" + `
-
-` + "```" + `action
-{"action": "create_service", "namespace": "default", "name": "nginx-service", "service_type": "NodePort", "selector": {"app": "nginx-deployment"}, "port": 80, "target_port": 80, "node_port": 30880}
-` + "```" + `
-
-请确认是否执行？
-
-当前集群数据：
-` + clusterContext + `
-
-请用中文回复。`
-
-	// 构建消息列表（包含历史）
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
+	system := agentSystemPrompt
+	if strings.TrimSpace(clusterContext) != "" {
+		system += "\n\n当前集群摘要（仅供参考，详情仍须用工具查询）：\n" + truncateRunes(clusterContext, 1500)
 	}
+
+	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, historyMessages...)
-
-	// 如果有真实数据，添加到消息中
-	if realData != "" {
-		messages = append(messages, llm.Message{
-			Role:    "system",
-			Content: "以下是查询到的真实集群数据，请基于这些数据回答：\n\n" + realData,
-		})
-	}
-
 	messages = append(messages, llm.Message{Role: "user", Content: message})
 
-	// Agent 回复限制输出长度，降低慢模型长时间占线导致前端一直“思考中”
+	tools := agentToolDefinitions()
+	var trace []ToolTraceItem
+	var pending []PendingActionInfo
+
 	chatCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
-		Messages:  messages,
-		MaxTokens: 2048,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("LLM chat failed: %w", err)
+	var finalContent string
+	nudgeUsed := false
+	for round := 0; round < agentMaxToolRounds; round++ {
+		resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
+			Messages:  messages,
+			Tools:     tools,
+			MaxTokens: 2048,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("LLM chat failed: %w", err)
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			finalContent = resp.Content
+			// Recover from models that dump fake action JSON instead of calling tools.
+			if !nudgeUsed && len(pending) == 0 && looksLikeFakeAgentActions(finalContent) {
+				nudgeUsed = true
+				messages = append(messages,
+					llm.Message{Role: "assistant", Content: finalContent},
+					llm.Message{Role: "user", Content: "禁止输出 action JSON 或伪协议。请立即用工具：先 list_resources/get_resource 核对名称，再对每个目标调用 stage_mutation。不要只列名单。"},
+				)
+				finalContent = ""
+				continue
+			}
+			break
+		}
+
+		// Append assistant turn with tool_calls
+		messages = append(messages, llm.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		for _, tc := range resp.ToolCalls {
+			name := tc.Function.Name
+			args := tc.Function.Arguments
+			exec := s.executeAgentTool(chatCtx, userID, clusterID, conversationID, name, args)
+			trace = append(trace, ToolTraceItem{
+				Name:    name,
+				Args:    truncateRunes(args, 500),
+				Result:  truncateRunes(exec.Content, 1500),
+				IsError: exec.IsError,
+			})
+			if exec.Pending != nil {
+				pending = append(pending, *exec.Pending)
+			}
+			messages = append(messages, llm.Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Name:       name,
+				Content:    exec.Content,
+			})
+		}
+
+		if round == agentMaxToolRounds-1 && finalContent == "" {
+			finalContent = resp.Content
+			if finalContent == "" {
+				if len(pending) > 0 {
+					finalContent = "已暂存变更，请在界面确认后执行。"
+				} else {
+					finalContent = "已达到工具调用轮次上限，请根据已查询结果继续提问或缩小范围。"
+				}
+			}
+		}
 	}
 
-	// 解析响应，判断是否包含需要确认的操作
-	actions := s.parseAgentActions(resp.Content, clusterID)
+	if finalContent == "" {
+		if len(pending) > 0 {
+			finalContent = "已暂存变更，请在界面确认后执行。"
+		} else {
+			finalContent = "（模型未返回文本；请查看工具轨迹或重试。）"
+		}
+	}
+	// Strip leftover fake action fences from the visible reply when we already staged.
+	if len(pending) > 0 {
+		finalContent = stripFakeAgentActionBlocks(finalContent)
+	}
+
+	actions := make([]AgentActionInfo, 0, len(pending))
+	for _, p := range pending {
+		actions = append(actions, AgentActionInfo{
+			ID:           p.ID,
+			ActionType:   p.Action,
+			ResourceType: p.Action,
+			ResourceName: p.Name,
+			Namespace:    p.Namespace,
+			Description:  p.Description,
+			NeedConfirm:  true,
+			DryRun:       p.DryRun,
+		})
+	}
 
 	return &AgentChatResponse{
-		Content: resp.Content,
-		Actions: actions,
+		Content:        finalContent,
+		Actions:        actions,
+		PendingActions: pending,
+		ToolTrace:      trace,
 	}, nil
+}
+
+func looksLikeFakeAgentActions(content string) bool {
+	c := strings.ToLower(content)
+	if strings.Contains(content, "```action") {
+		return true
+	}
+	if strings.Contains(c, `"action"`) && (strings.Contains(c, "delete_") || strings.Contains(c, "create_") || strings.Contains(c, "scale_")) {
+		return true
+	}
+	if strings.Contains(content, "请确认是否执行") && (strings.Contains(c, "delete_") || strings.Contains(c, "create_")) {
+		return true
+	}
+	return false
+}
+
+func stripFakeAgentActionBlocks(content string) string {
+	re := regexp.MustCompile("(?s)```action\\s*\\n.*?\\n```")
+	out := re.ReplaceAllString(content, "")
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "已暂存变更，请在界面确认后执行。"
+	}
+	return out
+}
+
+func sanitizeAgentHistory(content string) string {
+	re := regexp.MustCompile("(?s)```action\\s*\\n.*?\\n```")
+	out := re.ReplaceAllString(content, "[旧式 action 块已忽略，请改用工具]")
+	// Drop UI-only confirm chatter that confuses the tool loop.
+	for _, noise := range []string{"请求 dry-run 预览", "确认执行"} {
+		if strings.TrimSpace(out) == noise {
+			return "[用户确认相关消息已省略]"
+		}
+	}
+	return out
 }
 
 const agentResourceListLimit = 40
