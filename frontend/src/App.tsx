@@ -41,7 +41,6 @@ import EventForward from './pages/cluster/EventForward'
 import SchedulerTasks from './pages/scheduler/Tasks'
 import SchedulerQueues from './pages/scheduler/Queues'
 import HPAs from './pages/workload/HPAs'
-import ResourceCompare from './pages/workload/ResourceCompare'
 import NodePressurePage from './pages/ops/NodePressure'
 import EventTimelinePage from './pages/ops/EventTimeline'
 import ResourceGraphPage from './pages/ops/ResourceGraph'
@@ -110,7 +109,6 @@ function App() {
         <Route path="scheduler/tasks" element={<SchedulerTasks />} />
         <Route path="scheduler/queues" element={<SchedulerQueues />} />
         <Route path="workloads/hpas" element={<HPAs />} />
-        <Route path="workloads/compare" element={<ResourceCompare />} />
         <Route path="monitor/node-pressure" element={<NodePressurePage />} />
         <Route path="ops/events" element={<EventTimelinePage />} />
         <Route path="ops/resource-graph" element={<ResourceGraphPage />} />

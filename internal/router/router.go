@@ -396,9 +396,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 				// 批量操作
 				workloads.POST("/batch", workloadHandler.BatchOperation)
 
-				// 资源对比
-				workloads.POST("/compare", workloadHandler.CompareResources)
-
 				// Pod 亲和性
 				workloads.GET("/deployments/:ns/:name/affinity", workloadHandler.GetPodAffinity)
 				workloads.PUT("/deployments/:ns/:name/affinity", workloadHandler.UpdatePodAffinity)
@@ -419,9 +416,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 			// 运维工具路由
 			opsGroup := protected.Group("/ops/:id")
 			{
-				// P0: Pod 诊断面板
-				opsGroup.GET("/diagnose/pod/:ns/:name", opsHandler.DiagnosePod)
-
 				// P0: 资源使用趋势
 				opsGroup.GET("/metrics/trend", opsHandler.GetResourceTrend)
 

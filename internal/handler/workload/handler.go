@@ -142,48 +142,48 @@ func (h *Handler) GetDeployment(c *gin.Context) {
 
 	// 返回完整的配置详情，用于编辑
 	type ContainerDetail struct {
-		Name            string               `json:"name"`
-		Image           string               `json:"image"`
-		ImagePullPolicy string               `json:"image_pull_policy"`
-		Command         []string             `json:"command,omitempty"`
-		Args            []string             `json:"args,omitempty"`
-		Resources       *ResourceConfig      `json:"resources,omitempty"`
-		Ports           []ContainerPort      `json:"ports,omitempty"`
-		Env             []EnvVar             `json:"env,omitempty"`
-		VolumeMounts    []VolumeMount        `json:"volume_mounts,omitempty"`
-		LivenessProbe   *ProbeConfig         `json:"liveness_probe,omitempty"`
-		ReadinessProbe  *ProbeConfig         `json:"readiness_probe,omitempty"`
+		Name            string          `json:"name"`
+		Image           string          `json:"image"`
+		ImagePullPolicy string          `json:"image_pull_policy"`
+		Command         []string        `json:"command,omitempty"`
+		Args            []string        `json:"args,omitempty"`
+		Resources       *ResourceConfig `json:"resources,omitempty"`
+		Ports           []ContainerPort `json:"ports,omitempty"`
+		Env             []EnvVar        `json:"env,omitempty"`
+		VolumeMounts    []VolumeMount   `json:"volume_mounts,omitempty"`
+		LivenessProbe   *ProbeConfig    `json:"liveness_probe,omitempty"`
+		ReadinessProbe  *ProbeConfig    `json:"readiness_probe,omitempty"`
 	}
 
 	type DeploymentDetail struct {
-		Name        string            `json:"name"`
-		Namespace   string            `json:"namespace"`
-		Labels      map[string]string `json:"labels"`
-		Annotations map[string]string `json:"annotations"`
-		Replicas    int32             `json:"replicas"`
-		MaxSurge    *int              `json:"max_surge,omitempty"`
-		MaxUnavail  *int              `json:"max_unavailable,omitempty"`
-		Containers  []ContainerDetail `json:"containers"`
-		Volumes     []VolumeConfig    `json:"volumes,omitempty"`
-		NodeSelector map[string]string `json:"node_selector,omitempty"`
-		Tolerations []Toleration      `json:"tolerations,omitempty"`
-		ServiceAccountName string     `json:"service_account_name,omitempty"`
-		DNSPolicy   string            `json:"dns_policy,omitempty"`
-		HostNetwork bool              `json:"host_network,omitempty"`
-		RestartPolicy string          `json:"restart_policy,omitempty"`
-		TerminationGracePeriod *int64 `json:"termination_grace_period,omitempty"`
+		Name                   string            `json:"name"`
+		Namespace              string            `json:"namespace"`
+		Labels                 map[string]string `json:"labels"`
+		Annotations            map[string]string `json:"annotations"`
+		Replicas               int32             `json:"replicas"`
+		MaxSurge               *int              `json:"max_surge,omitempty"`
+		MaxUnavail             *int              `json:"max_unavailable,omitempty"`
+		Containers             []ContainerDetail `json:"containers"`
+		Volumes                []VolumeConfig    `json:"volumes,omitempty"`
+		NodeSelector           map[string]string `json:"node_selector,omitempty"`
+		Tolerations            []Toleration      `json:"tolerations,omitempty"`
+		ServiceAccountName     string            `json:"service_account_name,omitempty"`
+		DNSPolicy              string            `json:"dns_policy,omitempty"`
+		HostNetwork            bool              `json:"host_network,omitempty"`
+		RestartPolicy          string            `json:"restart_policy,omitempty"`
+		TerminationGracePeriod *int64            `json:"termination_grace_period,omitempty"`
 	}
 
 	detail := DeploymentDetail{
-		Name:        deployment.Name,
-		Namespace:   deployment.Namespace,
-		Labels:      deployment.Labels,
-		Annotations: deployment.Annotations,
-		NodeSelector: deployment.Spec.Template.Spec.NodeSelector,
-		ServiceAccountName: deployment.Spec.Template.Spec.ServiceAccountName,
-		DNSPolicy:   string(deployment.Spec.Template.Spec.DNSPolicy),
-		HostNetwork: deployment.Spec.Template.Spec.HostNetwork,
-		RestartPolicy: string(deployment.Spec.Template.Spec.RestartPolicy),
+		Name:                   deployment.Name,
+		Namespace:              deployment.Namespace,
+		Labels:                 deployment.Labels,
+		Annotations:            deployment.Annotations,
+		NodeSelector:           deployment.Spec.Template.Spec.NodeSelector,
+		ServiceAccountName:     deployment.Spec.Template.Spec.ServiceAccountName,
+		DNSPolicy:              string(deployment.Spec.Template.Spec.DNSPolicy),
+		HostNetwork:            deployment.Spec.Template.Spec.HostNetwork,
+		RestartPolicy:          string(deployment.Spec.Template.Spec.RestartPolicy),
 		TerminationGracePeriod: deployment.Spec.Template.Spec.TerminationGracePeriodSeconds,
 	}
 
@@ -634,25 +634,25 @@ func (h *Handler) UpdateDeployment(c *gin.Context) {
 
 // UpdateDeploymentRequest 更新Deployment请求
 type UpdateDeploymentRequest struct {
-	Replicas       *int32                `json:"replicas"`
-	Labels         map[string]string     `json:"labels"`
-	Annotations    map[string]string     `json:"annotations"`
-	MaxSurge       *int                  `json:"max_surge"`
-	MaxUnavail     *int                  `json:"max_unavailable"`
-	Containers     []ContainerConfig     `json:"containers"`
-	InitContainers []ContainerConfig     `json:"init_containers"`
-	Volumes        []VolumeConfig        `json:"volumes"`
-	Scheduling     *SchedulingConfig     `json:"scheduling"`
-	Advanced       *AdvancedConfig       `json:"advanced"`
-	Service        *UpdateServiceConfig  `json:"service"`
+	Replicas       *int32               `json:"replicas"`
+	Labels         map[string]string    `json:"labels"`
+	Annotations    map[string]string    `json:"annotations"`
+	MaxSurge       *int                 `json:"max_surge"`
+	MaxUnavail     *int                 `json:"max_unavailable"`
+	Containers     []ContainerConfig    `json:"containers"`
+	InitContainers []ContainerConfig    `json:"init_containers"`
+	Volumes        []VolumeConfig       `json:"volumes"`
+	Scheduling     *SchedulingConfig    `json:"scheduling"`
+	Advanced       *AdvancedConfig      `json:"advanced"`
+	Service        *UpdateServiceConfig `json:"service"`
 }
 
 // UpdateServiceConfig 更新Service配置
 type UpdateServiceConfig struct {
-	Name   string           `json:"name"`
-	Create bool             `json:"create"`
-	Type   string           `json:"type"`
-	Ports  []ServicePort    `json:"ports"`
+	Name   string        `json:"name"`
+	Create bool          `json:"create"`
+	Type   string        `json:"type"`
+	Ports  []ServicePort `json:"ports"`
 }
 
 func (h *Handler) DeleteDeployment(c *gin.Context) {
@@ -716,10 +716,10 @@ func (h *Handler) GetDeploymentHistory(c *gin.Context) {
 	}
 
 	type RevisionInfo struct {
-		Revision    int    `json:"revision"`
-		Replicas    int32  `json:"replicas"`
-		CreateTime  string `json:"create_time"`
-		Images      string `json:"images"`
+		Revision    int               `json:"revision"`
+		Replicas    int32             `json:"replicas"`
+		CreateTime  string            `json:"create_time"`
+		Images      string            `json:"images"`
 		Annotations map[string]string `json:"annotations,omitempty"`
 	}
 
@@ -757,10 +757,10 @@ func (h *Handler) GetDeploymentHistory(c *gin.Context) {
 	}
 
 	result := map[string]interface{}{
-		"deployment": name,
-		"namespace":  namespace,
+		"deployment":       name,
+		"namespace":        namespace,
 		"current_revision": deployment.Annotations["deployment.kubernetes.io/revision"],
-		"revisions":  revisions,
+		"revisions":        revisions,
 	}
 
 	response.Success(c, result)
@@ -1169,13 +1169,13 @@ func (h *Handler) ListServices(c *gin.Context) {
 	}
 
 	type ServiceInfo struct {
-		Name       string `json:"name"`
-		Namespace  string `json:"namespace"`
-		Status     string `json:"status"`
-		Type       string `json:"type"`
-		ClusterIP  string `json:"cluster_ip"`
-		Ports      string `json:"ports"`
-		Age        string `json:"age"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Status    string `json:"status"`
+		Type      string `json:"type"`
+		ClusterIP string `json:"cluster_ip"`
+		Ports     string `json:"ports"`
+		Age       string `json:"age"`
 	}
 
 	allowed := authz.AllowedNamespaceSet(c)
@@ -1326,12 +1326,12 @@ func (h *Handler) GetDeploymentServices(c *gin.Context) {
 	}
 
 	type ServiceInfo struct {
-		Name       string            `json:"name"`
-		Namespace  string            `json:"namespace"`
-		Type       string            `json:"type"`
-		ClusterIP  string            `json:"cluster_ip"`
-		Selector   map[string]string `json:"selector"`
-		Ports      []ServicePortInfo `json:"ports"`
+		Name      string            `json:"name"`
+		Namespace string            `json:"namespace"`
+		Type      string            `json:"type"`
+		ClusterIP string            `json:"cluster_ip"`
+		Selector  map[string]string `json:"selector"`
+		Ports     []ServicePortInfo `json:"ports"`
 	}
 
 	result := make([]ServiceInfo, 0)
@@ -1368,9 +1368,9 @@ func (h *Handler) CreateService(c *gin.Context) {
 	}
 
 	var req struct {
-		Namespace string `json:"namespace" binding:"required"`
-		Name      string `json:"name" binding:"required"`
-		Type      string `json:"type"`
+		Namespace string            `json:"namespace" binding:"required"`
+		Name      string            `json:"name" binding:"required"`
+		Type      string            `json:"type"`
 		Selector  map[string]string `json:"selector" binding:"required"`
 		Ports     []struct {
 			Port       int32  `json:"port"`
@@ -1439,8 +1439,8 @@ func (h *Handler) UpdateService(c *gin.Context) {
 	name := c.Param("name")
 
 	var req struct {
-		Type   string `json:"type"`
-		Ports  []struct {
+		Type  string `json:"type"`
+		Ports []struct {
 			Name       string `json:"name"`
 			Port       int32  `json:"port"`
 			TargetPort int32  `json:"targetPort"`
@@ -1650,15 +1650,15 @@ func (h *Handler) GetNode(c *gin.Context) {
 	}
 
 	result := map[string]interface{}{
-		"name":       node.Name,
-		"labels":     node.Labels,
+		"name":        node.Name,
+		"labels":      node.Labels,
 		"annotations": node.Annotations,
-		"status":     node.Status.Conditions,
-		"capacity":   node.Status.Capacity,
+		"status":      node.Status.Conditions,
+		"capacity":    node.Status.Capacity,
 		"allocatable": node.Status.Allocatable,
-		"node_info":  node.Status.NodeInfo,
-		"pods":       podList,
-		"created_at": node.CreationTimestamp.Time,
+		"node_info":   node.Status.NodeInfo,
+		"pods":        podList,
+		"created_at":  node.CreationTimestamp.Time,
 	}
 
 	response.Success(c, result)
@@ -1674,9 +1674,9 @@ func (h *Handler) UpdateNode(c *gin.Context) {
 	name := c.Param("name")
 
 	var req struct {
-		Labels      map[string]string `json:"labels"`
-		Unschedulable *bool           `json:"unschedulable"` // cordon/uncordon
-		Taints      []struct {
+		Labels        map[string]string `json:"labels"`
+		Unschedulable *bool             `json:"unschedulable"` // cordon/uncordon
+		Taints        []struct {
 			Key    string `json:"key"`
 			Value  string `json:"value"`
 			Effect string `json:"effect"`
@@ -1896,14 +1896,14 @@ func (h *Handler) ListPVs(c *gin.Context) {
 	}
 
 	type PVInfo struct {
-		Name        string `json:"name"`
-		Capacity    string `json:"capacity"`
-		AccessModes string `json:"access_modes"`
+		Name          string `json:"name"`
+		Capacity      string `json:"capacity"`
+		AccessModes   string `json:"access_modes"`
 		ReclaimPolicy string `json:"reclaim_policy"`
-		Status      string `json:"status"`
-		Claim       string `json:"claim"`
-		StorageClass string `json:"storage_class"`
-		Age         string `json:"age"`
+		Status        string `json:"status"`
+		Claim         string `json:"claim"`
+		StorageClass  string `json:"storage_class"`
+		Age           string `json:"age"`
 	}
 
 	result := make([]PVInfo, 0, len(pvs.Items))
@@ -1978,12 +1978,12 @@ func (h *Handler) CreatePV(c *gin.Context) {
 	}
 
 	var req struct {
-		Name          string `json:"name" binding:"required"`
-		Capacity      string `json:"capacity" binding:"required"`
+		Name          string   `json:"name" binding:"required"`
+		Capacity      string   `json:"capacity" binding:"required"`
 		AccessModes   []string `json:"access_modes" binding:"required"`
-		ReclaimPolicy string `json:"reclaim_policy"`
-		StorageClass  string `json:"storage_class"`
-		HostPath      string `json:"host_path"`
+		ReclaimPolicy string   `json:"reclaim_policy"`
+		StorageClass  string   `json:"storage_class"`
+		HostPath      string   `json:"host_path"`
 		NFS           *struct {
 			Server string `json:"server"`
 			Path   string `json:"path"`
@@ -2196,12 +2196,12 @@ func (h *Handler) CreatePVC(c *gin.Context) {
 	}
 
 	var req struct {
-		Namespace     string   `json:"namespace" binding:"required"`
-		Name          string   `json:"name" binding:"required"`
-		Capacity      string   `json:"capacity" binding:"required"`
-		AccessModes   []string `json:"access_modes" binding:"required"`
-		StorageClass  string   `json:"storage_class"`
-		VolumeName    string   `json:"volume_name"`
+		Namespace    string   `json:"namespace" binding:"required"`
+		Name         string   `json:"name" binding:"required"`
+		Capacity     string   `json:"capacity" binding:"required"`
+		AccessModes  []string `json:"access_modes" binding:"required"`
+		StorageClass string   `json:"storage_class"`
+		VolumeName   string   `json:"volume_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -2534,9 +2534,12 @@ func (h *Handler) CreateStorageClass(c *gin.Context) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: req.Name,
 		},
-		Provisioner:   req.Provisioner,
-		ReclaimPolicy: func() *corev1.PersistentVolumeReclaimPolicy { p := corev1.PersistentVolumeReclaimPolicy(req.ReclaimPolicy); return &p }(),
-		Parameters:    req.Parameters,
+		Provisioner: req.Provisioner,
+		ReclaimPolicy: func() *corev1.PersistentVolumeReclaimPolicy {
+			p := corev1.PersistentVolumeReclaimPolicy(req.ReclaimPolicy)
+			return &p
+		}(),
+		Parameters: req.Parameters,
 	}
 
 	if req.VolumeBindingMode != "" {
@@ -2693,18 +2696,18 @@ func (h *Handler) ListHPAs(c *gin.Context) {
 	}
 
 	type HPAInfo struct {
-		Name           string `json:"name"`
-		Namespace      string `json:"namespace"`
-		ScaleTargetRef string `json:"scale_target_ref"`
-		MinReplicas    *int32 `json:"min_replicas"`
-		MaxReplicas    int32  `json:"max_replicas"`
-		CurrentCPU     string `json:"current_cpu"`
-		TargetCPU      string `json:"target_cpu"`
-		CurrentMemory  string `json:"current_memory"`
-		TargetMemory   string `json:"target_memory"`
-		CurrentReplicas int32 `json:"current_replicas"`
-		DesiredReplicas int32 `json:"desired_replicas"`
-		Age            string `json:"age"`
+		Name            string `json:"name"`
+		Namespace       string `json:"namespace"`
+		ScaleTargetRef  string `json:"scale_target_ref"`
+		MinReplicas     *int32 `json:"min_replicas"`
+		MaxReplicas     int32  `json:"max_replicas"`
+		CurrentCPU      string `json:"current_cpu"`
+		TargetCPU       string `json:"target_cpu"`
+		CurrentMemory   string `json:"current_memory"`
+		TargetMemory    string `json:"target_memory"`
+		CurrentReplicas int32  `json:"current_replicas"`
+		DesiredReplicas int32  `json:"desired_replicas"`
+		Age             string `json:"age"`
 	}
 
 	allowed := authz.AllowedNamespaceSet(c)
@@ -2883,9 +2886,9 @@ func (h *Handler) DeleteHPA(c *gin.Context) {
 
 // BatchOperationRequest 批量操作请求
 type BatchOperationRequest struct {
-	ClusterID uint     `json:"cluster_id" binding:"required"`
-	Resources []ResourceRef `json:"resources" binding:"required"`
-	Action    string   `json:"action" binding:"required"`
+	ClusterID uint              `json:"cluster_id" binding:"required"`
+	Resources []ResourceRef     `json:"resources" binding:"required"`
+	Action    string            `json:"action" binding:"required"`
 	Labels    map[string]string `json:"labels,omitempty"` // 用于批量标签
 }
 
@@ -3068,160 +3071,6 @@ func (h *Handler) batchLabel(ctx context.Context, client *k8s.ClusterClient, res
 		return err
 	default:
 		return fmt.Errorf("label not supported for kind: %s", res.Kind)
-	}
-}
-
-// ==================== 资源对比 ====================
-
-// CompareResources 资源对比
-func (h *Handler) CompareResources(c *gin.Context) {
-	var req struct {
-		ClusterA uint   `json:"cluster_a" binding:"required"`
-		ClusterB uint   `json:"cluster_b" binding:"required"`
-		ResourceType string `json:"resource_type" binding:"required"`
-		NamespaceA string `json:"namespace_a"`
-		NamespaceB string `json:"namespace_b"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-
-	nsA := req.NamespaceA
-	if nsA == "" {
-		nsA = "*"
-	}
-	nsB := req.NamespaceB
-	if nsB == "" {
-		nsB = "*"
-	}
-	if !authz.EnsureScope(c, "operations", "view", req.ClusterA, nsA) {
-		return
-	}
-	if !authz.EnsureScope(c, "operations", "view", req.ClusterB, nsB) {
-		return
-	}
-
-	clientA, err := k8s.Manager.GetClient(req.ClusterA)
-	if err != nil {
-		response.BadRequest(c, "cluster A not connected")
-		return
-	}
-
-	clientB, err := k8s.Manager.GetClient(req.ClusterB)
-	if err != nil {
-		response.BadRequest(c, "cluster B not connected")
-		return
-	}
-
-	ctx := context.Background()
-
-	// 获取两个集群的资源
-	resourcesA, err := h.getResources(ctx, clientA, req.ResourceType, req.NamespaceA)
-	if err != nil {
-		response.InternalError(c, "failed to get resources from cluster A: "+err.Error())
-		return
-	}
-
-	resourcesB, err := h.getResources(ctx, clientB, req.ResourceType, req.NamespaceB)
-	if err != nil {
-		response.InternalError(c, "failed to get resources from cluster B: "+err.Error())
-		return
-	}
-
-	// 对比
-	onlyInA := make([]string, 0)
-	onlyInB := make([]string, 0)
-	inBoth := make([]string, 0)
-
-	setA := make(map[string]bool)
-	for _, r := range resourcesA {
-		setA[r] = true
-	}
-
-	setB := make(map[string]bool)
-	for _, r := range resourcesB {
-		setB[r] = true
-		if !setA[r] {
-			onlyInB = append(onlyInB, r)
-		}
-	}
-
-	for _, r := range resourcesA {
-		if setB[r] {
-			inBoth = append(inBoth, r)
-		} else {
-			onlyInA = append(onlyInA, r)
-		}
-	}
-
-	response.Success(c, gin.H{
-		"resource_type": req.ResourceType,
-		"cluster_a":     req.ClusterA,
-		"cluster_b":     req.ClusterB,
-		"only_in_a":     onlyInA,
-		"only_in_b":     onlyInB,
-		"in_both":       inBoth,
-		"count_a":       len(resourcesA),
-		"count_b":       len(resourcesB),
-	})
-}
-
-// getResources 获取资源列表
-func (h *Handler) getResources(ctx context.Context, client *k8s.ClusterClient, resourceType, namespace string) ([]string, error) {
-	switch strings.ToLower(resourceType) {
-	case "pod":
-		pods, err := client.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result := make([]string, 0, len(pods.Items))
-		for _, p := range pods.Items {
-			result = append(result, fmt.Sprintf("%s/%s", p.Namespace, p.Name))
-		}
-		return result, nil
-	case "deployment":
-		deploys, err := client.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result := make([]string, 0, len(deploys.Items))
-		for _, d := range deploys.Items {
-			result = append(result, fmt.Sprintf("%s/%s", d.Namespace, d.Name))
-		}
-		return result, nil
-	case "service":
-		svcs, err := client.Clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result := make([]string, 0, len(svcs.Items))
-		for _, s := range svcs.Items {
-			result = append(result, fmt.Sprintf("%s/%s", s.Namespace, s.Name))
-		}
-		return result, nil
-	case "configmap":
-		cms, err := client.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result := make([]string, 0, len(cms.Items))
-		for _, cm := range cms.Items {
-			result = append(result, fmt.Sprintf("%s/%s", cm.Namespace, cm.Name))
-		}
-		return result, nil
-	case "namespace":
-		nss, err := client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result := make([]string, 0, len(nss.Items))
-		for _, ns := range nss.Items {
-			result = append(result, ns.Name)
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
 }
 

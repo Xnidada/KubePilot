@@ -460,31 +460,6 @@ export const batchOperation = (data: BatchOperationRequest) => {
   return post<{ code: number; data: BatchResult }>(`/clusters/${data.cluster_id}/workloads/batch`, data)
 }
 
-// ==================== 资源对比 ====================
-
-export interface CompareRequest {
-  cluster_a: number
-  cluster_b: number
-  resource_type: string
-  namespace_a?: string
-  namespace_b?: string
-}
-
-export interface CompareResult {
-  resource_type: string
-  cluster_a: number
-  cluster_b: number
-  only_in_a: string[]
-  only_in_b: string[]
-  in_both: string[]
-  count_a: number
-  count_b: number
-}
-
-export const compareResources = (data: CompareRequest) => {
-  return post<{ code: number; data: CompareResult }>('/clusters/0/workloads/compare', data)
-}
-
 // ==================== Pod 亲和性 ====================
 
 export const getPodAffinity = (clusterId: number, namespace: string, name: string) => {

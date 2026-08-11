@@ -122,9 +122,6 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 - 日志查看（搜索、高亮、下载）
 
 ### 📋 其他功能
-- **批量操作** - `/workloads/batch` 支持 Deployment/Pod 批量删除/重启/标签
-- **YAML 对比** - `/workloads/yaml-diff` 对比资源 YAML
-- **Pod 诊断** - `/ops/pod-diagnosis` 一键诊断 Pod 状态与建议
 - **资源依赖图** - 可视化 Deployment→ReplicaSet→Pod→Service 关系
 - **环境克隆** - 一键克隆命名空间配置
 

@@ -213,22 +213,6 @@ const menuItems: MenuProps['items'] = [
         label: '闲置资源清理',
       },
       {
-        key: '/workloads/compare',
-        label: '资源对比',
-      },
-      {
-        key: '/workloads/batch',
-        label: '批量操作',
-      },
-      {
-        key: '/workloads/yaml-diff',
-        label: 'YAML 对比',
-      },
-      {
-        key: '/ops/pod-diagnosis',
-        label: 'Pod 诊断',
-      },
-      {
         key: '/workloads/env-clone',
         label: '环境克隆',
       },
@@ -459,8 +443,6 @@ const MainLayout: React.FC = () => {
       '/workloads/jobs': ['/workloads'],
       '/workloads/cronjobs': ['/workloads'],
       '/workloads/hpas': ['/workloads'],
-      '/workloads/batch': ['/workloads'],
-      '/workloads/compare': ['/workloads'],
       '/workloads/gpu': ['/workloads'],
       '/workloads/env-clone': ['/workloads'],
       '/workloads/networkpolicies': ['/network'],

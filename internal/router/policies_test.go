@@ -26,7 +26,6 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"GET /api/v1/clusters/:id/workloads/deployments",
 		"GET /api/v1/clusters/:id/workloads/deployments/:ns/:name",
 		"POST /api/v1/clusters/:id/workloads/batch",
-		"POST /api/v1/clusters/:id/workloads/compare",
 		"POST /api/v1/clusters/:id/workloads/yaml/apply",
 		"POST /api/v1/aiops/agent",
 		"POST /api/v1/aiops/agent/confirm/:actionId",

@@ -12,7 +12,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 // Handler 运维工具处理器
@@ -23,51 +22,7 @@ func NewHandler() *Handler {
 	return &Handler{}
 }
 
-// ==================== P0: Pod 诊断面板 ====================
-
-// PodDiagnosis Pod 诊断结果
-type PodDiagnosis struct {
-	PodName      string                 `json:"pod_name"`
-	Namespace    string                 `json:"namespace"`
-	Status       string                 `json:"status"`
-	Node         string                 `json:"node"`
-	IP           string                 `json:"ip"`
-	Restarts     int32                  `json:"restarts"`
-	Age          string                 `json:"age"`
-	Containers   []ContainerDiagnosis   `json:"containers"`
-	Events       []EventInfo            `json:"events"`
-	Conditions   []ConditionInfo        `json:"conditions"`
-	ResourceUsage ResourceUsage         `json:"resource_usage"`
-	Labels       map[string]string      `json:"labels"`
-	Annotations  map[string]string      `json:"annotations"`
-	OwnerRef     string                 `json:"owner_ref"`
-	QoSClass     string                 `json:"qos_class"`
-	NodeSelector map[string]string      `json:"node_selector"`
-	Tolerations  []corev1.Toleration    `json:"tolerations"`
-	Volumes      []string               `json:"volumes"`
-	Problems     []string               `json:"problems"`
-	Suggestions  []string               `json:"suggestions"`
-}
-
-type ContainerDiagnosis struct {
-	Name         string `json:"name"`
-	Image        string `json:"image"`
-	Ready        bool   `json:"ready"`
-	RestartCount int32  `json:"restart_count"`
-	State        string `json:"state"`
-	ExitCode     int32  `json:"exit_code"`
-	Reason       string `json:"reason"`
-}
-
-type EventInfo struct {
-	Type      string `json:"type"`
-	Reason    string `json:"reason"`
-	Message   string `json:"message"`
-	Count     int32  `json:"count"`
-	FirstTime string `json:"first_time"`
-	LastTime  string `json:"last_time"`
-}
-
+// Shared condition info used by node pressure and other ops views.
 type ConditionInfo struct {
 	Type    string `json:"type"`
 	Status  string `json:"status"`
@@ -75,273 +30,15 @@ type ConditionInfo struct {
 	Message string `json:"message"`
 }
 
-type ResourceUsage struct {
-	CPURequest    string `json:"cpu_request"`
-	CPULimit      string `json:"cpu_limit"`
-	MemRequest    string `json:"mem_request"`
-	MemLimit      string `json:"mem_limit"`
-	PodScheduled  bool   `json:"pod_scheduled"`
-	Ready         bool   `json:"ready"`
-	Initialized   bool   `json:"initialized"`
-	ContainersReady bool `json:"containers_ready"`
-}
-
-// DiagnosePod 诊断 Pod
-func (h *Handler) DiagnosePod(c *gin.Context) {
-	clusterID, err := parseClusterID(c)
-	if err != nil {
-		response.BadRequest(c, "invalid cluster id")
-		return
-	}
-	namespace := c.Param("ns")
-	name := c.Param("name")
-
-	client, err := k8s.Manager.GetClient(clusterID)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	ctx := context.Background()
-	pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		response.NotFound(c, "pod not found")
-		return
-	}
-
-	diagnosis := buildPodDiagnosis(ctx, client.Clientset, pod)
-	response.Success(c, diagnosis)
-}
-
-func buildPodDiagnosis(ctx context.Context, clientset kubernetes.Interface, pod *corev1.Pod) *PodDiagnosis {
-	d := &PodDiagnosis{
-		PodName:     pod.Name,
-		Namespace:   pod.Namespace,
-		Status:      string(pod.Status.Phase),
-		Node:        pod.Spec.NodeName,
-		IP:          pod.Status.PodIP,
-		Labels:      pod.Labels,
-		Annotations: pod.Annotations,
-		QoSClass:    string(pod.Status.QOSClass),
-	}
-
-	// 计算重启次数
-	var totalRestarts int32
-	for _, cs := range pod.Status.ContainerStatuses {
-		totalRestarts += cs.RestartCount
-	}
-	d.Restarts = totalRestarts
-
-	// 计算年龄
-	d.Age = timeSince(pod.CreationTimestamp.Time)
-
-	// 容器诊断
-	for _, cs := range pod.Status.ContainerStatuses {
-		cd := ContainerDiagnosis{
-			Name:         cs.Name,
-			Ready:        cs.Ready,
-			RestartCount: cs.RestartCount,
-		}
-		if cs.State.Running != nil {
-			cd.State = "Running"
-		} else if cs.State.Waiting != nil {
-			cd.State = "Waiting"
-			cd.Reason = cs.State.Waiting.Reason
-		} else if cs.State.Terminated != nil {
-			cd.State = "Terminated"
-			cd.ExitCode = cs.State.Terminated.ExitCode
-			cd.Reason = cs.State.Terminated.Reason
-		}
-		// 获取镜像
-		for _, c := range pod.Spec.Containers {
-			if c.Name == cs.Name {
-				cd.Image = c.Image
-				break
-			}
-		}
-		d.Containers = append(d.Containers, cd)
-	}
-
-	// 条件
-	for _, cond := range pod.Status.Conditions {
-		d.Conditions = append(d.Conditions, ConditionInfo{
-			Type:    string(cond.Type),
-			Status:  string(cond.Status),
-			Reason:  cond.Reason,
-			Message: cond.Message,
-		})
-	}
-
-	// 资源使用
-	var cpuReq, cpuLim, memReq, memLim string
-	for _, c := range pod.Spec.Containers {
-		if c.Resources.Requests != nil {
-			if cpu, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				cpuReq = cpu.String()
-			}
-			if mem, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				memReq = mem.String()
-			}
-		}
-		if c.Resources.Limits != nil {
-			if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
-				cpuLim = cpu.String()
-			}
-			if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
-				memLim = mem.String()
-			}
-		}
-	}
-	d.ResourceUsage = ResourceUsage{
-		CPURequest: cpuReq,
-		CPULimit:   cpuLim,
-		MemRequest: memReq,
-		MemLimit:   memLim,
-	}
-
-	// 条件状态
-	for _, cond := range pod.Status.Conditions {
-		switch cond.Type {
-		case corev1.PodScheduled:
-			d.ResourceUsage.PodScheduled = cond.Status == corev1.ConditionTrue
-		case corev1.PodReady:
-			d.ResourceUsage.Ready = cond.Status == corev1.ConditionTrue
-		case corev1.PodInitialized:
-			d.ResourceUsage.Initialized = cond.Status == corev1.ConditionTrue
-		case corev1.ContainersReady:
-			d.ResourceUsage.ContainersReady = cond.Status == corev1.ConditionTrue
-		}
-	}
-
-	// Owner Reference
-	for _, ref := range pod.OwnerReferences {
-		d.OwnerRef = fmt.Sprintf("%s/%s", ref.Kind, ref.Name)
-	}
-
-	// Volume 名称
-	for _, v := range pod.Spec.Volumes {
-		d.Volumes = append(d.Volumes, v.Name)
-	}
-
-	// 获取事件
-	events, _ := clientset.CoreV1().Events(pod.Namespace).List(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.namespace=%s", pod.Name, pod.Namespace),
-	})
-	if events != nil {
-		sort.Slice(events.Items, func(i, j int) bool {
-			return events.Items[i].LastTimestamp.After(events.Items[j].LastTimestamp.Time)
-		})
-		for i, e := range events.Items {
-			if i >= 20 {
-				break
-			}
-			firstTime := ""
-			if !e.FirstTimestamp.IsZero() {
-				firstTime = e.FirstTimestamp.Format("2006-01-02 15:04:05")
-			}
-			lastTime := ""
-			if !e.LastTimestamp.IsZero() {
-				lastTime = e.LastTimestamp.Time.Format("2006-01-02 15:04:05")
-			}
-			d.Events = append(d.Events, EventInfo{
-				Type:      e.Type,
-				Reason:    e.Reason,
-				Message:   e.Message,
-				Count:     e.Count,
-				FirstTime: firstTime,
-				LastTime:  lastTime,
-			})
-		}
-	}
-
-	// 自动检测问题
-	d.Problems = detectPodProblems(pod, d)
-	d.Suggestions = generateSuggestions(d)
-
-	return d
-}
-
-func detectPodProblems(pod *corev1.Pod, d *PodDiagnosis) []string {
-	var problems []string
-
-	// 检查重启次数
-	if d.Restarts > 5 {
-		problems = append(problems, fmt.Sprintf("容器频繁重启 (%d 次)，可能存在 CrashLoopBackOff", d.Restarts))
-	}
-
-	// 检查容器状态
-	for _, cs := range d.Containers {
-		if cs.State == "Waiting" {
-			switch cs.Reason {
-			case "CrashLoopBackOff":
-				problems = append(problems, fmt.Sprintf("容器 %s 处于 CrashLoopBackOff 状态", cs.Name))
-			case "ImagePullBackOff", "ErrImagePull":
-				problems = append(problems, fmt.Sprintf("容器 %s 镜像拉取失败: %s", cs.Name, cs.Image))
-			case "CreateContainerConfigError":
-				problems = append(problems, fmt.Sprintf("容器 %s 配置错误", cs.Name))
-			}
-		}
-		if cs.State == "Terminated" && cs.ExitCode != 0 {
-			problems = append(problems, fmt.Sprintf("容器 %s 异常退出，退出码: %d，原因: %s", cs.Name, cs.ExitCode, cs.Reason))
-		}
-	}
-
-	// 检查 Pod 状态
-	if pod.Status.Phase == "Pending" {
-		problems = append(problems, "Pod 处于 Pending 状态，可能资源不足或调度失败")
-	}
-	if pod.Status.Phase == "Failed" {
-		problems = append(problems, "Pod 处于 Failed 状态")
-	}
-
-	// 检查事件中的 Warning
-	for _, e := range d.Events {
-		if e.Type == "Warning" {
-			problems = append(problems, fmt.Sprintf("事件警告 [%s]: %s", e.Reason, e.Message))
-		}
-	}
-
-	return problems
-}
-
-func generateSuggestions(d *PodDiagnosis) []string {
-	var suggestions []string
-
-	for _, p := range d.Problems {
-		if contains(p, "CrashLoopBackOff") {
-			suggestions = append(suggestions, "检查容器日志: kubectl logs <pod> --previous")
-			suggestions = append(suggestions, "检查应用启动命令和参数是否正确")
-		}
-		if contains(p, "ImagePullBackOff") || contains(p, "镜像拉取失败") {
-			suggestions = append(suggestions, "检查镜像名称和标签是否正确")
-			suggestions = append(suggestions, "检查镜像仓库认证: kubectl get secrets")
-		}
-		if contains(p, "Pending") {
-			suggestions = append(suggestions, "检查集群资源是否充足: kubectl describe nodes")
-			suggestions = append(suggestions, "检查是否有合适的节点满足调度条件")
-		}
-		if contains(p, "频繁重启") {
-			suggestions = append(suggestions, "检查应用日志找出崩溃原因")
-			suggestions = append(suggestions, "增加资源限制或优化应用内存使用")
-		}
-	}
-
-	if d.ResourceUsage.CPURequest == "" {
-		suggestions = append(suggestions, "建议设置 CPU/内存请求和限制")
-	}
-
-	return suggestions
-}
-
 // ==================== P0: 资源使用趋势 ====================
 
 // ResourceMetrics 资源指标
 type ResourceMetrics struct {
-	Timestamp    time.Time `json:"timestamp"`
-	CPUUsage     string    `json:"cpu_usage"`
-	MemoryUsage  string    `json:"memory_usage"`
-	CPUPercent   float64   `json:"cpu_percent"`
-	MemPercent   float64   `json:"mem_percent"`
+	Timestamp   time.Time `json:"timestamp"`
+	CPUUsage    string    `json:"cpu_usage"`
+	MemoryUsage string    `json:"memory_usage"`
+	CPUPercent  float64   `json:"cpu_percent"`
+	MemPercent  float64   `json:"mem_percent"`
 }
 
 // GetResourceTrend 获取资源使用趋势
@@ -532,20 +229,20 @@ func (h *Handler) GetEventTimeline(c *gin.Context) {
 
 // NodePressure 节点压力信息
 type NodePressure struct {
-	Name         string            `json:"name"`
-	Status       string            `json:"status"`
-	CPUCapacity  string            `json:"cpu_capacity"`
-	CPUAllocated string            `json:"cpu_allocated"`
-	CPUPercent   float64           `json:"cpu_percent"`
-	MemCapacity  string            `json:"mem_capacity"`
-	MemAllocated string            `json:"mem_allocated"`
-	MemPercent   float64           `json:"mem_percent"`
-	PodCapacity  int64             `json:"pod_capacity"`
-	PodCount     int               `json:"pod_count"`
-	PodPercent   float64           `json:"pod_percent"`
-	Conditions   []ConditionInfo   `json:"conditions"`
-	Taints       []corev1.Taint    `json:"taints"`
-	PressureLevel string           `json:"pressure_level"` // low, medium, high, critical
+	Name          string          `json:"name"`
+	Status        string          `json:"status"`
+	CPUCapacity   string          `json:"cpu_capacity"`
+	CPUAllocated  string          `json:"cpu_allocated"`
+	CPUPercent    float64         `json:"cpu_percent"`
+	MemCapacity   string          `json:"mem_capacity"`
+	MemAllocated  string          `json:"mem_allocated"`
+	MemPercent    float64         `json:"mem_percent"`
+	PodCapacity   int64           `json:"pod_capacity"`
+	PodCount      int             `json:"pod_count"`
+	PodPercent    float64         `json:"pod_percent"`
+	Conditions    []ConditionInfo `json:"conditions"`
+	Taints        []corev1.Taint  `json:"taints"`
+	PressureLevel string          `json:"pressure_level"` // low, medium, high, critical
 }
 
 // GetNodePressure 获取节点压力
@@ -771,7 +468,7 @@ func (h *Handler) RollbackDeployment(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"message":       fmt.Sprintf("Deployment %s rollback initiated", name),
+		"message":         fmt.Sprintf("Deployment %s rollback initiated", name),
 		"target_revision": targetRS.Annotations["deployment.kubernetes.io/revision"],
 	})
 }
@@ -780,11 +477,11 @@ func (h *Handler) RollbackDeployment(c *gin.Context) {
 
 // ResourceNode 资源节点
 type ResourceNode struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Name     string `json:"name"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
-	Status   string `json:"status"`
+	Status    string `json:"status"`
 }
 
 // ResourceEdge 资源边
@@ -902,16 +599,16 @@ func (h *Handler) GetResourceGraph(c *gin.Context) {
 
 // RBACInfo RBAC 信息
 type RBACInfo struct {
-	Roles               []RoleInfo               `json:"roles"`
-	ClusterRoles        []RoleInfo               `json:"cluster_roles"`
-	RoleBindings        []BindingInfo            `json:"role_bindings"`
-	ClusterRoleBindings []BindingInfo            `json:"cluster_role_bindings"`
-	UserPermissions     map[string][]string      `json:"user_permissions"`
+	Roles               []RoleInfo          `json:"roles"`
+	ClusterRoles        []RoleInfo          `json:"cluster_roles"`
+	RoleBindings        []BindingInfo       `json:"role_bindings"`
+	ClusterRoleBindings []BindingInfo       `json:"cluster_role_bindings"`
+	UserPermissions     map[string][]string `json:"user_permissions"`
 }
 
 type RoleInfo struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace"`
+	Name      string     `json:"name"`
+	Namespace string     `json:"namespace"`
 	Rules     []RuleInfo `json:"rules"`
 }
 
@@ -922,9 +619,9 @@ type RuleInfo struct {
 }
 
 type BindingInfo struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Role      string `json:"role"`
+	Name      string        `json:"name"`
+	Namespace string        `json:"namespace"`
+	Role      string        `json:"role"`
 	Subjects  []SubjectInfo `json:"subjects"`
 }
 
@@ -1169,7 +866,7 @@ func (h *Handler) FindIdleResources(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total":   len(idleResources),
+		"total":     len(idleResources),
 		"resources": idleResources,
 	})
 }
@@ -1269,19 +966,6 @@ func int32Value(p *int32) int32 {
 		return 0
 	}
 	return *p
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func dedupNodes(nodes []ResourceNode) []ResourceNode {
