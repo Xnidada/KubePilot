@@ -11,7 +11,6 @@ import (
 	"github.com/kubepilot/kubepilot/internal/handler/cluster"
 	opsHandler "github.com/kubepilot/kubepilot/internal/handler/ops"
 	"github.com/kubepilot/kubepilot/internal/handler/system"
-	"github.com/kubepilot/kubepilot/internal/handler/tenant"
 	"github.com/kubepilot/kubepilot/internal/handler/workload"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/middleware"
@@ -53,9 +52,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	authSvc := authService.NewService(model.DB, jwtManager)
 	clusterSvc := clusterService.NewService(model.DB, encryptKey)
 
-	authHandler := auth.NewHandler(authSvc, model.DB)
+	authHandler := auth.NewHandler(authSvc, model.DB, cacheInstance)
 	webSocketTicketHandler := auth.NewWebSocketTicketHandler(webSocketTicketManager)
-	twoFactorHandler := auth.NewTwoFactorHandler(model.DB)
+	twoFactorHandler := auth.NewTwoFactorHandler(model.DB, authSvc, cacheInstance)
 	clusterHandler := cluster.NewHandler(clusterSvc)
 	workloadHandler := workload.NewHandler()
 	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(encryptKey))
@@ -63,7 +62,6 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	alertHandler := alert.NewHandler(model.DB)
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
 	opsHandler := opsHandler.NewHandler()
-	tenantHandler := tenant.NewHandler(model.DB)
 
 	host := &module.Host{
 		DB:         model.DB,
@@ -203,6 +201,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 				alertGroup.POST("/channels", alertHandler.CreateNotificationChannel)
 				alertGroup.PUT("/channels/:id", alertHandler.UpdateNotificationChannel)
 				alertGroup.DELETE("/channels/:id", alertHandler.DeleteNotificationChannel)
+
+				// Alertmanager 兼容接收端
+				alertGroup.POST("/webhook/alertmanager", alertHandler.ReceiveAlertmanager)
 			}
 
 			// Cluster management
@@ -452,18 +453,13 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 				}
 			}
 
-			// 多租户管理
-			tenantGroup := protected.Group("/tenants")
+			// OAuth provider admin (SSO config UI)
+			oauthAdmin := protected.Group("/system/oauth")
 			{
-				tenantGroup.GET("", tenantHandler.ListTenants)
-				tenantGroup.POST("", tenantHandler.CreateTenant)
-				tenantGroup.GET("/:id", tenantHandler.GetTenant)
-				tenantGroup.PUT("/:id", tenantHandler.UpdateTenant)
-				tenantGroup.DELETE("/:id", tenantHandler.DeleteTenant)
-				tenantGroup.POST("/:id/members", tenantHandler.AddTenantMember)
-				tenantGroup.DELETE("/:id/members/:userId", tenantHandler.RemoveTenantMember)
-				tenantGroup.POST("/:id/namespaces", tenantHandler.CreateTenantNamespace)
-				tenantGroup.DELETE("/:id/namespaces/:nsId", tenantHandler.DeleteTenantNamespace)
+				oauthAdmin.GET("/configs", oauthHandler.ListConfigs)
+				oauthAdmin.POST("/configs", oauthHandler.CreateConfig)
+				oauthAdmin.PUT("/configs/:id", oauthHandler.UpdateConfig)
+				oauthAdmin.DELETE("/configs/:id", oauthHandler.DeleteConfig)
 			}
 
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/netutil"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -158,6 +159,10 @@ func (h *EventForwardHandler) CreateRule(c *gin.Context) {
 	if !authz.EnsureScope(c, "event_forward", "create", rule.ClusterID, "*") {
 		return
 	}
+	if err := netutil.ValidateOutboundURL(rule.WebhookURL); err != nil {
+		response.BadRequest(c, "invalid webhook_url: "+err.Error())
+		return
+	}
 
 	rule.Enabled = true
 	if err := h.db.Create(&rule).Error; err != nil {
@@ -220,6 +225,10 @@ func (h *EventForwardHandler) UpdateRule(c *gin.Context) {
 		updates["name"] = req.Name
 	}
 	if req.WebhookURL != "" {
+		if err := netutil.ValidateOutboundURL(req.WebhookURL); err != nil {
+			response.BadRequest(c, "invalid webhook_url: "+err.Error())
+			return
+		}
 		updates["webhook_url"] = req.WebhookURL
 	}
 	if req.Namespaces != "" {
@@ -275,6 +284,12 @@ func (h *EventForwardHandler) DeleteRule(c *gin.Context) {
 	}
 
 	h.stopWatcher(rule.ID)
+
+	// 先删日志，避免外键约束导致规则删不掉
+	if err := h.db.Where("rule_id = ?", rule.ID).Delete(&model.EventForwardLog{}).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 
 	if err := h.db.Delete(&rule).Error; err != nil {
 		response.InternalError(c, err.Error())
@@ -528,6 +543,9 @@ func (h *EventForwardHandler) matchEvent(event *corev1.Event, namespaces, resour
 }
 
 func (h *EventForwardHandler) sendWebhook(url, headersJSON string, payload interface{}) error {
+	if err := netutil.ValidateOutboundURL(url); err != nil {
+		return fmt.Errorf("ssrf blocked: %w", err)
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

@@ -104,11 +104,15 @@ func (h *Handler) GetResourceYAML(c *gin.Context) {
 			return
 		}
 		secret.ManagedFields = nil
-		// Base64 编码 secret data
-		for k, v := range secret.Data {
-			secret.StringData[k] = string(v)
+		if err := authz.RequireScope(c, "secrets", "view_data", uint(clusterID), namespace); err != nil {
+			// Redact sensitive values for metadata-only viewers.
+			redacted := make(map[string][]byte, len(secret.Data))
+			for k := range secret.Data {
+				redacted[k] = []byte("***")
+			}
+			secret.Data = redacted
+			secret.StringData = nil
 		}
-		secret.Data = nil
 		obj = secret
 	case "ingresses":
 		ing, err := client.Clientset.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})

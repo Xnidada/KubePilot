@@ -39,7 +39,12 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/ws/tickets/pod/:id/:ns/:name",
 		"GET /api/v1/inspection/rules/:id",
 		"GET /api/v1/backups/:id",
+		"DELETE /api/v1/backups/:id",
+		"DELETE /api/v1/backups/restores/:id",
 		"POST /api/v1/scheduler/tasks",
+		"POST /api/v1/alerts/webhook/alertmanager",
+		"GET /api/v1/alerts/rules",
+		"POST /api/v1/alerts/channels",
 	}
 	for _, key := range required {
 		parts := strings.SplitN(key, " ", 2)

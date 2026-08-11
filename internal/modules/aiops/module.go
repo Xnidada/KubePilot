@@ -95,6 +95,17 @@ func (m *Module) Start(ctx context.Context, host *module.Host) error {
 	if host != nil {
 		m.db = host.DB
 	}
+	if m.db != nil {
+		// Staged AI actions may have no conversation; keep conversation_id nullable
+		// without a hard FK so dry-run staging can succeed independently.
+		for _, constraint := range []string{"fk_agent_actions_conversation"} {
+			if m.db.Migrator().HasConstraint(&model.AgentAction{}, constraint) {
+				if err := m.db.Migrator().DropConstraint(&model.AgentAction{}, constraint); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 

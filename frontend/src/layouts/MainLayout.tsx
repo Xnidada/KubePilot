@@ -178,6 +178,10 @@ const menuItems: MenuProps['items'] = [
         label: '资源成本',
       },
       {
+        key: '/monitor/alerts',
+        label: '告警中心',
+      },
+      {
         key: '/monitor',
         label: '事件告警',
       },
@@ -211,6 +215,18 @@ const menuItems: MenuProps['items'] = [
       {
         key: '/workloads/compare',
         label: '资源对比',
+      },
+      {
+        key: '/workloads/batch',
+        label: '批量操作',
+      },
+      {
+        key: '/workloads/yaml-diff',
+        label: 'YAML 对比',
+      },
+      {
+        key: '/ops/pod-diagnosis',
+        label: 'Pod 诊断',
       },
       {
         key: '/workloads/env-clone',
@@ -293,6 +309,10 @@ const menuItems: MenuProps['items'] = [
         label: 'Webhook 通知',
       },
       {
+        key: '/system/sso',
+        label: 'SSO 配置',
+      },
+      {
         key: '/system/modules',
         label: '功能模块',
       },
@@ -306,6 +326,7 @@ const menuPermissionMap: Record<string, { resource: string; action: string }> = 
   '/system/roles': { resource: 'roles', action: 'view' },
   '/system/backup': { resource: 'backups', action: 'view' },
   '/system/webhooks': { resource: 'webhooks', action: 'view' },
+  '/system/sso': { resource: 'users', action: 'admin' },
   '/aiops/agent': { resource: 'aiops', action: 'execute' },
   '/aiops/diagnosis': { resource: 'aiops', action: 'execute' },
   '/aiops/tools': { resource: 'aiops', action: 'execute' },
@@ -443,6 +464,7 @@ const MainLayout: React.FC = () => {
       '/workloads/env-clone': ['/workloads'],
       '/workloads/networkpolicies': ['/network'],
       '/monitor/cost': ['/monitor'],
+      '/monitor/alerts': ['/monitor'],
       '/workloads/services': ['/network'],
       '/workloads/ingresses': ['/network'],
       '/workloads/configmaps': ['/config'],

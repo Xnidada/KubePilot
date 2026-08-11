@@ -1,0 +1,64 @@
+# Velero Helm values — 对接同命名空间内的 MinIO（开发/单机）
+# Chart: vmware-tanzu/velero
+#
+# 生产请改为真实对象存储，并更新:
+# - configuration.backupStorageLocation[].config
+# - credentials.secretContents.cloud
+
+image:
+  repository: velero/velero
+  tag: v1.15.2
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.11.1
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+# 关闭 chart 内置 upgradeCRDs Job（部分环境该 Job 会失败）；
+# install.sh 会在 helm 安装前先 kubectl apply chart/crds。
+upgradeCRDs: false
+cleanUpCRDs: false
+
+# 仅备份 K8s 资源对象（YAML）；不启用卷快照，降低单机环境复杂度。
+# 若需 PV 文件级备份，可打开 deployNodeAgent 并配置 defaultVolumesToFsBackup。
+snapshotsEnabled: false
+deployNodeAgent: false
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: kubepilot
+      default: true
+      config:
+        region: minio
+        s3ForcePathStyle: "true"
+        s3Url: http://minio.velero.svc:9000
+  volumeSnapshotLocation: []
+
+credentials:
+  useSecret: true
+  name: velero-credentials
+  secretContents:
+    cloud: |
+      [default]
+      aws_access_key_id=minio
+      aws_secret_access_key=minio123
+
+# 允许在所有命名空间创建 Backup/Restore（KubePilot 会在 velero NS 写 CR）
+kubectl:
+  image:
+    repository: docker.io/bitnami/kubectl
+    tag: "1.30"

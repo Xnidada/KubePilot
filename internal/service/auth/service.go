@@ -53,7 +53,16 @@ type RegisterRequest struct {
 }
 
 func (s *Service) Login(req *LoginRequest) (*LoginResponse, error) {
-	user, err := s.userRepo.GetByUsername(req.Username)
+	user, err := s.Authenticate(req.Username, req.Password)
+	if err != nil {
+		return nil, err
+	}
+	return s.GenerateTokenForUser(user.ID)
+}
+
+// Authenticate verifies username/password and returns the user without issuing a JWT.
+func (s *Service) Authenticate(username, password string) (*model.User, error) {
+	user, err := s.userRepo.GetByUsername(username)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("invalid username or password")
@@ -65,22 +74,10 @@ func (s *Service) Login(req *LoginRequest) (*LoginResponse, error) {
 		return nil, errors.New("account is disabled")
 	}
 
-	if !crypto.CheckPassword(req.Password, user.Password) {
+	if !crypto.CheckPassword(password, user.Password) {
 		return nil, errors.New("invalid username or password")
 	}
-
-	token, err := s.jwtManager.GenerateToken(user.ID, user.Username, user.RoleID)
-	if err != nil {
-		return nil, err
-	}
-
-	s.userRepo.UpdateLastLogin(user.ID)
-
-	return &LoginResponse{
-		Token:     token,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
-		User:      buildUserInfo(user),
-	}, nil
+	return user, nil
 }
 
 func (s *Service) Register(req *RegisterRequest) (*UserInfo, error) {

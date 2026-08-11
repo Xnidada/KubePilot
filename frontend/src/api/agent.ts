@@ -13,24 +13,37 @@ export interface ExecuteRequest {
   target_port?: number
   node_port?: number
   selector?: Record<string, string>
+  conversation_id?: number
 }
 
-export interface ExecuteResult {
+export interface StagedActionResult {
   success: boolean
+  staged?: boolean
+  action_id: number
+  status: string
+  dry_run: string
   message: string
+  confirm_path?: string
   details?: string[]
 }
 
-// 执行 K8S 操作
-export const executeK8SOperation = (data: ExecuteRequest) => {
-  return post<{ code: number; data: ExecuteResult }>('/aiops/agent/execute', data)
+export interface ConfirmActionResult {
+  success: boolean
+  message: string
+  details?: string[]
+  action_id: number
+  status: string
 }
 
-// 解析用户意图并执行
-export const parseAndExecute = (clusterId: number, message: string) => {
-  return post<{ code: number; data: ExecuteResult }>('/aiops/agent/execute', {
-    cluster_id: clusterId,
-    action: 'parse',
-    name: message,
-  })
+/** Stage a write action and return dry-run preview. Does NOT mutate the cluster. */
+export const stageK8SOperation = (data: ExecuteRequest) => {
+  return post<{ code: number; data: StagedActionResult }>('/aiops/agent/execute', data)
 }
+
+/** Confirm a previously staged pending action and execute it. */
+export const confirmK8SOperation = (actionId: number) => {
+  return post<{ code: number; data: ConfirmActionResult }>(`/aiops/agent/confirm/${actionId}`)
+}
+
+/** @deprecated use stageK8SOperation — execute now only stages */
+export const executeK8SOperation = stageK8SOperation

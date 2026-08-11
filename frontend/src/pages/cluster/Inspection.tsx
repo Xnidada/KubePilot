@@ -15,6 +15,7 @@ import {
   Badge,
   Tooltip,
   Switch,
+  Alert,
 } from 'antd'
 import {
   PlusOutlined,
@@ -430,7 +431,6 @@ const Inspection: React.FC = () => {
                 { label: 'Pod', value: 'pod' },
                 { label: 'Deployment', value: 'deployment' },
                 { label: 'Service', value: 'service' },
-                { label: '自定义', value: 'custom' },
               ]}
             />
           </Form.Item>
@@ -439,16 +439,19 @@ const Inspection: React.FC = () => {
               options={[
                 { label: '状态检查', value: 'status' },
                 { label: '资源使用', value: 'resource' },
-                { label: '自定义脚本', value: 'custom' },
               ]}
             />
           </Form.Item>
           <Form.Item name="schedule" label="调度（Cron 表达式，留空为手动）">
             <Input placeholder="例如: 0 */6 * * * (每6小时)" />
           </Form.Item>
-          <Form.Item name="script" label="自定义脚本">
-            <Input.TextArea rows={4} placeholder="输入自定义检查脚本..." />
-          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="自定义脚本检查尚未实现"
+            description="请使用内置的 Node / Pod / Deployment / Service 检查，避免产生不可信的巡检结果。"
+          />
         </Form>
       </Modal>
 

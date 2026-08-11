@@ -147,10 +147,11 @@ export const setDefaultLLMConfig = (id: number) => {
   return post(`/aiops/configs/${id}/set-default`)
 }
 
-// Test LLM connection
+// Test LLM connection. When editing, pass id and leave api_key empty to reuse stored key.
 export const testLLMConfig = (data: {
+  id?: number
   provider: string
-  api_key: string
+  api_key?: string
   base_url?: string
   model: string
 }) => {

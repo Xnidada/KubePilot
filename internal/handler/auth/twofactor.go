@@ -8,23 +8,28 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
+	authService "github.com/kubepilot/kubepilot/internal/service/auth"
 	"gorm.io/gorm"
 )
 
 // TwoFactorHandler 两步验证处理器
 type TwoFactorHandler struct {
-	db *gorm.DB
+	db          *gorm.DB
+	authService *authService.Service
+	cache       cache.Cache
 }
 
 // NewTwoFactorHandler 创建两步验证处理器
-func NewTwoFactorHandler(db *gorm.DB) *TwoFactorHandler {
-	return &TwoFactorHandler{db: db}
+func NewTwoFactorHandler(db *gorm.DB, authSvc *authService.Service, cacheInstance cache.Cache) *TwoFactorHandler {
+	return &TwoFactorHandler{db: db, authService: authSvc, cache: cacheInstance}
 }
 
 // SetupRequest 初始化两步验证请求
@@ -159,19 +164,36 @@ func (h *TwoFactorHandler) Status(c *gin.Context) {
 	})
 }
 
-// LoginVerify 登录时验证两步验证码
+// LoginVerify 登录时验证两步验证码（必须携带账密阶段下发的 pending_token）
 func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 	var req struct {
-		UserID uint   `json:"user_id" binding:"required"`
-		Code   string `json:"code" binding:"required"`
+		PendingToken string `json:"pending_token" binding:"required"`
+		Code         string `json:"code" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if h.cache == nil {
+		response.InternalError(c, "cache not configured for 2FA login")
+		return
+	}
+
+	key := "2fa:pending:" + strings.TrimSpace(req.PendingToken)
+	rawUID, err := h.cache.Take(c.Request.Context(), key)
+	if err != nil || strings.TrimSpace(rawUID) == "" {
+		response.Unauthorized(c, "2FA session expired or invalid; please login again")
+		return
+	}
+	uid64, err := strconv.ParseUint(rawUID, 10, 64)
+	if err != nil || uid64 == 0 {
+		response.Unauthorized(c, "2FA session invalid")
+		return
+	}
+	userID := uint(uid64)
 
 	var tf model.UserTwoFactor
-	if err := h.db.Where("user_id = ? AND is_enabled = ?", req.UserID, true).First(&tf).Error; err != nil {
+	if err := h.db.Where("user_id = ? AND is_enabled = ?", userID, true).First(&tf).Error; err != nil {
 		response.NotFound(c, "两步验证未启用")
 		return
 	}
@@ -189,7 +211,8 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 	}
 
 	if !verified {
-		response.BadRequest(c, "验证码错误")
+		// 验证失败后需重新登录拿新的 pending_token（Take 已消费）
+		response.BadRequest(c, "验证码错误，请重新登录后再试")
 		return
 	}
 
@@ -198,12 +221,21 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 	tf.LastUsedAt = &now
 	h.db.Save(&tf)
 
-	// 生成 JWT token（需要通过 auth service）
-	// 这里直接返回验证成功，前端再次调用 login 接口
+	if h.authService == nil {
+		response.InternalError(c, "auth service not configured for 2FA login")
+		return
+	}
+	result, err := h.authService.GenerateTokenForUser(userID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 	response.Success(c, gin.H{
-		"verified":          true,
-		"backup_code_used":  backupUsed,
-		"user_id":           req.UserID,
+		"verified":         true,
+		"backup_code_used": backupUsed,
+		"token":            result.Token,
+		"expires_at":       result.ExpiresAt,
+		"user":             result.User,
 	})
 }
 

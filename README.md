@@ -102,7 +102,8 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 ### 🔧 运维工具
 - **集群巡检** - 自定义规则，定时巡检，生成报告
 - **Event 转发** - 转发 K8S 事件到 Webhook，支持过滤
-- **SSO/OAuth** - 支持 GitHub、GitLab、Google 等 OAuth2 登录
+- **备份管理（Velero）** - 在目标集群创建真实 `velero.io/v1` Backup/Restore；未安装 Velero 时拒绝假成功
+- **SSO/OAuth** - 支持 GitHub、GitLab、Google 等 OAuth2 登录（登录页按钮 + 系统 → SSO 配置）
 - **数据持久化** - 使用 PostgreSQL 存储平台配置与审计数据
 - **缓存系统** - 支持内存缓存和 Redis
 
@@ -121,10 +122,9 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 - 日志查看（搜索、高亮、下载）
 
 ### 📋 其他功能
-- **批量操作** - Deployment/Pod 支持批量删除/重启/标签
-- **资源对比** - 跨集群资源对比
-- **闲置资源清理** - 自动识别已完成 Job、未引用 ConfigMap、未绑定 PVC
-- **HPA 管理** - 水平自动伸缩配置
+- **批量操作** - `/workloads/batch` 支持 Deployment/Pod 批量删除/重启/标签
+- **YAML 对比** - `/workloads/yaml-diff` 对比资源 YAML
+- **Pod 诊断** - `/ops/pod-diagnosis` 一键诊断 Pod 状态与建议
 - **资源依赖图** - 可视化 Deployment→ReplicaSet→Pod→Service 关系
 - **环境克隆** - 一键克隆命名空间配置
 
@@ -215,6 +215,21 @@ go run scripts/init-admin.go
 ./kubepilot
 ```
 
+## 💾 备份（Velero）
+
+KubePilot「系统 → 备份管理」依赖目标集群中的 **Velero**。未安装 CRD 时，创建备份/恢复会被拒绝（避免虚假成功）。
+
+仓库提供开发/单机安装模板（MinIO + Velero Helm）：
+
+```bash
+chmod +x deploy/velero/install.sh
+./deploy/velero/install.sh install   # 安装
+./deploy/velero/install.sh verify    # 校验 CRD / BSL
+./deploy/velero/install.sh uninstall # 卸载
+```
+
+详细说明见 [`deploy/velero/README.md`](deploy/velero/README.md)。生产环境请将 MinIO 替换为真实对象存储，并修改 `deploy/velero/values-minio.yaml`。
+
 ## 📁 项目结构
 
 ```
@@ -248,7 +263,8 @@ KubePilot/
 ├── configs/                 # 配置文件
 ├── deploy/                  # 部署配置
 │   ├── k8s/                 # K8S YAML
-│   └── helm/                # Helm Chart
+│   ├── helm/                # Helm Chart
+│   └── velero/              # Velero + MinIO 安装模板（备份依赖）
 ├── images/                  # 项目截图
 ├── scripts/                 # 脚本工具
 ├── docker-compose.yml       # Docker Compose
@@ -408,7 +424,7 @@ clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespace
 1. **修改默认密码** - 首次登录后立即修改 admin 密码
 2. **修改 JWT 密钥** - 使用强随机字符串，不要使用默认值
 3. **启用 HTTPS** - 配置 Ingress TLS 或反向代理
-4. **定期备份** - 备份 PostgreSQL 数据
+4. **定期备份** - 备份 PostgreSQL 数据；集群资源备份请安装 Velero（见 `deploy/velero/`）
 5. **配置监控** - 接入 Prometheus + Grafana
 6. **限制访问** - 配置网络策略限制 API 访问
 

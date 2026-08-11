@@ -20,7 +20,6 @@ type AuditLog struct {
 	UserAgent    string    `json:"user_agent" gorm:"size:256"`
 	Success      bool      `json:"success"`
 	Error        string    `json:"error" gorm:"type:text"`
-	Result       string    `json:"result" gorm:"type:text"`
 	CreatedAt    time.Time `json:"created_at" gorm:"index"`
 }
 

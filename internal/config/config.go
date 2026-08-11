@@ -202,8 +202,9 @@ func setDefaults() {
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", 8080)
 	viper.SetDefault("server.mode", "debug")
-	viper.SetDefault("server.read_timeout", 30*time.Second)
-	viper.SetDefault("server.write_timeout", 30*time.Second)
+	// AI Agent / LLM 调用可能超过 30s；WriteTimeout 覆盖整个 handler 生命周期
+	viper.SetDefault("server.read_timeout", 60*time.Second)
+	viper.SetDefault("server.write_timeout", 300*time.Second)
 
 	// Database defaults
 	viper.SetDefault("database.driver", "postgres")

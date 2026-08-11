@@ -57,6 +57,14 @@ func AutoMigrate() error {
 
 // AutoMigrateCore migrates platform tables that are not owned by feature modules.
 func AutoMigrateCore() error {
+	// Drop historical FKs before AutoMigrate so GORM cannot fail while recreating
+	// constraints against orphan/external rows (e.g. alert_history.rule_id = 0).
+	for _, constraint := range []string{"fk_alert_history_rule", "fk_alert_history_cluster"} {
+		if err := DB.Exec("ALTER TABLE IF EXISTS alert_history DROP CONSTRAINT IF EXISTS " + constraint).Error; err != nil {
+			return fmt.Errorf("drop alert history constraint %s: %w", constraint, err)
+		}
+	}
+
 	if err := DB.AutoMigrate(
 		&User{},
 		&Role{},
@@ -93,6 +101,12 @@ func AutoMigrateCore() error {
 			if err := DB.Migrator().DropConstraint(&AuditLog{}, constraint); err != nil {
 				return fmt.Errorf("drop audit log constraint %s: %w", constraint, err)
 			}
+		}
+	}
+	// Ensure alert history stays free of hard FKs after AutoMigrate.
+	for _, constraint := range []string{"fk_alert_history_rule", "fk_alert_history_cluster"} {
+		if err := DB.Exec("ALTER TABLE IF EXISTS alert_history DROP CONSTRAINT IF EXISTS " + constraint).Error; err != nil {
+			return fmt.Errorf("drop alert history constraint %s: %w", constraint, err)
 		}
 	}
 	return nil

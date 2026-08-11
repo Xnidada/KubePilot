@@ -292,10 +292,6 @@ export const disable2FA = (code: string) => {
   return post('/2fa/disable', { code })
 }
 
-export const verify2FALogin = (userId: number, code: string) => {
-  return post<{ code: number; data: { verified: boolean; user_id: number } }>('/auth/2fa/verify', { user_id: userId, code })
-}
-
 // ==================== 集群巡检 ====================
 
 export interface InspectionRule {
@@ -480,6 +476,7 @@ export interface BackupRecordItem {
   namespaces: string
   resources: string
   status: string
+  phase?: string
   volume_snapshots: number
   errors: number
   warnings: number
@@ -538,7 +535,10 @@ export const createBackupRecord = (data: {
   namespaces?: string[]
   resources?: string[]
   ttl?: string
+  storage_location?: string
 }) => post<{ code: number; data: BackupRecordItem }>('/backups', data)
+
+export const deleteBackupRecord = (id: number) => del(`/backups/${id}`)
 
 export const listRestoreRecords = () =>
   get<{ code: number; data: RestoreRecordItem[] }>('/backups/restores')
@@ -549,6 +549,8 @@ export const createRestore = (data: {
   namespaces?: string[]
 }) => post<{ code: number; data: RestoreRecordItem }>('/backups/restore', data)
 
+export const deleteRestoreRecord = (id: number) => del(`/backups/restores/${id}`)
+
 // ==================== SSO/OAuth ====================
 
 export interface OAuthProvider {
@@ -558,6 +560,23 @@ export interface OAuthProvider {
   enabled: boolean
 }
 
+export interface OAuthConfigItem {
+  id: number
+  provider: string
+  name: string
+  client_id: string
+  redirect_url: string
+  auth_url: string
+  token_url: string
+  userinfo_url: string
+  scopes: string
+  enabled: boolean
+  default_role: number
+  has_secret?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
 export const listOAuthProviders = () => {
   return get<{ code: number; data: OAuthProvider[] }>('/oauth/providers')
 }
@@ -565,3 +584,16 @@ export const listOAuthProviders = () => {
 export const initiateOAuthLogin = (provider: string) => {
   return get<{ code: number; data: { auth_url: string; state: string } }>(`/oauth/${provider}/login`)
 }
+
+export const listOAuthConfigs = () =>
+  get<{ code: number; data: OAuthConfigItem[] }>('/system/oauth/configs')
+
+export const createOAuthConfig = (data: Record<string, unknown>) =>
+  post<{ code: number; data: OAuthConfigItem }>('/system/oauth/configs', data)
+
+export const updateOAuthConfig = (id: number, data: Record<string, unknown>) =>
+  put<{ code: number; data: OAuthConfigItem }>(`/system/oauth/configs/${id}`, data)
+
+export const deleteOAuthConfig = (id: number) =>
+  del(`/system/oauth/configs/${id}`)
+

@@ -74,7 +74,6 @@ const resourceLabels: Record<string, string> = {
   aiops_config: 'AI 配置',
   backups: '备份管理',
   webhooks: 'Webhook 通知',
-  tenants: '租户管理',
 }
 
 const getResourceLabel = (resource: string) => {

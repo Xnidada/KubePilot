@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/netutil"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
 )
@@ -54,6 +55,10 @@ func (h *Handler) CreateWebhook(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if err := netutil.ValidateOutboundURL(req.URL); err != nil {
+		response.BadRequest(c, "invalid webhook url: "+err.Error())
 		return
 	}
 
@@ -108,6 +113,10 @@ func (h *Handler) UpdateWebhook(c *gin.Context) {
 		webhook.Name = req.Name
 	}
 	if req.URL != "" {
+		if err := netutil.ValidateOutboundURL(req.URL); err != nil {
+			response.BadRequest(c, "invalid webhook url: "+err.Error())
+			return
+		}
 		webhook.URL = req.URL
 	}
 	if req.Secret != "" {
@@ -225,6 +234,9 @@ func (h *Handler) matchEvent(webhook *model.WebhookConfig, eventType string) boo
 
 // sendWebhook 发送 Webhook
 func (h *Handler) sendWebhook(webhook *model.WebhookConfig, eventType string, data map[string]interface{}) *model.WebhookLog {
+	if err := netutil.ValidateOutboundURL(webhook.URL); err != nil {
+		return h.saveLog(webhook, eventType, "", webhook.URL, "", 0, "ssrf blocked: "+err.Error())
+	}
 	payload := map[string]interface{}{
 		"event_type": eventType,
 		"data":       data,

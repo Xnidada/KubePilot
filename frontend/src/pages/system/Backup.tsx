@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type Key } from 'react'
 import {
   Card, Table, Button, Typography, message, Tag, Modal, Form, Input, Select,
-  Tabs, Popconfirm, Space, Tooltip, Switch
+  Tabs, Popconfirm, Space, Tooltip, Switch, Alert
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, CloudDownloadOutlined,
@@ -20,8 +20,10 @@ import {
   clearBackupCron,
   listBackupRecords,
   createBackupRecord,
+  deleteBackupRecord,
   listRestoreRecords,
   createRestore,
+  deleteRestoreRecord,
   BackupScheduleItem,
   BackupRecordItem,
   RestoreRecordItem,
@@ -34,6 +36,7 @@ const { Title, Text } = Typography
 
 const BACKUP_TABS = ['schedules', 'backups', 'restores'] as const
 const REFRESH_MS = 10000
+const VELERO_TIP_KEY = 'kubepilot.backup.veleroTipDismissed'
 
 function parseJSONArray(raw?: string): string {
   if (!raw) return ''
@@ -58,6 +61,10 @@ const Backup: React.FC = () => {
   const [editingSchedule, setEditingSchedule] = useState<BackupScheduleItem | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [activeTab, setActiveTab] = useQueryTab(BACKUP_TABS, 'schedules')
+  const [selectedBackupKeys, setSelectedBackupKeys] = useState<Key[]>([])
+  const [veleroTipVisible, setVeleroTipVisible] = useState(
+    () => localStorage.getItem(VELERO_TIP_KEY) !== '1'
+  )
   const [form] = Form.useForm()
   const [scheduleForm] = Form.useForm()
   const [restoreForm] = Form.useForm()
@@ -130,6 +137,7 @@ const Backup: React.FC = () => {
         backup_name: values.backup_name,
         namespaces: values.namespaces ? values.namespaces.split(',').map((s: string) => s.trim()) : [],
         ttl: values.ttl || '720h',
+        storage_location: values.storage_location || '',
       })
       message.success('备份已创建')
       setBackupModalVisible(false)
@@ -205,6 +213,66 @@ const Backup: React.FC = () => {
     }
   }
 
+  const canDeleteBackup = (record: BackupRecordItem) =>
+    record.status !== 'pending' && record.status !== 'in_progress'
+
+  const handleDeleteBackup = (record: BackupRecordItem) => {
+    Modal.confirm({
+      title: '删除备份',
+      content: `确定删除备份「${record.backup_name}」？将同时删除集群中的 Velero Backup 对象及关联恢复记录。`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          await deleteBackupRecord(record.id)
+          message.success('已删除')
+          setSelectedBackupKeys((keys) => keys.filter((k) => k !== record.id))
+          fetchBackups()
+          fetchRestores()
+        } catch (e: any) {
+          message.error(e?.message || '删除失败')
+        }
+      },
+    })
+  }
+
+  const handleBatchDeleteBackups = () => {
+    if (selectedBackupKeys.length === 0) {
+      message.warning('请先选择要删除的备份')
+      return
+    }
+    const selected = backups.filter((b) => selectedBackupKeys.includes(b.id))
+    const deletable = selected.filter(canDeleteBackup)
+    const skipped = selected.length - deletable.length
+    if (deletable.length === 0) {
+      message.warning('选中项均为进行中/等待中，无法删除')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除备份',
+      content: `确定删除选中的 ${deletable.length} 个备份？${skipped > 0 ? `（跳过 ${skipped} 个进行中/等待中）` : ''}将同时删除集群中的 Velero Backup 对象及关联恢复记录。`,
+      okText: '删除',
+      okType: 'danger',
+      onOk: async () => {
+        let success = 0
+        let failed = 0
+        for (const item of deletable) {
+          try {
+            await deleteBackupRecord(item.id)
+            success++
+          } catch {
+            failed++
+          }
+        }
+        if (failed === 0) message.success(`成功删除 ${success} 个备份`)
+        else message.warning(`删除完成：成功 ${success}，失败 ${failed}`)
+        setSelectedBackupKeys([])
+        fetchBackups()
+        fetchRestores()
+      },
+    })
+  }
+
   const backupColumns: ColumnsType<BackupRecordItem> = [
     { title: '备份名称', dataIndex: 'backup_name', key: 'name' },
     {
@@ -215,6 +283,10 @@ const Backup: React.FC = () => {
         </Tag>
       )
     },
+    {
+      title: 'Velero Phase', dataIndex: 'phase', key: 'phase',
+      render: (p) => p ? <Tag>{p}</Tag> : '-',
+    },
     { title: '快照数', dataIndex: 'volume_snapshots', key: 'snapshots' },
     { title: '错误', dataIndex: 'errors', key: 'errors', render: (v) => v > 0 ? <Tag color="error">{v}</Tag> : <Tag>0</Tag> },
     {
@@ -222,16 +294,27 @@ const Backup: React.FC = () => {
       render: (t) => t ? new Date(t).toLocaleString() : '-'
     },
     {
-      title: '操作', key: 'action', width: 100,
+      title: '操作', key: 'action', width: 120,
       render: (_, record) => (
-        <Tooltip title={record.status === 'completed' ? '从此备份恢复' : '仅完成状态可恢复'}>
-          <Button
-            type="link"
-            icon={<RollbackOutlined />}
-            disabled={record.status !== 'completed'}
-            onClick={() => openRestore(record)}
-          />
-        </Tooltip>
+        <Space size={0}>
+          <Tooltip title={record.status === 'completed' ? '从此备份恢复' : '仅完成状态可恢复'}>
+            <Button
+              type="link"
+              icon={<RollbackOutlined />}
+              disabled={record.status !== 'completed'}
+              onClick={() => openRestore(record)}
+            />
+          </Tooltip>
+          <Tooltip title={canDeleteBackup(record) ? '删除' : '进行中/等待中不可删除'}>
+            <Button
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!canDeleteBackup(record)}
+              onClick={() => handleDeleteBackup(record)}
+            />
+          </Tooltip>
+        </Space>
       ),
     },
   ]
@@ -324,6 +407,39 @@ const Backup: React.FC = () => {
       title: '完成时间', dataIndex: 'completed_at', key: 'completed_at',
       render: (t) => t ? new Date(t).toLocaleString() : '-'
     },
+    {
+      title: '操作', key: 'action', width: 80,
+      render: (_, record) => {
+        const canDelete = record.status !== 'pending' && record.status !== 'in_progress'
+        return (
+          <Tooltip title={canDelete ? '删除' : '进行中/等待中不可删除'}>
+            <Button
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!canDelete}
+              onClick={() => {
+                Modal.confirm({
+                  title: '删除恢复记录',
+                  content: `确定删除恢复「${record.restore_name}」？将同时尝试删除集群中的 Velero Restore 对象。`,
+                  okText: '删除',
+                  okType: 'danger',
+                  onOk: async () => {
+                    try {
+                      await deleteRestoreRecord(record.id)
+                      message.success('已删除')
+                      fetchRestores()
+                    } catch (e: any) {
+                      message.error(e?.message || '删除失败')
+                    }
+                  },
+                })
+              }}
+            />
+          </Tooltip>
+        )
+      },
+    },
   ]
 
   return (
@@ -338,6 +454,29 @@ const Backup: React.FC = () => {
           <Button onClick={refreshAll}>刷新</Button>
         </Space>
       </div>
+
+      {veleroTipVisible && (
+        <Alert
+          type="warning"
+          showIcon
+          closable
+          onClose={() => {
+            localStorage.setItem(VELERO_TIP_KEY, '1')
+            setVeleroTipVisible(false)
+          }}
+          style={{ marginBottom: 16 }}
+          message="备份依赖目标集群中的 Velero"
+          description={
+            <span>
+              未安装 Velero CRD 时，创建备份/恢复会被拒绝，不再返回虚假成功。
+              安装 Velero 后将创建真实的 velero.io/v1 Backup/Restore 对象。
+              可使用仓库模板一键安装（开发/单机）：
+              <Text code>deploy/velero/install.sh install</Text>
+              ，说明见 <Text code>deploy/velero/README.md</Text>。
+            </span>
+          }
+        />
+      )}
 
       <ModuleHealthAlert
         module="backup"
@@ -371,12 +510,34 @@ const Backup: React.FC = () => {
             children: (
               <Card
                 extra={
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setBackupModalVisible(true) }}>
-                    创建备份
-                  </Button>
+                  <Space>
+                    {selectedBackupKeys.length > 0 && (
+                      <>
+                        <Text type="secondary">已选 {selectedBackupKeys.length} 项</Text>
+                        <Button danger icon={<DeleteOutlined />} onClick={handleBatchDeleteBackups}>
+                          批量删除
+                        </Button>
+                      </>
+                    )}
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setBackupModalVisible(true) }}>
+                      创建备份
+                    </Button>
+                  </Space>
                 }
               >
-                <Table columns={backupColumns} dataSource={backups} rowKey="id" loading={loading} />
+                <Table
+                  columns={backupColumns}
+                  dataSource={backups}
+                  rowKey="id"
+                  loading={loading}
+                  rowSelection={{
+                    selectedRowKeys: selectedBackupKeys,
+                    onChange: setSelectedBackupKeys,
+                    getCheckboxProps: (record) => ({
+                      disabled: !canDeleteBackup(record),
+                    }),
+                  }}
+                />
               </Card>
             ),
           },
@@ -416,6 +577,9 @@ const Backup: React.FC = () => {
               { label: '30 天', value: '720h' },
               { label: '90 天', value: '2160h' },
             ]} />
+          </Form.Item>
+          <Form.Item name="storage_location" label="存储位置（可选）" extra="对应 Velero BackupStorageLocation 名称，默认 default">
+            <Input placeholder="例如: default" />
           </Form.Item>
         </Form>
       </Modal>

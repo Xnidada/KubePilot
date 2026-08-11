@@ -85,18 +85,18 @@ var ResourceTypes = []string{
 	"aiops_config",
 	"backups",
 	"webhooks",
-	"tenants",
 }
 
 // 预定义的操作类型
 var ActionTypes = []string{
-	"view",    // 查看
-	"create",  // 创建
-	"edit",    // 编辑
-	"delete",  // 删除
-	"execute", // 执行业务操作
-	"exec",    // 打开终端
-	"admin",   // 管理
+	"view",      // 查看元数据
+	"view_data", // 查看敏感数据明文（如 Secret）
+	"create",    // 创建
+	"edit",      // 编辑
+	"delete",    // 删除
+	"execute",   // 执行业务操作
+	"exec",      // 打开终端
+	"admin",     // 管理
 }
 
 // 预定义角色模板
@@ -118,7 +118,7 @@ var RoleTemplates = map[string]PermissionList{
 		{Resource: "ingresses", Actions: []string{"view", "create", "edit", "delete"}},
 		{Resource: "networkpolicies", Actions: []string{"view", "create", "delete"}},
 		{Resource: "configmaps", Actions: []string{"view", "create", "edit", "delete"}},
-		{Resource: "secrets", Actions: []string{"view", "create", "edit", "delete"}},
+		{Resource: "secrets", Actions: []string{"view", "view_data", "create", "edit", "delete"}},
 		{Resource: "pvcs", Actions: []string{"view", "create", "edit", "delete"}},
 		{Resource: "pvs", Actions: []string{"view"}},
 		{Resource: "storageclasses", Actions: []string{"view"}},
@@ -177,6 +177,7 @@ var RoleTemplates = map[string]PermissionList{
 		{Resource: "ingresses", Actions: []string{"view"}},
 		{Resource: "networkpolicies", Actions: []string{"view"}},
 		{Resource: "configmaps", Actions: []string{"view"}},
+		// secrets:view 仅元数据；明文需要 view_data（viewer 不授予）
 		{Resource: "secrets", Actions: []string{"view"}},
 		{Resource: "pvcs", Actions: []string{"view"}},
 		{Resource: "pvs", Actions: []string{"view"}},

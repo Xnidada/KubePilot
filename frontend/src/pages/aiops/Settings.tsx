@@ -172,8 +172,12 @@ const AISettings: React.FC = () => {
 
   const handleTest = async () => {
     const values = form.getFieldsValue()
-    if (!values.provider || !values.api_key || !values.model) {
-      message.warning('请填写 Provider、API Key 和 Model')
+    if (!values.provider || !values.model) {
+      message.warning('请填写 Provider 和 Model')
+      return
+    }
+    if (!editMode && !values.api_key) {
+      message.warning('请填写 API Key')
       return
     }
 
@@ -182,19 +186,24 @@ const AISettings: React.FC = () => {
 
     try {
       const res = await testLLMConfig({
+        id: editMode ? selectedConfig?.id : undefined,
         provider: values.provider,
-        api_key: values.api_key,
+        api_key: values.api_key || undefined,
         base_url: values.base_url,
         model: values.model,
       })
 
       if (res.code === 0) {
-        setTestResult({ success: true, message: '连接成功！' })
+        setTestResult({ success: true, message: res.data?.message || '连接成功！' })
       } else {
-        setTestResult({ success: false, message: '连接失败' })
+        setTestResult({ success: false, message: (res as any).message || '连接失败' })
       }
     } catch (error: any) {
-      setTestResult({ success: false, message: error?.message || '连接失败' })
+      const detail =
+        error?.response?.data?.message ||
+        error?.message ||
+        '连接失败'
+      setTestResult({ success: false, message: detail })
     } finally {
       setTesting(false)
     }

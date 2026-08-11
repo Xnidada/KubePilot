@@ -35,6 +35,7 @@ import TwoFactorAuth from './pages/system/TwoFactorAuth'
 import Backup from './pages/system/Backup'
 import Webhooks from './pages/system/Webhooks'
 import Modules from './pages/system/Modules'
+import SSOSettings from './pages/system/SSO'
 import Profile from './pages/Profile'
 import Inspection from './pages/cluster/Inspection'
 import EventForward from './pages/cluster/EventForward'
@@ -42,12 +43,16 @@ import SchedulerTasks from './pages/scheduler/Tasks'
 import SchedulerQueues from './pages/scheduler/Queues'
 import HPAs from './pages/workload/HPAs'
 import ResourceCompare from './pages/workload/ResourceCompare'
+import BatchOps from './pages/workload/BatchOps'
+import YAMLDiff from './pages/workload/YAMLDiff'
 import NodePressurePage from './pages/ops/NodePressure'
 import EventTimelinePage from './pages/ops/EventTimeline'
 import ResourceGraphPage from './pages/ops/ResourceGraph'
 import IdleResourcesPage from './pages/ops/IdleResources'
+import PodDiagnosisPage from './pages/ops/PodDiagnosis'
 import NetworkPolicies from './pages/workload/NetworkPolicies'
 import ResourceCost from './pages/monitor/ResourceCost'
+import Alerts from './pages/monitor/Alerts'
 import EnvClone from './pages/workload/EnvClone'
 import GPUScheduling from './pages/workload/GPUScheduling'
 import { useAuthStore } from './stores/auth'
@@ -103,6 +108,7 @@ function App() {
         <Route path="system/2fa" element={<TwoFactorAuth />} />
         <Route path="system/backup" element={<Backup />} />
         <Route path="system/webhooks" element={<Webhooks />} />
+        <Route path="system/sso" element={<SSOSettings />} />
         <Route path="system/modules" element={<Modules />} />
         <Route path="profile" element={<Profile />} />
         <Route path="cluster/inspection" element={<Inspection />} />
@@ -111,12 +117,16 @@ function App() {
         <Route path="scheduler/queues" element={<SchedulerQueues />} />
         <Route path="workloads/hpas" element={<HPAs />} />
         <Route path="workloads/compare" element={<ResourceCompare />} />
+        <Route path="workloads/batch" element={<BatchOps />} />
+        <Route path="workloads/yaml-diff" element={<YAMLDiff />} />
         <Route path="monitor/node-pressure" element={<NodePressurePage />} />
         <Route path="ops/events" element={<EventTimelinePage />} />
         <Route path="ops/resource-graph" element={<ResourceGraphPage />} />
         <Route path="ops/idle-resources" element={<IdleResourcesPage />} />
+        <Route path="ops/pod-diagnosis" element={<PodDiagnosisPage />} />
         <Route path="workloads/networkpolicies" element={<NetworkPolicies />} />
         <Route path="monitor/cost" element={<ResourceCost />} />
+        <Route path="monitor/alerts" element={<Alerts />} />
         <Route path="workloads/env-clone" element={<EnvClone />} />
         <Route path="workloads/gpu" element={<GPUScheduling />} />
       </Route>

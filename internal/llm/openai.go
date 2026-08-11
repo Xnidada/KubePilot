@@ -69,12 +69,18 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 		model = "gpt-3.5-turbo"
 	}
 
-	temperature := c.config.Temperature
+	temperature := req.Temperature
+	if temperature == 0 {
+		temperature = c.config.Temperature
+	}
 	if temperature == 0 {
 		temperature = 0.7
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = c.config.MaxTokens
+	}
 	if maxTokens == 0 {
 		maxTokens = 2048
 	}

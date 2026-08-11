@@ -24,7 +24,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o kubepilot ./cmd/server/
 # 运行阶段
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates tzdata
+ARG KUBECTL_VERSION=1.29.14
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates tzdata curl \
+    && curl -fsSL -o /usr/local/bin/kubectl \
+       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client
 
 WORKDIR /app
 

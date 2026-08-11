@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -375,8 +376,17 @@ func formatPodDescribe(pod *corev1.Pod) string {
 		if cs.State.Waiting != nil {
 			sb.WriteString(fmt.Sprintf("    Waiting: %s - %s\n", cs.State.Waiting.Reason, cs.State.Waiting.Message))
 		}
+		if cs.State.Running != nil {
+			sb.WriteString(fmt.Sprintf("    Running: started at %s\n", cs.State.Running.StartedAt.Time.Format(time.RFC3339)))
+		}
 		if cs.State.Terminated != nil {
-			sb.WriteString(fmt.Sprintf("    Terminated: %s (exit code %d)\n", cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+			sb.WriteString(fmt.Sprintf("    Terminated: %s (exit code %d) - %s\n",
+				cs.State.Terminated.Reason, cs.State.Terminated.ExitCode, cs.State.Terminated.Message))
+		}
+		if cs.LastTerminationState.Terminated != nil {
+			lt := cs.LastTerminationState.Terminated
+			sb.WriteString(fmt.Sprintf("    Last Termination: %s (exit code %d) - %s\n",
+				lt.Reason, lt.ExitCode, lt.Message))
 		}
 	}
 
@@ -637,9 +647,43 @@ func (s *Service) parseDiagnosisResponse(content string) *DiagnosisResponse {
 	return diagnosis
 }
 
-// saveChatHistory 保存对话历史
+// saveChatHistory 保存对话历史到 chat_conversations / chat_messages
 func (s *Service) saveChatHistory(userID uint, userMsg, assistantMsg string) {
-	// TODO: 保存到 chat_messages 表
+	if s.db == nil || userID == 0 {
+		return
+	}
+	title := strings.TrimSpace(userMsg)
+	if title == "" {
+		title = "新对话"
+	}
+	runes := []rune(title)
+	if len(runes) > 40 {
+		title = string(runes[:40]) + "..."
+	}
+
+	var conv model.ChatConversation
+	// Reuse the latest non-archived conversation updated within 2 hours, else create.
+	cutoff := time.Now().Add(-2 * time.Hour)
+	err := s.db.Where("user_id = ? AND is_archived = ? AND updated_at >= ?", userID, false, cutoff).
+		Order("updated_at DESC").First(&conv).Error
+	if err != nil {
+		conv = model.ChatConversation{
+			UserID: userID,
+			Title:  title,
+		}
+		if err := s.db.Create(&conv).Error; err != nil {
+			return
+		}
+	}
+
+	msgs := []model.ChatMessage{
+		{ConversationID: conv.ID, Role: "user", Content: userMsg},
+		{ConversationID: conv.ID, Role: "assistant", Content: assistantMsg},
+	}
+	if err := s.db.Create(&msgs).Error; err != nil {
+		return
+	}
+	_ = s.db.Model(&conv).Update("updated_at", time.Now()).Error
 }
 
 // ==================== AI 驱动功能 ====================
@@ -1331,10 +1375,13 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 	// 获取集群上下文
 	clusterContext, _ := s.getClusterContext(clusterID)
 
-	// 获取对话历史
-	historyMessages := s.getConversationHistory(conversationID, 20)
+	// 获取对话历史（截断过长内容，避免上下文膨胀）
+	historyMessages := s.getConversationHistory(conversationID, 10)
+	for i := range historyMessages {
+		historyMessages[i].Content = truncateAgentText(historyMessages[i].Content, 2000)
+	}
 
-	// 尝试直接查询真实数据（如果用户在查询资源）
+	// 查询真实数据作为 LLM 上下文（回答仍由 LLM 生成）
 	realData := s.queryRealData(ctx, clusterID, message)
 
 	// 构建Agent系统提示
@@ -1345,6 +1392,9 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 1. **必须使用真实数据** - 系统会提供集群的真实数据，你必须基于这些数据回答，绝对不能编造
 2. **删除前必须查询** - 执行删除操作前，必须先确认资源的真实名称
 3. **使用准确的资源名称** - 从系统提供的数据中获取资源名称，不要猜测
+4. **按用户范围回答** - 若用户指定了命名空间，只回答该命名空间的资源，不要罗列其他命名空间
+5. **故障诊断必须基于事件/日志/配置** - 当系统提供了 Pod describe、Events、Logs、ConfigMap/Secret 时，必须据此给出具体原因；禁止说“无法查看日志/事件/配置”，禁止只给通用排查清单而不下结论
+6. **Secret 已脱敏** - Secret 值以脱敏形式提供，可依据 key 是否存在、长度、配置结构判断问题，不要要求用户粘贴明文密钥
 
 ## 操作格式
 
@@ -1424,8 +1474,13 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 
 	messages = append(messages, llm.Message{Role: "user", Content: message})
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{
-		Messages: messages,
+	// Agent 回复限制输出长度，降低慢模型长时间占线导致前端一直“思考中”
+	chatCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
+		Messages:  messages,
+		MaxTokens: 2048,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM chat failed: %w", err)
@@ -1440,31 +1495,518 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 	}, nil
 }
 
-// queryRealData 根据用户查询获取真实数据
+const agentResourceListLimit = 40
+
+var (
+	nsKeywordPattern = regexp.MustCompile(`(?i)(?:命名空间|namespace|ns)[:：\s/-]*([a-z0-9]([-a-z0-9]*[a-z0-9])?)`)
+	nsUnderPattern   = regexp.MustCompile(`(?i)([a-z0-9]([-a-z0-9]*[a-z0-9])?)\s*(?:命名空间)?\s*(?:下|里|中的|内的)`)
+	podNamePattern   = regexp.MustCompile(`(?i)\b([a-z0-9]([-a-z0-9]*[a-z0-9])?-[a-z0-9]{4,10}(-[a-z0-9]{5})?)\b`)
+)
+
+func truncateAgentText(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n...(已截断)"
+}
+
+func isDiagnoseIntent(message string) bool {
+	lower := strings.ToLower(message)
+	keywords := []string{
+		"为什么", "为啥", "原因", "报错", "错误", "失败", "异常", "崩溃",
+		"重启", "restart", "crash", "oom", "pending", "imagepull",
+		"日志", "log", "event", "事件", "describe", "排查", "诊断", "分析",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) || strings.Contains(message, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractNamespaceFromMessage(message string, known []string) string {
+	lower := strings.ToLower(message)
+
+	// 显式写法优先：命名空间 xxx / namespace:xxx / ns/xxx
+	if m := nsKeywordPattern.FindStringSubmatch(message); len(m) > 1 {
+		return m[1]
+	}
+	if m := nsUnderPattern.FindStringSubmatch(message); len(m) > 1 {
+		cand := m[1]
+		for _, ns := range known {
+			if strings.EqualFold(ns, cand) {
+				return ns
+			}
+		}
+		return cand
+	}
+
+	// 仅当消息中出现独立命名空间词时才匹配（避免把 pod 名前缀误认为 ns）
+	best := ""
+	for _, ns := range known {
+		if ns == "" {
+			continue
+		}
+		re := regexp.MustCompile(`(?i)(?:^|[^a-z0-9-])` + regexp.QuoteMeta(ns) + `(?:[^a-z0-9-]|$)`)
+		if re.MatchString(lower) && len(ns) > len(best) {
+			best = ns
+		}
+	}
+	return best
+}
+
+func extractPodNameFromMessage(message string, knownPods []string) string {
+	lower := strings.ToLower(message)
+	best := ""
+	for _, name := range knownPods {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(name)) && len(name) > len(best) {
+			best = name
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if m := podNamePattern.FindStringSubmatch(message); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+func (s *Service) findPodByName(ctx context.Context, clusterID uint, namespace, podName string) (*corev1.Pod, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err == nil {
+			return pod, nil
+		}
+	}
+	pods, err := client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var exact *corev1.Pod
+	var partials []corev1.Pod
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Name == podName {
+			exact = p
+			break
+		}
+		if strings.Contains(p.Name, podName) || strings.Contains(podName, p.Name) {
+			partials = append(partials, *p)
+		}
+	}
+	if exact != nil {
+		return exact, nil
+	}
+	if len(partials) == 1 {
+		return &partials[0], nil
+	}
+	if namespace != "" {
+		return nil, fmt.Errorf("pods %q not found in namespace %q", podName, namespace)
+	}
+	return nil, fmt.Errorf("pods %q not found", podName)
+}
+
+func redactSecretValue(raw string) string {
+	n := len(raw)
+	if n == 0 {
+		return "<empty>"
+	}
+	if n <= 8 {
+		return fmt.Sprintf("<redacted len=%d>", n)
+	}
+	return fmt.Sprintf("%s...%s <redacted len=%d>", raw[:4], raw[n-4:], n)
+}
+
+func isSensitiveConfigKey(key string) bool {
+	k := strings.ToLower(key)
+	needles := []string{
+		"token", "password", "passwd", "secret", "apikey", "api_key", "access_key",
+		"private", "credential", "auth", "bearer", "cert", "key.pem",
+	}
+	for _, n := range needles {
+		if strings.Contains(k, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactConfigMapValue(key, value string) string {
+	lowerVal := strings.ToLower(value)
+	sensitiveInline := strings.Contains(lowerVal, "token") ||
+		strings.Contains(lowerVal, "password") ||
+		strings.Contains(lowerVal, "glrt-") ||
+		strings.Contains(lowerVal, "glpat-") ||
+		strings.Contains(lowerVal, "begin private key")
+	if isSensitiveConfigKey(key) || sensitiveInline {
+		// 对多行配置（如 config.toml）做逐行脱敏，保留结构便于分析
+		if strings.Contains(value, "\n") {
+			lines := strings.Split(value, "\n")
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				lowerLine := strings.ToLower(trimmed)
+				if strings.Contains(lowerLine, "token") ||
+					strings.Contains(lowerLine, "password") ||
+					strings.Contains(lowerLine, "secret") ||
+					strings.Contains(lowerLine, "glrt-") ||
+					strings.Contains(lowerLine, "glpat-") {
+					if idx := strings.Index(line, "="); idx >= 0 {
+						left := line[:idx+1]
+						right := strings.TrimSpace(line[idx+1:])
+						right = strings.Trim(right, `"'`)
+						lines[i] = left + " " + redactSecretValue(right)
+					} else {
+						lines[i] = redactSecretValue(line)
+					}
+				}
+			}
+			return strings.Join(lines, "\n")
+		}
+		return redactSecretValue(value)
+	}
+	return value
+}
+
+func collectPodConfigRefs(pod *corev1.Pod) (configMaps, secrets map[string]struct{}) {
+	configMaps = map[string]struct{}{}
+	secrets = map[string]struct{}{}
+
+	addCM := func(name string) {
+		if name != "" {
+			configMaps[name] = struct{}{}
+		}
+	}
+	addSec := func(name string) {
+		if name != "" {
+			secrets[name] = struct{}{}
+		}
+	}
+
+	for _, v := range pod.Spec.Volumes {
+		if v.ConfigMap != nil {
+			addCM(v.ConfigMap.Name)
+		}
+		if v.Secret != nil {
+			addSec(v.Secret.SecretName)
+		}
+		if v.Projected != nil {
+			for _, src := range v.Projected.Sources {
+				if src.ConfigMap != nil {
+					addCM(src.ConfigMap.Name)
+				}
+				if src.Secret != nil {
+					addSec(src.Secret.Name)
+				}
+			}
+		}
+	}
+
+	containers := append([]corev1.Container{}, pod.Spec.InitContainers...)
+	containers = append(containers, pod.Spec.Containers...)
+	for _, c := range containers {
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				continue
+			}
+			if e.ValueFrom.ConfigMapKeyRef != nil {
+				addCM(e.ValueFrom.ConfigMapKeyRef.Name)
+			}
+			if e.ValueFrom.SecretKeyRef != nil {
+				addSec(e.ValueFrom.SecretKeyRef.Name)
+			}
+		}
+		for _, ef := range c.EnvFrom {
+			if ef.ConfigMapRef != nil {
+				addCM(ef.ConfigMapRef.Name)
+			}
+			if ef.SecretRef != nil {
+				addSec(ef.SecretRef.Name)
+			}
+		}
+	}
+	return configMaps, secrets
+}
+
+func (s *Service) appendPodRelatedConfigs(ctx context.Context, clusterID uint, pod *corev1.Pod, sb *strings.Builder) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return
+	}
+
+	cmNames, secNames := collectPodConfigRefs(pod)
+
+	// Owner / 控制器信息，便于关联 Deployment 配置
+	sb.WriteString("### OwnerReferences\n")
+	if len(pod.OwnerReferences) == 0 {
+		sb.WriteString("无\n\n")
+	} else {
+		for _, o := range pod.OwnerReferences {
+			sb.WriteString(fmt.Sprintf("- %s/%s (controller=%v)\n", o.Kind, o.Name, o.Controller != nil && *o.Controller))
+		}
+		sb.WriteString("\n")
+		for _, o := range pod.OwnerReferences {
+			if o.Kind != "ReplicaSet" {
+				continue
+			}
+			rs, err := client.Clientset.AppsV1().ReplicaSets(pod.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("获取 ReplicaSet %s 失败: %v\n\n", o.Name, err))
+				continue
+			}
+			for _, ro := range rs.OwnerReferences {
+				if ro.Kind != "Deployment" {
+					continue
+				}
+				dep, err := client.Clientset.AppsV1().Deployments(pod.Namespace).Get(ctx, ro.Name, metav1.GetOptions{})
+				if err != nil {
+					sb.WriteString(fmt.Sprintf("获取 Deployment %s 失败: %v\n\n", ro.Name, err))
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("### 关联 Deployment: %s\n", dep.Name))
+				sb.WriteString(formatDeploymentDescribe(dep))
+				sb.WriteString("\n")
+				// Deployment 模板也可能引用额外 CM/Secret
+				tmpPod := &corev1.Pod{Spec: dep.Spec.Template.Spec}
+				tmpPod.Namespace = pod.Namespace
+				extraCM, extraSec := collectPodConfigRefs(tmpPod)
+				for name := range extraCM {
+					cmNames[name] = struct{}{}
+				}
+				for name := range extraSec {
+					secNames[name] = struct{}{}
+				}
+			}
+		}
+	}
+
+	sb.WriteString("### 容器环境变量(明文 Value)\n")
+	for _, c := range pod.Spec.Containers {
+		sb.WriteString(fmt.Sprintf("- container=%s\n", c.Name))
+		if len(c.Env) == 0 && len(c.EnvFrom) == 0 {
+			sb.WriteString("  (无)\n")
+			continue
+		}
+		for _, e := range c.Env {
+			if e.ValueFrom != nil {
+				src := "valueFrom"
+				if e.ValueFrom.ConfigMapKeyRef != nil {
+					src = fmt.Sprintf("configMap:%s/%s", e.ValueFrom.ConfigMapKeyRef.Name, e.ValueFrom.ConfigMapKeyRef.Key)
+				} else if e.ValueFrom.SecretKeyRef != nil {
+					src = fmt.Sprintf("secret:%s/%s", e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Key)
+				} else if e.ValueFrom.FieldRef != nil {
+					src = fmt.Sprintf("fieldRef:%s", e.ValueFrom.FieldRef.FieldPath)
+				}
+				sb.WriteString(fmt.Sprintf("  %s <= %s\n", e.Name, src))
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("  %s=%s\n", e.Name, truncateAgentText(e.Value, 200)))
+		}
+		for _, ef := range c.EnvFrom {
+			if ef.ConfigMapRef != nil {
+				sb.WriteString(fmt.Sprintf("  envFrom configMap=%s\n", ef.ConfigMapRef.Name))
+			}
+			if ef.SecretRef != nil {
+				sb.WriteString(fmt.Sprintf("  envFrom secret=%s\n", ef.SecretRef.Name))
+			}
+		}
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("### 关联 ConfigMap\n")
+	if len(cmNames) == 0 {
+		sb.WriteString("无\n\n")
+	} else {
+		for name := range cmNames {
+			cm, err := client.Clientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("- %s: 获取失败: %v\n", name, err))
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- ConfigMap/%s (keys=%d)\n", cm.Name, len(cm.Data)+len(cm.BinaryData)))
+			for k, v := range cm.Data {
+				safe := redactConfigMapValue(k, v)
+				sb.WriteString(fmt.Sprintf("  [%s]\n```\n%s\n```\n", k, truncateAgentText(safe, 2500)))
+			}
+			for k, v := range cm.BinaryData {
+				sb.WriteString(fmt.Sprintf("  [%s] <binary len=%d>\n", k, len(v)))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("### 关联 Secret（已脱敏）\n")
+	if len(secNames) == 0 {
+		sb.WriteString("无\n\n")
+	} else {
+		for name := range secNames {
+			sec, err := client.Clientset.CoreV1().Secrets(pod.Namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("- %s: 获取失败: %v\n", name, err))
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- Secret/%s type=%s keys=%d\n", sec.Name, sec.Type, len(sec.Data)))
+			for k, v := range sec.Data {
+				sb.WriteString(fmt.Sprintf("  %s=%s\n", k, redactSecretValue(string(v))))
+			}
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func (s *Service) collectPodDiagnostics(ctx context.Context, clusterID uint, namespace, podName string) string {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	pod, err := s.findPodByName(ctx, clusterID, namespace, podName)
+	if err != nil || pod == nil {
+		return fmt.Sprintf("无法获取 Pod %s（namespace=%s）: %v\n", podName, namespace, err)
+	}
+
+	sb.WriteString(fmt.Sprintf("## Pod 诊断数据: %s/%s\n\n", pod.Namespace, pod.Name))
+	sb.WriteString("### Describe\n")
+	sb.WriteString(formatPodDescribe(pod))
+	sb.WriteString("\n")
+
+	events, evErr := client.Clientset.CoreV1().Events(pod.Namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", pod.Name),
+	})
+	sb.WriteString("### Events\n")
+	if evErr != nil {
+		sb.WriteString(fmt.Sprintf("获取事件失败: %v\n", evErr))
+	} else if len(events.Items) == 0 {
+		sb.WriteString("无相关事件\n")
+	} else {
+		items := events.Items
+		if len(items) > 15 {
+			items = items[len(items)-15:]
+		}
+		for i := len(items) - 1; i >= 0; i-- {
+			e := items[i]
+			sb.WriteString(fmt.Sprintf("- [%s] %s count=%d: %s\n", e.Type, e.Reason, e.Count, e.Message))
+		}
+	}
+	sb.WriteString("\n")
+
+	appendLogs := func(title string, previous bool) {
+		opts := &corev1.PodLogOptions{Previous: previous}
+		tail := int64(80)
+		opts.TailLines = &tail
+		req := client.Clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, opts)
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("### %s\n获取失败: %v\n\n", title, err))
+			return
+		}
+		defer stream.Close()
+		data, err := io.ReadAll(stream)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("### %s\n读取失败: %v\n\n", title, err))
+			return
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			content = "(空)"
+		}
+		sb.WriteString(fmt.Sprintf("### %s\n```\n%s\n```\n\n", title, truncateAgentText(content, 4000)))
+	}
+	appendLogs("当前日志", false)
+	appendLogs("上一次崩溃日志(--previous)", true)
+
+	s.appendPodRelatedConfigs(ctx, clusterID, pod, &sb)
+
+	return truncateAgentText(sb.String(), 20000)
+}
+
+// queryRealData 根据用户查询获取真实数据（按意图/命名空间拉取，作为 LLM 上下文）
 func (s *Service) queryRealData(ctx context.Context, clusterID uint, message string) string {
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
 		return ""
 	}
 
-	message = strings.ToLower(message)
+	lower := strings.ToLower(message)
 	result := ""
 
-	// 判断是否需要查询（删除、查看、查询、列出等操作都需要真实数据）
-	needQuery := strings.Contains(message, "删除") || strings.Contains(message, "delete") ||
-		strings.Contains(message, "查看") || strings.Contains(message, "查询") ||
-		strings.Contains(message, "列出") || strings.Contains(message, "list") ||
+	knownNS := []string{}
+	if nsList, err := client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{}); err == nil {
+		for _, ns := range nsList.Items {
+			knownNS = append(knownNS, ns.Name)
+		}
+	}
+	targetNS := extractNamespaceFromMessage(message, knownNS)
+
+	// 诊断意图：自动拉取目标 Pod 的 describe / events / logs
+	diagnose := isDiagnoseIntent(message)
+	knownPods := []string{}
+	podNSByName := map[string]string{}
+	if diagnose || strings.Contains(lower, "pod") {
+		pods, err := client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, p := range pods.Items {
+				knownPods = append(knownPods, p.Name)
+				podNSByName[p.Name] = p.Namespace
+			}
+		}
+	}
+	podName := extractPodNameFromMessage(message, knownPods)
+	if diagnose && podName != "" {
+		ns := targetNS
+		if ns == "" {
+			ns = podNSByName[podName]
+		}
+		result += s.collectPodDiagnostics(ctx, clusterID, ns, podName)
+		// 已拿到诊断上下文时，不必再塞全量列表，避免冲淡关键证据
+		return truncateAgentText(result, 22000)
+	}
+
+	wantSvc := strings.Contains(lower, "svc") || strings.Contains(lower, "service") || strings.Contains(message, "服务")
+	wantDeploy := strings.Contains(lower, "deploy") || strings.Contains(lower, "deployment") ||
+		strings.Contains(message, "部署") || strings.Contains(lower, "nginx")
+	wantPod := strings.Contains(lower, "pod") || strings.Contains(message, "容器") || strings.Contains(message, "副本")
+	isDelete := strings.Contains(message, "删除") || strings.Contains(lower, "delete")
+	isList := strings.Contains(message, "查看") || strings.Contains(message, "查询") ||
+		strings.Contains(message, "列出") || strings.Contains(lower, "list") ||
 		strings.Contains(message, "所有") || strings.Contains(message, "全部")
 
-	// 查询 Services（如果用户提到 svc、service、服务 或需要删除操作）
-	if strings.Contains(message, "svc") || strings.Contains(message, "service") ||
-		strings.Contains(message, "服务") || needQuery {
-		services, err := client.Clientset.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	// 未点名资源类型时：删除操作才同时拉三类；普通查看只拉最相关的一类，默认 Pod
+	if !wantSvc && !wantDeploy && !wantPod {
+		if isDelete {
+			wantSvc, wantDeploy, wantPod = true, true, true
+		} else if isList {
+			wantPod = true
+		}
+	}
+
+	listNS := ""
+	if targetNS != "" {
+		listNS = targetNS
+		result += fmt.Sprintf("查询范围命名空间: %s\n\n", targetNS)
+	}
+
+	if wantSvc {
+		services, err := client.Clientset.CoreV1().Services(listNS).List(ctx, metav1.ListOptions{})
 		if err == nil {
-			result += "Service 列表:\n"
+			items := services.Items
+			total := len(items)
+			if total > agentResourceListLimit {
+				items = items[:agentResourceListLimit]
+			}
+			result += fmt.Sprintf("Service 列表（共 %d 条，展示前 %d）:\n", total, len(items))
 			result += "命名空间 | 名称 | 类型 | ClusterIP | 端口\n"
 			result += "--- | --- | --- | --- | ---\n"
-			for _, svc := range services.Items {
+			for _, svc := range items {
 				ports := ""
 				for i, p := range svc.Spec.Ports {
 					if i > 0 {
@@ -1482,15 +2024,18 @@ func (s *Service) queryRealData(ctx context.Context, clusterID uint, message str
 		}
 	}
 
-	// 查询 Deployments（如果用户提到 deploy、deployment、部署 或需要删除操作）
-	if strings.Contains(message, "deploy") || strings.Contains(message, "deployment") ||
-		strings.Contains(message, "部署") || strings.Contains(message, "nginx") || needQuery {
-		deployments, err := client.Clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+	if wantDeploy {
+		deployments, err := client.Clientset.AppsV1().Deployments(listNS).List(ctx, metav1.ListOptions{})
 		if err == nil {
-			result += "Deployment 列表:\n"
+			items := deployments.Items
+			total := len(items)
+			if total > agentResourceListLimit {
+				items = items[:agentResourceListLimit]
+			}
+			result += fmt.Sprintf("Deployment 列表（共 %d 条，展示前 %d）:\n", total, len(items))
 			result += "命名空间 | 名称 | 副本 | 就绪 | 镜像\n"
 			result += "--- | --- | --- | --- | ---\n"
-			for _, d := range deployments.Items {
+			for _, d := range items {
 				images := ""
 				for i, c := range d.Spec.Template.Spec.Containers {
 					if i > 0 {
@@ -1509,14 +2054,18 @@ func (s *Service) queryRealData(ctx context.Context, clusterID uint, message str
 		}
 	}
 
-	// 查询 Pods（如果用户提到 pod、容器 或需要删除操作）
-	if strings.Contains(message, "pod") || strings.Contains(message, "容器") || needQuery {
-		pods, err := client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if wantPod {
+		pods, err := client.Clientset.CoreV1().Pods(listNS).List(ctx, metav1.ListOptions{})
 		if err == nil {
-			result += "Pod 列表:\n"
+			items := pods.Items
+			total := len(items)
+			if total > agentResourceListLimit {
+				items = items[:agentResourceListLimit]
+			}
+			result += fmt.Sprintf("Pod 列表（共 %d 条，展示前 %d）:\n", total, len(items))
 			result += "命名空间 | 名称 | 状态 | 重启次数 | 节点\n"
 			result += "--- | --- | --- | --- | ---\n"
-			for _, pod := range pods.Items {
+			for _, pod := range items {
 				restarts := int32(0)
 				for _, cs := range pod.Status.ContainerStatuses {
 					restarts += cs.RestartCount
@@ -1527,7 +2076,7 @@ func (s *Service) queryRealData(ctx context.Context, clusterID uint, message str
 		}
 	}
 
-	return result
+	return truncateAgentText(result, 12000)
 }
 
 // getConversationHistory 获取对话历史
@@ -1702,14 +2251,12 @@ func (s *Service) executeQueryAction(ctx context.Context, client *k8s.ClusterCli
 	}
 }
 
-// executeCreateAction 执行创建动作
+// executeCreateAction 执行创建动作（未实现，拒绝假成功）
 func (s *Service) executeCreateAction(ctx context.Context, client *k8s.ClusterClient, action *model.AgentAction) (string, error) {
-	// TODO: 实现创建逻辑
-	return "Create action executed", nil
+	return "", fmt.Errorf("create action is not implemented; use staged confirm flow for mutating operations")
 }
 
-// executeDeleteAction 执行删除动作
+// executeDeleteAction 执行删除动作（未实现，拒绝假成功）
 func (s *Service) executeDeleteAction(ctx context.Context, client *k8s.ClusterClient, action *model.AgentAction) (string, error) {
-	// TODO: 实现删除逻辑
-	return "Delete action executed", nil
+	return "", fmt.Errorf("delete action is not implemented; use staged confirm flow for mutating operations")
 }

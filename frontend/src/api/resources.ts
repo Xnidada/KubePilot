@@ -53,8 +53,9 @@ export const getSecrets = (clusterId: number, namespace?: string) => {
   return get<{ code: number; data: Secret[] }>(`/clusters/${clusterId}/workloads/secrets`, { params })
 }
 
-export const getSecret = (clusterId: number, namespace: string, name: string) => {
-  return get<{ code: number; data: any }>(`/clusters/${clusterId}/workloads/secrets/${namespace}/${name}`)
+export const getSecret = (clusterId: number, namespace: string, name: string, reveal = false) => {
+  const params = reveal ? { reveal: 'true' } : {}
+  return get<{ code: number; data: any }>(`/clusters/${clusterId}/workloads/secrets/${namespace}/${name}`, { params })
 }
 
 export const createSecret = (clusterId: number, data: {

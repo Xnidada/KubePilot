@@ -9,6 +9,9 @@ import {
   message,
   Select,
   Tooltip,
+  Modal,
+  Popconfirm,
+  Checkbox,
 } from 'antd'
 import {
   SendOutlined,
@@ -20,9 +23,11 @@ import {
   ToolOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  ClearOutlined,
+  CheckSquareOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { executeK8SOperation, ExecuteRequest } from '../../api/agent'
+import { stageK8SOperation, confirmK8SOperation, ExecuteRequest } from '../../api/agent'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -48,19 +53,29 @@ const AIAgent: React.FC = () => {
     conversations,
     activeConversation,
     activeId,
+    deletingId,
+    batchDeleting,
+    messageBatchDeleting,
     createConversation,
     selectConversation,
     addMessage,
     deleteMessagePair,
+    deleteMessages,
+    clearConversation,
     deleteConversation,
+    deleteConversations,
     renameConversation,
   } = useConversations()
 
   const [inputValue, setInputValue] = useState('')
   const [loading, setLoading] = useState(false)
+  const [thinkingSeconds, setThinkingSeconds] = useState(0)
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [hoveredMsgId, setHoveredMsgId] = useState<number | null>(null)
+  const [msgSelectMode, setMsgSelectMode] = useState(false)
+  const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -71,6 +86,24 @@ const AIAgent: React.FC = () => {
   useEffect(() => {
     scrollToBottom()
   }, [activeConversation?.messages])
+
+  // 切换会话时退出消息多选
+  useEffect(() => {
+    setMsgSelectMode(false)
+    setSelectedMsgIds([])
+  }, [activeId])
+
+  useEffect(() => {
+    if (!loading) {
+      setThinkingSeconds(0)
+      return
+    }
+    setThinkingSeconds(0)
+    const timer = window.setInterval(() => {
+      setThinkingSeconds(prev => prev + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [loading])
 
   const fetchClusters = async () => {
     try {
@@ -100,6 +133,10 @@ const AIAgent: React.FC = () => {
   const handleSend = async (content?: string) => {
     const sendContent = content || inputValue.trim()
     if (!sendContent || loading) return
+    if (!selectedCluster) {
+      message.warning('请先选择集群')
+      return
+    }
 
     let currentId = activeId
     if (!currentId) {
@@ -135,19 +172,29 @@ const AIAgent: React.FC = () => {
         signal: abortController.signal,
       })
 
-      const res = await response.json()
-      if (res.code === 0) {
-        await addMessage(currentId, 'assistant', res.data.content)
-      } else {
-        await addMessage(currentId, 'assistant', '❌ 请求失败: ' + (res.message || '未知错误'))
+      const raw = await response.text()
+      let res: any = null
+      try {
+        res = raw ? JSON.parse(raw) : null
+      } catch {
+        throw new Error(raw || `服务返回非 JSON（HTTP ${response.status}）`)
       }
+
+      if (!response.ok || !res || res.code !== 0) {
+        const errMsg = res?.message || `HTTP ${response.status}` || '未知错误'
+        await addMessage(currentId, 'assistant', '❌ 请求失败: ' + errMsg)
+        message.error(errMsg)
+        return
+      }
+      await addMessage(currentId, 'assistant', res.data?.content || '')
     } catch (error: any) {
       if (error.name === 'AbortError') {
         console.log('Request aborted')
       } else {
         console.error('Chat error:', error)
-        message.error('AI 服务不可用')
-        await addMessage(currentId!, 'assistant', '❌ AI 服务不可用，请在 **AI 设置** 中配置 LLM。')
+        const detail = error?.message || '网络异常或服务超时'
+        message.error(detail)
+        await addMessage(currentId!, 'assistant', `❌ AI 请求失败：${detail}\n\n可检查 **AI 设置** 中的 LLM 配置，或缩短问题后重试。`)
       }
     } finally {
       setLoading(false)
@@ -186,13 +233,14 @@ const AIAgent: React.FC = () => {
       return
     }
 
-    // 执行所有操作
     setLoading(true)
-    await addMessage(activeId, 'user', '确认执行')
+    await addMessage(activeId, 'user', '请求 dry-run 预览')
 
-    const results: string[] = []
+    const staged: { id: number; dryRun: string; label: string }[] = []
+    const stageErrors: string[] = []
 
     for (const action of actions) {
+      const label = `${action.action} ${action.name || action.resource_name || ''}`
       try {
         const request: ExecuteRequest = {
           cluster_id: selectedCluster,
@@ -207,22 +255,58 @@ const AIAgent: React.FC = () => {
           target_port: action.target_port || action.container_port || 80,
           node_port: action.node_port || action.nodePort,
           selector: action.selector || (action.name ? { app: action.name } : {}),
+          conversation_id: activeId || undefined,
         }
-
-        const res = await executeK8SOperation(request)
-        if (res.code === 0 && res.data) {
-          const details = res.data.details ? '\n' + res.data.details.map(d => `  - ${d}`).join('\n') : ''
-          results.push(`✅ ${res.data.message}${details}`)
+        const res = await stageK8SOperation(request)
+        if (res.code === 0 && res.data?.action_id) {
+          staged.push({ id: res.data.action_id, dryRun: res.data.dry_run, label })
         } else {
-          results.push(`❌ ${action.action} ${action.name}: 执行失败`)
+          stageErrors.push(`❌ ${label}: 暂存失败`)
         }
       } catch (error: any) {
-        results.push(`❌ ${action.action} ${action.name}: ${error.message || '执行失败'}`)
+        stageErrors.push(`❌ ${label}: ${error?.response?.data?.message || error.message || 'dry-run 失败'}`)
       }
     }
 
-    await addMessage(activeId, 'assistant', results.join('\n\n'))
+    const preview = [
+      ...staged.map((s) => `🔎 ${s.dryRun}`),
+      ...stageErrors,
+    ].join('\n')
+    await addMessage(activeId, 'assistant', preview || '没有可执行的操作')
     setLoading(false)
+
+    if (staged.length === 0) return
+
+    Modal.confirm({
+      title: '确认执行写操作？',
+      width: 640,
+      content: (
+        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto' }}>
+          {staged.map((s) => s.dryRun).join('\n')}
+        </pre>
+      ),
+      okText: '确认执行',
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true)
+        await addMessage(activeId, 'user', '确认执行')
+        const results: string[] = []
+        for (const item of staged) {
+          try {
+            const res = await confirmK8SOperation(item.id)
+            if (res.code === 0 && res.data?.success) {
+              results.push(`✅ ${res.data.message}`)
+            } else {
+              results.push(`❌ ${item.label}: 执行失败`)
+            }
+          } catch (error: any) {
+            results.push(`❌ ${item.label}: ${error?.response?.data?.message || error.message || '执行失败'}`)
+          }
+        }
+        await addMessage(activeId, 'assistant', results.join('\n\n'))
+        setLoading(false)
+      },
+    })
   }
 
   const handleCancel = async () => {
@@ -245,6 +329,8 @@ const AIAgent: React.FC = () => {
     const isUser = msg.role === 'user'
     const isEmpty = !msg.content && !isUser
     const needsConfirm = !isUser && hasConfirmationPrompt(msg.content)
+    const showDelete = !msgSelectMode && hoveredMsgId === msg.id
+    const checked = selectedMsgIds.includes(msg.id)
 
     return (
       <div
@@ -252,18 +338,44 @@ const AIAgent: React.FC = () => {
         style={{
           display: 'flex',
           justifyContent: isUser ? 'flex-end' : 'flex-start',
+          alignItems: 'flex-start',
           marginBottom: 24,
           padding: '0 16px',
           position: 'relative',
+          gap: 8,
+          background: msgSelectMode && checked ? 'rgba(255,77,79,0.06)' : 'transparent',
+          borderRadius: 8,
+          cursor: msgSelectMode ? 'pointer' : undefined,
+        }}
+        onMouseEnter={() => setHoveredMsgId(msg.id)}
+        onMouseLeave={() => setHoveredMsgId(null)}
+        onClick={() => {
+          if (!msgSelectMode || messageBatchDeleting) return
+          setSelectedMsgIds(prev =>
+            prev.includes(msg.id) ? prev.filter(id => id !== msg.id) : [...prev, msg.id]
+          )
         }}
       >
+        {msgSelectMode && (
+          <Checkbox
+            checked={checked}
+            disabled={messageBatchDeleting}
+            onClick={(e) => e.stopPropagation()}
+            onChange={() => {
+              setSelectedMsgIds(prev =>
+                prev.includes(msg.id) ? prev.filter(id => id !== msg.id) : [...prev, msg.id]
+              )
+            }}
+            style={{ marginTop: 14, flexShrink: 0 }}
+          />
+        )}
         {!isUser && (
           <Avatar
             icon={<ThunderboltOutlined />}
-            style={{ backgroundColor: '#722ed1', marginRight: 12, flexShrink: 0 }}
+            style={{ backgroundColor: '#722ed1', marginRight: msgSelectMode ? 0 : 12, flexShrink: 0 }}
           />
         )}
-        <div style={{ maxWidth: '75%', position: 'relative' }}>
+        <div style={{ maxWidth: msgSelectMode ? '70%' : '75%', position: 'relative' }}>
           <div
             style={{
               padding: '12px 16px',
@@ -271,6 +383,7 @@ const AIAgent: React.FC = () => {
               backgroundColor: isUser ? '#722ed1' : '#f0f2f5',
               color: isUser ? '#fff' : '#333',
               boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+              outline: msgSelectMode && checked ? '2px solid #ff4d4f' : undefined,
             }}
           >
             {isEmpty ? (
@@ -284,7 +397,7 @@ const AIAgent: React.FC = () => {
             )}
 
             {/* 确认/取消按钮 */}
-            {needsConfirm && (
+            {needsConfirm && !msgSelectMode && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e5e5' }}>
                 <Space>
                   <Button
@@ -319,18 +432,40 @@ const AIAgent: React.FC = () => {
               {new Date(msg.created_at).toLocaleTimeString()}
             </div>
           </div>
-          <Tooltip title="删除此对话">
-            <Button
-              type="text"
-              size="small"
-              icon={<DeleteOutlined />}
-              onClick={() => activeId && deleteMessagePair(activeId, msg.id)}
-              style={{ position: 'absolute', top: -8, right: isUser ? 'auto' : -8, left: isUser ? -8 : 'auto', opacity: 0.5, fontSize: 12 }}
-            />
-          </Tooltip>
+          {!msgSelectMode && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 4,
+                right: isUser ? undefined : -36,
+                left: isUser ? -36 : undefined,
+                opacity: showDelete ? 1 : 0,
+                pointerEvents: showDelete ? 'auto' : 'none',
+                transition: 'opacity 0.15s',
+              }}
+            >
+              <Popconfirm
+                title="删除这一轮对话？"
+                description="将同时删除对应的提问与回答。"
+                okText="删除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                onConfirm={() => activeId && deleteMessagePair(activeId, msg.id)}
+              >
+                <Tooltip title="删除本轮对话">
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                  />
+                </Tooltip>
+              </Popconfirm>
+            </div>
+          )}
         </div>
         {isUser && (
-          <Avatar icon={<UserOutlined />} style={{ backgroundColor: '#87d068', marginLeft: 12, flexShrink: 0 }} />
+          <Avatar icon={<UserOutlined />} style={{ backgroundColor: '#87d068', marginLeft: msgSelectMode ? 0 : 12, flexShrink: 0 }} />
         )}
       </div>
     )
@@ -344,15 +479,35 @@ const AIAgent: React.FC = () => {
     messageCount: c.message_count,
   }))
 
+  const hasMessages = !!activeConversation && activeConversation.messages.length > 0
+  const allMsgIds = activeConversation?.messages.map(m => m.id) || []
+  const allMsgsSelected = allMsgIds.length > 0 && selectedMsgIds.length === allMsgIds.length
+  const partialMsgsSelected = selectedMsgIds.length > 0 && !allMsgsSelected
+
+  const exitMsgSelectMode = () => {
+    setMsgSelectMode(false)
+    setSelectedMsgIds([])
+  }
+
+  const handleBatchDeleteMessages = async () => {
+    if (!activeId || selectedMsgIds.length === 0) return
+    const ok = await deleteMessages(activeId, selectedMsgIds)
+    if (ok) exitMsgSelectMode()
+  }
+
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 180px)', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
       <ChatSidebar
         conversations={sidebarConversations}
         activeId={activeId ? String(activeId) : null}
         onSelect={(id) => selectConversation(Number(id))}
-        onCreate={() => createConversation()}
-        onDelete={(id) => deleteConversation(Number(id))}
-        onRename={(id, title) => renameConversation(Number(id), title)}
+        onCreate={() => { void createConversation() }}
+        onDelete={async (id) => { await deleteConversation(Number(id)) }}
+        onBatchDelete={async (ids) => { await deleteConversations(ids.map(Number)) }}
+        onRename={async (id, title) => { await renameConversation(Number(id), title) }}
+        onClear={async (id) => { await clearConversation(Number(id)) }}
+        deletingId={deletingId != null ? String(deletingId) : null}
+        batchDeleting={batchDeleting}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
@@ -361,19 +516,113 @@ const AIAgent: React.FC = () => {
         <div style={{ padding: '12px 24px', borderBottom: '1px solid #e5e5e5', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff' }}>
           <Space>
             <ThunderboltOutlined style={{ color: '#722ed1', fontSize: 20 }} />
-            <Title level={5} style={{ margin: 0 }}>AI Agent</Title>
+            <Title level={5} style={{ margin: 0 }}>
+              {activeConversation?.title || 'AI Agent'}
+            </Title>
             <Tooltip title="AI Agent 可以理解自然语言并执行 K8S 操作">
               <QuestionCircleOutlined style={{ color: '#999' }} />
             </Tooltip>
           </Space>
-          <Space>
+          <Space wrap>
             <Select
-              value={selectedCluster}
+              value={selectedCluster || undefined}
               onChange={setSelectedCluster}
               style={{ width: 200 }}
               placeholder="选择集群"
               options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
+              disabled={msgSelectMode}
             />
+            {activeId && hasMessages && (
+              msgSelectMode ? (
+                <>
+                  <Checkbox
+                    checked={allMsgsSelected}
+                    indeterminate={partialMsgsSelected}
+                    disabled={messageBatchDeleting}
+                    onChange={() => setSelectedMsgIds(allMsgsSelected ? [] : allMsgIds)}
+                  >
+                    全选
+                  </Checkbox>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    已选 {selectedMsgIds.length}/{allMsgIds.length}
+                  </Text>
+                  <Popconfirm
+                    title={`删除选中的 ${selectedMsgIds.length} 条消息？`}
+                    description="仅删除勾选的消息，不会自动附带整轮。"
+                    okText="删除"
+                    okButtonProps={{ danger: true, loading: messageBatchDeleting }}
+                    cancelText="取消"
+                    disabled={selectedMsgIds.length === 0 || messageBatchDeleting}
+                    onConfirm={() => void handleBatchDeleteMessages()}
+                  >
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      disabled={selectedMsgIds.length === 0}
+                      loading={messageBatchDeleting}
+                    >
+                      删除所选
+                    </Button>
+                  </Popconfirm>
+                  <Button onClick={exitMsgSelectMode} disabled={messageBatchDeleting}>
+                    取消
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Tooltip title="多选删除消息">
+                    <Button
+                      icon={<CheckSquareOutlined />}
+                      disabled={loading}
+                      onClick={() => {
+                        setMsgSelectMode(true)
+                        setSelectedMsgIds([])
+                      }}
+                    />
+                  </Tooltip>
+                  <Popconfirm
+                    title="清空当前会话消息？"
+                    description="仅清空消息，会话会保留。"
+                    okText="清空"
+                    cancelText="取消"
+                    disabled={!hasMessages || loading}
+                    onConfirm={() => clearConversation(activeId)}
+                  >
+                    <Tooltip title="清空消息">
+                      <Button icon={<ClearOutlined />} disabled={!hasMessages || loading} />
+                    </Tooltip>
+                  </Popconfirm>
+                  <Popconfirm
+                    title="删除当前会话？"
+                    description="会话及其全部消息将永久删除。"
+                    okText="删除"
+                    okButtonProps={{ danger: true }}
+                    cancelText="取消"
+                    disabled={loading}
+                    onConfirm={() => deleteConversation(activeId)}
+                  >
+                    <Tooltip title="删除会话">
+                      <Button danger icon={<DeleteOutlined />} disabled={loading} loading={deletingId === activeId} />
+                    </Tooltip>
+                  </Popconfirm>
+                </>
+              )
+            )}
+            {activeId && !hasMessages && (
+              <Popconfirm
+                title="删除当前会话？"
+                description="会话将永久删除。"
+                okText="删除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                disabled={loading}
+                onConfirm={() => deleteConversation(activeId)}
+              >
+                <Tooltip title="删除会话">
+                  <Button danger icon={<DeleteOutlined />} disabled={loading} loading={deletingId === activeId} />
+                </Tooltip>
+              </Popconfirm>
+            )}
           </Space>
         </div>
 
@@ -401,33 +650,59 @@ const AIAgent: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
               <Avatar icon={<ThunderboltOutlined />} style={{ backgroundColor: '#722ed1', marginRight: 12 }} />
               <Spin size="small" />
-              <Text type="secondary" style={{ marginLeft: 8 }}>AI Agent 思考中...</Text>
+              <Text type="secondary" style={{ marginLeft: 8 }}>
+                AI Agent 思考中...{thinkingSeconds > 0 ? `（已等待 ${thinkingSeconds}s）` : ''}
+                {thinkingSeconds >= 20 ? '，复杂问题可能需要更久' : ''}
+              </Text>
             </div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
         <div style={{ padding: '16px 24px', borderTop: '1px solid #e5e5e5', background: '#fff' }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <TextArea
-              value={inputValue}
-              onChange={e => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="描述你想做的操作... (Enter 发送，Shift+Enter 换行)"
-              autoSize={{ minRows: 1, maxRows: 4 }}
-              disabled={loading}
-              style={{ flex: 1 }}
-            />
-            {loading ? (
-              <Button danger icon={<StopOutlined />} onClick={handleStop} style={{ height: 'auto' }}>
-                停止
-              </Button>
-            ) : (
-              <Button type="primary" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!inputValue.trim()} style={{ height: 'auto', backgroundColor: '#722ed1', borderColor: '#722ed1' }}>
-                发送
-              </Button>
-            )}
-          </div>
+          {msgSelectMode ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <Text type="secondary">
+                多选模式：点击消息即可勾选，已选 {selectedMsgIds.length} 条
+              </Text>
+              <Space>
+                <Popconfirm
+                  title={`删除选中的 ${selectedMsgIds.length} 条消息？`}
+                  okText="删除"
+                  okButtonProps={{ danger: true, loading: messageBatchDeleting }}
+                  cancelText="取消"
+                  disabled={selectedMsgIds.length === 0 || messageBatchDeleting}
+                  onConfirm={() => void handleBatchDeleteMessages()}
+                >
+                  <Button danger icon={<DeleteOutlined />} disabled={selectedMsgIds.length === 0} loading={messageBatchDeleting}>
+                    删除所选
+                  </Button>
+                </Popconfirm>
+                <Button onClick={exitMsgSelectMode} disabled={messageBatchDeleting}>退出多选</Button>
+              </Space>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <TextArea
+                value={inputValue}
+                onChange={e => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="描述你想做的操作... (Enter 发送，Shift+Enter 换行)"
+                autoSize={{ minRows: 1, maxRows: 4 }}
+                disabled={loading}
+                style={{ flex: 1 }}
+              />
+              {loading ? (
+                <Button danger icon={<StopOutlined />} onClick={handleStop} style={{ height: 'auto' }}>
+                  停止
+                </Button>
+              ) : (
+                <Button type="primary" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!inputValue.trim()} style={{ height: 'auto', backgroundColor: '#722ed1', borderColor: '#722ed1' }}>
+                  发送
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

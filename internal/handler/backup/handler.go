@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -299,17 +300,28 @@ func (h *Handler) ClearBackupCron(c *gin.Context) {
 // CreateBackup 创建手动备份
 func (h *Handler) CreateBackup(c *gin.Context) {
 	var req struct {
-		ClusterID  uint     `json:"cluster_id" binding:"required"`
-		BackupName string   `json:"backup_name" binding:"required"`
-		Namespaces []string `json:"namespaces"`
-		Resources  []string `json:"resources"`
-		TTL        string   `json:"ttl"`
+		ClusterID       uint     `json:"cluster_id" binding:"required"`
+		BackupName      string   `json:"backup_name" binding:"required"`
+		Namespaces      []string `json:"namespaces"`
+		Resources       []string `json:"resources"`
+		TTL             string   `json:"ttl"`
+		StorageLocation string   `json:"storage_location"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	if !authz.EnsureScope(c, "backups", "create", req.ClusterID, "*") {
+		return
+	}
+
+	available, err := VeleroAvailable(c.Request.Context(), req.ClusterID)
+	if err != nil {
+		response.InternalError(c, "failed to detect Velero: "+err.Error())
+		return
+	}
+	if !available {
+		response.BadRequest(c, "Velero is not installed in the target cluster; backup remains experimental until Velero CRDs are available")
 		return
 	}
 
@@ -335,29 +347,98 @@ func (h *Handler) CreateBackup(c *gin.Context) {
 		return
 	}
 
-	// 异步执行备份
-	go h.executeBackup(&record, req.TTL)
+	go h.executeBackup(&record, req.TTL, req.StorageLocation)
 
 	response.Created(c, record)
 }
 
-// executeBackup 执行备份（模拟）
-func (h *Handler) executeBackup(record *model.BackupRecord, ttl string) {
-	// 更新状态为执行中
+// BackupCapability reports whether real Velero-backed backups are available.
+func (h *Handler) BackupCapability(c *gin.Context) {
+	clusterID, err := parseUintParam(c.Query("cluster_id"))
+	if err != nil || clusterID == 0 {
+		response.BadRequest(c, "cluster_id is required")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "view", uint(clusterID), "*") {
+		return
+	}
+	available, detectErr := VeleroAvailable(c.Request.Context(), uint(clusterID))
+	msg := "Velero CRDs detected; backups will be created as real velero.io/v1 Backup objects"
+	if detectErr != nil {
+		msg = "failed to probe Velero: " + detectErr.Error()
+	} else if !available {
+		msg = "Velero is not installed; create/restore are blocked to avoid false success"
+	}
+	response.Success(c, gin.H{
+		"cluster_id":       clusterID,
+		"velero_available": available,
+		"mode":             map[bool]string{true: "velero", false: "experimental_blocked"}[available],
+		"message":          msg,
+	})
+}
+
+func parseUintParam(raw string) (uint64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	var n uint64
+	_, err := fmt.Sscanf(raw, "%d", &n)
+	return n, err
+}
+
+// executeBackup creates a Velero Backup CR and waits for a terminal phase.
+func (h *Handler) executeBackup(record *model.BackupRecord, ttl, storageLocation string) {
 	record.Status = "in_progress"
+	record.Phase = "New"
 	h.db.Save(record)
 
-	// 模拟备份过程
-	time.Sleep(5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
 
-	// 这里应该调用 Velero API 创建备份
-	// 目前模拟成功
-	record.Status = "completed"
-	record.VolumeSnapshots = 0
-	record.Errors = 0
-	record.Warnings = 0
+	var namespaces []string
+	var resources []string
+	_ = json.Unmarshal([]byte(record.Namespaces), &namespaces)
+	_ = json.Unmarshal([]byte(record.Resources), &resources)
+
+	available, err := VeleroAvailable(ctx, record.ClusterID)
+	if err != nil || !available {
+		record.Status = "failed"
+		record.Phase = "FailedValidation"
+		record.Errors = 1
+		now := time.Now()
+		record.CompletedAt = &now
+		h.db.Save(record)
+		return
+	}
+
+	if err := createVeleroBackup(ctx, record.ClusterID, record.BackupName, ttl, storageLocation, namespaces, resources); err != nil {
+		record.Status = "failed"
+		record.Phase = "Failed"
+		record.Errors = 1
+		now := time.Now()
+		record.CompletedAt = &now
+		h.db.Save(record)
+		return
+	}
+
+	phase, waitErr := waitVeleroBackup(ctx, record.ClusterID, record.BackupName, 10*time.Minute)
+	record.Phase = phase
 	now := time.Now()
 	record.CompletedAt = &now
+	switch phase {
+	case "Completed":
+		record.Status = "completed"
+		record.Errors = 0
+	case "PartiallyFailed":
+		record.Status = "completed"
+		record.Warnings = 1
+	default:
+		record.Status = "failed"
+		record.Errors = 1
+		if waitErr != nil && phase == "" {
+			record.Phase = "Timeout"
+		}
+	}
 	h.db.Save(record)
 }
 
@@ -377,7 +458,7 @@ func (h *Handler) RunScheduledBackup(schedule *model.BackupSchedule) {
 	if err := h.db.Create(&record).Error; err != nil {
 		return
 	}
-	h.executeBackup(&record, schedule.TTL)
+	h.executeBackup(&record, schedule.TTL, schedule.StorageLocation)
 }
 
 // ListBackupRecords 获取备份记录列表
@@ -404,6 +485,45 @@ func (h *Handler) GetBackupRecord(c *gin.Context) {
 	response.Success(c, record)
 }
 
+// DeleteBackupRecord deletes a backup record and best-effort removes the Velero Backup CR.
+func (h *Handler) DeleteBackupRecord(c *gin.Context) {
+	id := c.Param("id")
+	var record model.BackupRecord
+	if err := h.db.First(&record, id).Error; err != nil {
+		response.NotFound(c, "backup not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "delete", record.ClusterID, "*") {
+		return
+	}
+
+	if record.Status == "pending" || record.Status == "in_progress" {
+		response.BadRequest(c, "cannot delete backup while it is pending or in progress")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	if available, err := VeleroAvailable(ctx, record.ClusterID); err == nil && available {
+		if err := deleteVeleroBackup(ctx, record.ClusterID, record.BackupName); err != nil {
+			response.InternalError(c, "failed to delete Velero Backup: "+err.Error())
+			return
+		}
+	}
+
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("backup_id = ?", record.ID).Delete(&model.RestoreRecord{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&record).Error
+	})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessWithMessage(c, "backup deleted", nil)
+}
+
 // CreateRestore 创建恢复
 func (h *Handler) CreateRestore(c *gin.Context) {
 	var req struct {
@@ -427,6 +547,19 @@ func (h *Handler) CreateRestore(c *gin.Context) {
 	if !authz.EnsureScope(c, "backups", "execute", req.ClusterID, "*") {
 		return
 	}
+	if backup.Status != "completed" {
+		response.BadRequest(c, "backup is not completed")
+		return
+	}
+	available, err := VeleroAvailable(c.Request.Context(), req.ClusterID)
+	if err != nil {
+		response.InternalError(c, "failed to detect Velero: "+err.Error())
+		return
+	}
+	if !available {
+		response.BadRequest(c, "Velero is not installed in the target cluster; restore remains experimental until Velero CRDs are available")
+		return
+	}
 
 	namespacesJSON, _ := json.Marshal(req.Namespaces)
 
@@ -445,25 +578,47 @@ func (h *Handler) CreateRestore(c *gin.Context) {
 		return
 	}
 
-	// 异步执行恢复
-	go h.executeRestore(&restore)
+	go h.executeRestore(&restore, backup.BackupName)
 
 	response.Created(c, restore)
 }
 
-// executeRestore 执行恢复（模拟）
-func (h *Handler) executeRestore(record *model.RestoreRecord) {
+func (h *Handler) executeRestore(record *model.RestoreRecord, backupName string) {
 	record.Status = "in_progress"
 	h.db.Save(record)
 
-	// 模拟恢复过程
-	time.Sleep(5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
 
-	record.Status = "completed"
-	record.Errors = 0
-	record.Warnings = 0
+	var namespaces []string
+	_ = json.Unmarshal([]byte(record.Namespaces), &namespaces)
+
+	if err := createVeleroRestore(ctx, record.ClusterID, record.RestoreName, backupName, namespaces); err != nil {
+		record.Status = "failed"
+		record.Errors = 1
+		now := time.Now()
+		record.CompletedAt = &now
+		h.db.Save(record)
+		return
+	}
+
+	phase, waitErr := waitVeleroRestore(ctx, record.ClusterID, record.RestoreName, 10*time.Minute)
 	now := time.Now()
 	record.CompletedAt = &now
+	switch phase {
+	case "Completed":
+		record.Status = "completed"
+		record.Errors = 0
+	case "PartiallyFailed":
+		record.Status = "completed"
+		record.Warnings = 1
+	default:
+		record.Status = "failed"
+		record.Errors = 1
+		if waitErr != nil {
+			record.Errors = 1
+		}
+	}
 	h.db.Save(record)
 }
 
@@ -475,4 +630,35 @@ func (h *Handler) ListRestoreRecords(c *gin.Context) {
 		return
 	}
 	response.Success(c, records)
+}
+
+// DeleteRestoreRecord deletes a restore record and best-effort removes the Velero Restore CR.
+func (h *Handler) DeleteRestoreRecord(c *gin.Context) {
+	id := c.Param("id")
+	var record model.RestoreRecord
+	if err := h.db.First(&record, id).Error; err != nil {
+		response.NotFound(c, "restore not found")
+		return
+	}
+	if !authz.EnsureScope(c, "backups", "delete", record.ClusterID, "*") {
+		return
+	}
+	if record.Status == "pending" || record.Status == "in_progress" {
+		response.BadRequest(c, "cannot delete restore while it is pending or in progress")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	if available, err := VeleroAvailable(ctx, record.ClusterID); err == nil && available {
+		if err := deleteVeleroRestore(ctx, record.ClusterID, record.RestoreName); err != nil {
+			response.InternalError(c, "failed to delete Velero Restore: "+err.Error())
+			return
+		}
+	}
+	if err := h.db.Delete(&record).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessWithMessage(c, "restore deleted", nil)
 }

@@ -131,15 +131,19 @@ const SecretManagement: React.FC = () => {
 
   const handleEdit = async (record: Secret) => {
     try {
-      const res = await getSecret(selectedCluster, record.namespace, record.name)
+      const res = await getSecret(selectedCluster, record.namespace, record.name, true)
+      if (!res.data?.revealed) {
+        message.error('当前账号无权查看 Secret 明文，无法编辑')
+        return
+      }
       setSelectedSecret(res.data)
       const dataStr = Object.entries(res.data.data || {})
         .map(([k, v]) => `${k}=${decodeBase64(v as string)}`)
         .join('\n')
       editForm.setFieldsValue({ data: dataStr })
       setEditModalVisible(true)
-    } catch (error) {
-      console.error('Failed to fetch secret:', error)
+    } catch (error: any) {
+      message.error(error?.response?.data?.message || '无法加载 Secret 明文')
     }
   }
 
@@ -177,12 +181,27 @@ const SecretManagement: React.FC = () => {
 
   const handleViewDetail = async (record: Secret) => {
     try {
-      const res = await getSecret(selectedCluster, record.namespace, record.name)
+      const res = await getSecret(selectedCluster, record.namespace, record.name, false)
       setSelectedSecret(res.data)
       setShowValues(false)
       setDetailModalVisible(true)
     } catch (error) {
       console.error('Failed to fetch secret:', error)
+    }
+  }
+
+  const handleRevealValues = async () => {
+    if (!selectedSecret) return
+    try {
+      const res = await getSecret(selectedCluster, selectedSecret.namespace, selectedSecret.name, true)
+      if (!res.data?.revealed) {
+        message.error('当前账号无权查看 Secret 明文')
+        return
+      }
+      setSelectedSecret(res.data)
+      setShowValues(true)
+    } catch (error: any) {
+      message.error(error?.response?.data?.message || '无权查看 Secret 明文')
     }
   }
 
@@ -345,23 +364,40 @@ const SecretManagement: React.FC = () => {
             <div style={{ marginBottom: 16 }}>
               <Button
                 icon={showValues ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                onClick={() => setShowValues(!showValues)}
+                onClick={() => {
+                  if (showValues) {
+                    setShowValues(false)
+                    return
+                  }
+                  if (selectedSecret.revealed) {
+                    setShowValues(true)
+                    return
+                  }
+                  handleRevealValues()
+                }}
               >
-                {showValues ? '隐藏值' : '显示值'}
+                {showValues ? '隐藏值' : '显示值（需 view_data 权限）'}
               </Button>
             </div>
+            <p><strong>Keys:</strong> {(selectedSecret.keys || Object.keys(selectedSecret.data || {})).join(', ') || '-'}</p>
             <p><strong>数据:</strong></p>
             <pre style={{ background: '#f5f5f5', padding: 16, borderRadius: 8, maxHeight: 400, overflow: 'auto' }}>
-              {JSON.stringify(
-                Object.fromEntries(
-                  Object.entries(selectedSecret.data || {}).map(([k, v]) => [
-                    k,
-                    showValues ? decodeBase64(v as string) : '******',
-                  ])
-                ),
-                null,
-                2
-              )}
+              {showValues && selectedSecret.revealed
+                ? JSON.stringify(
+                    Object.fromEntries(
+                      Object.entries(selectedSecret.data || {}).map(([k, v]) => [
+                        k,
+                        decodeBase64(v as string),
+                      ])
+                    ),
+                    null,
+                    2
+                  )
+                : JSON.stringify(
+                    Object.fromEntries((selectedSecret.keys || []).map((k: string) => [k, '******'])),
+                    null,
+                    2
+                  )}
             </pre>
           </div>
         )}

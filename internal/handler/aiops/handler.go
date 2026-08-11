@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -535,17 +536,48 @@ func (h *Handler) SetDefaultLLMConfig(c *gin.Context) {
 	response.SuccessWithMessage(c, "default config set", nil)
 }
 
-// TestLLMConfig 测试LLM连接
+// TestLLMConfig 测试LLM连接。
+// 编辑已有配置时允许 api_key 留空：传入 id 后复用数据库中的密钥。
 func (h *Handler) TestLLMConfig(c *gin.Context) {
 	var req struct {
-		Provider string `json:"provider" binding:"required"`
-		APIKey   string `json:"api_key" binding:"required"`
+		ID       uint   `json:"id"`
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
 		BaseURL  string `json:"base_url"`
-		Model    string `json:"model" binding:"required"`
+		Model    string `json:"model"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	if req.ID > 0 {
+		var stored model.LLMConfig
+		if err := h.db.First(&stored, req.ID).Error; err != nil {
+			response.NotFound(c, "config not found")
+			return
+		}
+		if req.Provider == "" {
+			req.Provider = stored.Provider
+		}
+		if req.APIKey == "" || strings.Contains(req.APIKey, "****") {
+			req.APIKey = stored.APIKey
+		}
+		if req.BaseURL == "" {
+			req.BaseURL = stored.BaseURL
+		}
+		if req.Model == "" {
+			req.Model = stored.Model
+		}
+	}
+
+	if req.Provider == "" || req.Model == "" {
+		response.BadRequest(c, "provider and model are required")
+		return
+	}
+	if req.APIKey == "" {
+		response.BadRequest(c, "api_key is required (leave blank only when testing an existing config by id)")
 		return
 	}
 
@@ -619,19 +651,32 @@ func (h *Handler) AgentChat(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// AgentConfirmAction 确认执行Agent动作
+// AgentConfirmAction 确认执行已暂存的 Agent 动作（必须先 dry-run / stage）。
 func (h *Handler) AgentConfirmAction(c *gin.Context) {
-	actionID := c.Param("actionId")
+	if h.service == nil {
+		response.InternalError(c, "AI service not configured")
+		return
+	}
 
+	actionID := c.Param("actionId")
 	var action model.AgentAction
 	if err := h.db.First(&action, actionID).Error; err != nil {
 		response.NotFound(c, "action not found")
 		return
 	}
-
 	if action.Status != "pending" {
 		response.BadRequest(c, "action is not pending")
 		return
+	}
+
+	userID, _ := c.Get("user_id")
+	roleID, _ := c.Get("role_id")
+	if action.UserID != 0 && action.UserID != userID.(uint) {
+		var role model.Role
+		if err := h.db.First(&role, roleID).Error; err != nil || !(role.IsSystem || role.Name == "admin") {
+			response.Forbidden(c, "cannot confirm another user's action")
+			return
+		}
 	}
 
 	ns := action.Namespace
@@ -642,8 +687,7 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		return
 	}
 
-	// 执行动作
-	result, err := h.service.ExecuteAgentAction(c.Request.Context(), &action)
+	result, err := h.service.ExecuteStagedAction(c.Request.Context(), &action)
 	if err != nil {
 		action.Status = "failed"
 		action.Result = err.Error()
@@ -651,19 +695,35 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
+	if result == nil || !result.Success {
+		msg := "execution failed"
+		if result != nil {
+			msg = result.Message
+		}
+		action.Status = "failed"
+		action.Result = msg
+		h.db.Save(&action)
+		response.BadRequest(c, msg)
+		return
+	}
 
 	action.Status = "executed"
-	action.Result = result
+	action.Result = result.Message
 	now := time.Now()
 	action.ExecutedAt = &now
 	h.db.Save(&action)
 
-	response.SuccessWithMessage(c, "action executed", gin.H{
-		"result": result,
+	response.Success(c, gin.H{
+		"success":   true,
+		"message":   result.Message,
+		"details":   result.Details,
+		"action_id": action.ID,
+		"status":    action.Status,
 	})
 }
 
-// AgentExecute 执行K8S操作
+// AgentExecute 仅暂存写操作并返回 dry-run 结果，不会直接改集群。
+// 真正执行必须调用 AgentConfirmAction。
 func (h *Handler) AgentExecute(c *gin.Context) {
 	if h.service == nil {
 		response.InternalError(c, "AI service not configured")
@@ -671,40 +731,34 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	}
 
 	var req struct {
-		ClusterID   uint              `json:"cluster_id" binding:"required"`
-		Action      string            `json:"action" binding:"required"`
-		Namespace   string            `json:"namespace"`
-		Name        string            `json:"name"`
-		Image       string            `json:"image"`
-		Replicas    int32             `json:"replicas"`
-		Ports       []int32           `json:"ports"`
-		ServiceType string            `json:"service_type"`
-		Port        int32             `json:"port"`
-		TargetPort  int32             `json:"target_port"`
-		NodePort    int32             `json:"node_port"`
-		Selector    map[string]string `json:"selector"`
+		ClusterID      uint              `json:"cluster_id" binding:"required"`
+		Action         string            `json:"action" binding:"required"`
+		Namespace      string            `json:"namespace"`
+		Name           string            `json:"name"`
+		Image          string            `json:"image"`
+		Replicas       int32             `json:"replicas"`
+		Ports          []int32           `json:"ports"`
+		ServiceType    string            `json:"service_type"`
+		Port           int32             `json:"port"`
+		TargetPort     int32             `json:"target_port"`
+		NodePort       int32             `json:"node_port"`
+		Selector       map[string]string `json:"selector"`
+		ConversationID uint              `json:"conversation_id"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
-
-	// 验证资源名称
 	if req.Name == "" {
 		response.BadRequest(c, "resource name is required")
 		return
 	}
-
-	// 默认命名空间
 	if req.Namespace == "" {
 		req.Namespace = "default"
 	}
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, req.Namespace) {
 		return
 	}
-
-	// 设置默认值
 	if req.Image == "" {
 		req.Image = "nginx:latest"
 	}
@@ -721,38 +775,76 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		req.TargetPort = 80
 	}
 
-	var result *aiopsResult
-	var execErr error
+	params := aiops.StagedActionParams{
+		Action:      req.Action,
+		Namespace:   req.Namespace,
+		Name:        req.Name,
+		Image:       req.Image,
+		Replicas:    req.Replicas,
+		Ports:       req.Ports,
+		ServiceType: req.ServiceType,
+		Port:        req.Port,
+		TargetPort:  req.TargetPort,
+		NodePort:    req.NodePort,
+		Selector:    req.Selector,
+	}
+	dryRun, err := h.service.DryRunStagedAction(c.Request.Context(), req.ClusterID, params)
+	if err != nil {
+		response.BadRequest(c, "dry-run failed: "+err.Error())
+		return
+	}
 
-	ctx := c.Request.Context()
+	paramBytes, _ := json.Marshal(params)
+	userID, _ := c.Get("user_id")
+	actionType, resourceType := stagedActionMeta(req.Action)
+	action := model.AgentAction{
+		UserID:       userID.(uint),
+		ActionType:   actionType,
+		ResourceType: resourceType,
+		ResourceName: req.Name,
+		Namespace:    req.Namespace,
+		ClusterID:    req.ClusterID,
+		Description:  fmt.Sprintf("%s %s/%s", req.Action, req.Namespace, req.Name),
+		Parameters:   string(paramBytes),
+		DryRunResult: dryRun,
+		Status:       "pending",
+	}
+	if req.ConversationID > 0 {
+		cid := req.ConversationID
+		action.ConversationID = &cid
+	}
+	if err := h.db.Create(&action).Error; err != nil {
+		response.InternalError(c, "failed to stage action: "+err.Error())
+		return
+	}
 
-	switch req.Action {
+	response.Success(c, gin.H{
+		"success":      true,
+		"staged":       true,
+		"action_id":    action.ID,
+		"status":       action.Status,
+		"dry_run":      dryRun,
+		"message":      "action staged; confirm required before execution",
+		"confirm_path": fmt.Sprintf("/api/v1/aiops/agent/confirm/%d", action.ID),
+	})
+}
+
+func stagedActionMeta(action string) (actionType, resourceType string) {
+	switch action {
 	case "create_deployment":
-		result, execErr = h.service.ExecuteCreateDeployment(ctx, req.ClusterID, req.Namespace, req.Name, req.Image, req.Replicas, req.Ports)
+		return "create", "deployments"
 	case "create_service":
-		result, execErr = h.service.ExecuteCreateService(ctx, req.ClusterID, req.Namespace, req.Name, req.ServiceType, req.Selector, req.Port, req.TargetPort, req.NodePort)
+		return "create", "services"
 	case "delete_deployment":
-		result, execErr = h.service.ExecuteDeleteDeployment(ctx, req.ClusterID, req.Namespace, req.Name)
+		return "delete", "deployments"
 	case "delete_service":
-		result, execErr = h.service.ExecuteDeleteService(ctx, req.ClusterID, req.Namespace, req.Name)
+		return "delete", "services"
 	case "delete_pod":
-		result, execErr = h.service.ExecuteDeletePod(ctx, req.ClusterID, req.Namespace, req.Name)
+		return "delete", "pods"
 	case "scale_deployment":
-		result, execErr = h.service.ExecuteScaleDeployment(ctx, req.ClusterID, req.Namespace, req.Name, req.Replicas)
+		return "scale", "deployments"
 	default:
-		response.BadRequest(c, "unsupported action: "+req.Action)
-		return
-	}
-
-	if execErr != nil {
-		response.InternalError(c, execErr.Error())
-		return
-	}
-
-	if result.Success {
-		response.Success(c, result)
-	} else {
-		response.BadRequest(c, result.Message)
+		return "execute", "unknown"
 	}
 }
 

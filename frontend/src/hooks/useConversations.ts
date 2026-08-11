@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { message } from 'antd'
 import * as conversationApi from '../api/conversation'
 
 export interface Message {
@@ -22,8 +23,10 @@ export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [batchDeleting, setBatchDeleting] = useState(false)
+  const [messageBatchDeleting, setMessageBatchDeleting] = useState(false)
 
-  // 加载对话列表
   const fetchConversations = useCallback(async () => {
     try {
       const res = await conversationApi.getConversations()
@@ -38,7 +41,6 @@ export function useConversations() {
     }
   }, [])
 
-  // 加载对话详情（包含消息）
   const fetchConversationDetail = useCallback(async (id: number) => {
     try {
       const res = await conversationApi.getConversation(id)
@@ -50,12 +52,10 @@ export function useConversations() {
     }
   }, [])
 
-  // 初始化加载对话列表
   useEffect(() => {
     fetchConversations()
   }, [fetchConversations])
 
-  // 当 activeId 变化时加载对话详情
   useEffect(() => {
     if (activeId) {
       fetchConversationDetail(activeId)
@@ -64,27 +64,26 @@ export function useConversations() {
     }
   }, [activeId, fetchConversationDetail])
 
-  // 创建新对话
   const createConversation = useCallback(async (title?: string) => {
     try {
       const res = await conversationApi.createConversation({ title: title || '新对话' })
       if (res.code === 0) {
         await fetchConversations()
         setActiveId(res.data.id)
-        return res.data.id
+        return res.data.id as number
       }
-    } catch (error) {
+      message.error((res as any).message || '创建会话失败')
+    } catch (error: any) {
       console.error('Failed to create conversation:', error)
+      message.error(error?.message || '创建会话失败')
     }
     return null
   }, [fetchConversations])
 
-  // 选择对话
   const selectConversation = useCallback((id: number) => {
     setActiveId(id)
   }, [])
 
-  // 添加消息
   const addMessage = useCallback(async (conversationId: number, role: 'user' | 'assistant', content: string) => {
     try {
       const res = await conversationApi.addMessage(conversationId, { role, content })
@@ -99,7 +98,6 @@ export function useConversations() {
     return null
   }, [fetchConversationDetail, fetchConversations])
 
-  // 更新最后一条消息（用于流式输出，直接更新本地状态）
   const updateLastMessage = useCallback((conversationId: number, content: string) => {
     setActiveConversation(prev => {
       if (!prev || prev.id !== conversationId) return prev
@@ -114,60 +112,186 @@ export function useConversations() {
     })
   }, [])
 
-  // 删除消息对
+  // 删除一轮对话：用户消息 + 紧邻的助手回复（或反过来）
   const deleteMessagePair = useCallback(async (conversationId: number, messageId: number) => {
-    try {
-      await conversationApi.deleteMessage(conversationId, messageId)
-      await fetchConversationDetail(conversationId)
-    } catch (error) {
-      console.error('Failed to delete message:', error)
-    }
-  }, [fetchConversationDetail])
+    const msgs = activeConversation?.id === conversationId ? activeConversation.messages : []
+    const idx = msgs.findIndex(m => m.id === messageId)
+    const ids = new Set<number>([messageId])
 
-  // 清空对话
+    if (idx >= 0) {
+      const cur = msgs[idx]
+      if (cur.role === 'user') {
+        const next = msgs[idx + 1]
+        if (next?.role === 'assistant') ids.add(next.id)
+      } else if (cur.role === 'assistant') {
+        const prev = msgs[idx - 1]
+        if (prev?.role === 'user') ids.add(prev.id)
+      }
+    }
+
+    try {
+      for (const id of ids) {
+        await conversationApi.deleteMessage(conversationId, id)
+      }
+      await fetchConversationDetail(conversationId)
+      await fetchConversations()
+      message.success(ids.size > 1 ? '已删除该轮对话' : '已删除消息')
+      return true
+    } catch (error: any) {
+      console.error('Failed to delete message:', error)
+      message.error(error?.message || '删除消息失败')
+      return false
+    }
+  }, [activeConversation, fetchConversationDetail, fetchConversations])
+
+  const deleteMessages = useCallback(async (conversationId: number, messageIds: number[]) => {
+    const uniqueIds = Array.from(new Set(messageIds.filter(Boolean)))
+    if (uniqueIds.length === 0) return false
+
+    setMessageBatchDeleting(true)
+    let success = 0
+    let failed = 0
+    try {
+      for (const id of uniqueIds) {
+        try {
+          await conversationApi.deleteMessage(conversationId, id)
+          success += 1
+        } catch (error) {
+          console.error('Failed to delete message:', id, error)
+          failed += 1
+        }
+      }
+
+      await fetchConversationDetail(conversationId)
+      await fetchConversations()
+
+      if (failed === 0) {
+        message.success(`已删除 ${success} 条消息`)
+        return true
+      }
+      message.warning(`删除完成：成功 ${success}，失败 ${failed}`)
+      return success > 0
+    } finally {
+      setMessageBatchDeleting(false)
+    }
+  }, [fetchConversationDetail, fetchConversations])
+
   const clearConversation = useCallback(async (id: number) => {
     try {
       await conversationApi.clearConversation(id)
-      await fetchConversationDetail(id)
-    } catch (error) {
-      console.error('Failed to clear conversation:', error)
-    }
-  }, [fetchConversationDetail])
-
-  // 删除对话
-  const deleteConversation = useCallback(async (id: number) => {
-    try {
-      await conversationApi.deleteConversation(id)
       if (activeId === id) {
-        setActiveId(null)
+        await fetchConversationDetail(id)
       }
       await fetchConversations()
-    } catch (error) {
-      console.error('Failed to delete conversation:', error)
+      message.success('已清空会话消息')
+      return true
+    } catch (error: any) {
+      console.error('Failed to clear conversation:', error)
+      message.error(error?.message || '清空失败')
+      return false
     }
-  }, [activeId, fetchConversations])
+  }, [activeId, fetchConversationDetail, fetchConversations])
 
-  // 重命名对话
+  const deleteConversation = useCallback(async (id: number) => {
+    setDeletingId(id)
+    try {
+      await conversationApi.deleteConversation(id)
+
+      const remaining = conversations.filter(c => c.id !== id)
+      setConversations(remaining)
+
+      if (activeId === id) {
+        const next = remaining[0]
+        setActiveId(next ? next.id : null)
+        if (!next) setActiveConversation(null)
+      }
+
+      message.success('会话已删除')
+      void fetchConversations()
+      return true
+    } catch (error: any) {
+      console.error('Failed to delete conversation:', error)
+      message.error(error?.message || '删除会话失败')
+      return false
+    } finally {
+      setDeletingId(null)
+    }
+  }, [activeId, conversations, fetchConversations])
+
+  const deleteConversations = useCallback(async (ids: number[]) => {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
+    if (uniqueIds.length === 0) return false
+
+    setBatchDeleting(true)
+    let success = 0
+    let failed = 0
+    const deleted = new Set<number>()
+    try {
+      for (const id of uniqueIds) {
+        try {
+          await conversationApi.deleteConversation(id)
+          deleted.add(id)
+          success += 1
+        } catch (error) {
+          console.error('Failed to delete conversation:', id, error)
+          failed += 1
+        }
+      }
+
+      const remaining = conversations.filter(c => !deleted.has(c.id))
+      setConversations(remaining)
+
+      if (activeId && deleted.has(activeId)) {
+        const next = remaining[0]
+        setActiveId(next ? next.id : null)
+        if (!next) setActiveConversation(null)
+      }
+
+      await fetchConversations()
+
+      if (failed === 0) {
+        message.success(`已删除 ${success} 个会话`)
+        return true
+      }
+      message.warning(`删除完成：成功 ${success}，失败 ${failed}`)
+      return success > 0
+    } finally {
+      setBatchDeleting(false)
+    }
+  }, [activeId, conversations, fetchConversations])
+
   const renameConversation = useCallback(async (id: number, title: string) => {
     try {
       await conversationApi.updateConversation(id, { title })
-      await fetchConversations()
-    } catch (error) {
+      setConversations(prev => prev.map(c => (c.id === id ? { ...c, title } : c)))
+      if (activeConversation?.id === id) {
+        setActiveConversation(prev => (prev ? { ...prev, title } : prev))
+      }
+      message.success('已重命名')
+      return true
+    } catch (error: any) {
       console.error('Failed to rename conversation:', error)
+      message.error(error?.message || '重命名失败')
+      return false
     }
-  }, [fetchConversations])
+  }, [activeConversation])
 
   return {
     conversations,
     activeConversation,
     activeId,
+    deletingId,
+    batchDeleting,
+    messageBatchDeleting,
     createConversation,
     selectConversation,
     addMessage,
     updateLastMessage,
     deleteMessagePair,
+    deleteMessages,
     clearConversation,
     deleteConversation,
+    deleteConversations,
     renameConversation,
     fetchConversations,
     fetchConversationDetail,

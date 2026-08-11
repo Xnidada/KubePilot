@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Alert, Button, Space } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { ModuleStatus } from '../api/modules'
@@ -17,8 +18,9 @@ export function ModuleHealthAlert({ module, title, fixPath, fixLabel }: Props) {
   const navigate = useNavigate()
   const status = useModuleStatus(module)
   const target = fixPath || moduleHomePath(module)
+  const [dismissed, setDismissed] = useState(false)
 
-  if (!status || !status.enabled) return null
+  if (dismissed || !status || !status.enabled) return null
 
   const warning = typeof status.details?.health_warning === 'string'
     ? String(status.details.health_warning)
@@ -33,6 +35,8 @@ export function ModuleHealthAlert({ module, title, fixPath, fixLabel }: Props) {
     <Alert
       type={status.healthy ? 'warning' : 'error'}
       showIcon
+      closable
+      onClose={() => setDismissed(true)}
       style={{ marginBottom: 16 }}
       message={msg}
       description={

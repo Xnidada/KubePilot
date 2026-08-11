@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -158,6 +159,12 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		return
 	}
 
+	// Browser OAuth redirect: send token to SPA login page.
+	accept := c.GetHeader("Accept")
+	if strings.Contains(accept, "text/html") || c.Query("redirect") != "json" {
+		c.Redirect(http.StatusFound, "/login?oauth_token="+url.QueryEscape(token.Token))
+		return
+	}
 	response.Success(c, token)
 }
 
@@ -307,4 +314,193 @@ func generateRandomState() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)
+}
+
+func oauthConfigPublic(cfg model.OAuthConfig) gin.H {
+	return gin.H{
+		"id":            cfg.ID,
+		"provider":      cfg.Provider,
+		"name":          cfg.Name,
+		"client_id":     cfg.ClientID,
+		"redirect_url":  cfg.RedirectURL,
+		"auth_url":      cfg.AuthURL,
+		"token_url":     cfg.TokenURL,
+		"userinfo_url":  cfg.UserInfoURL,
+		"scopes":        cfg.Scopes,
+		"enabled":       cfg.Enabled,
+		"default_role":  cfg.DefaultRole,
+		"has_secret":    cfg.ClientSecret != "",
+		"created_at":    cfg.CreatedAt,
+		"updated_at":    cfg.UpdatedAt,
+	}
+}
+
+// ListConfigs admin list (includes disabled).
+func (h *OAuthHandler) ListConfigs(c *gin.Context) {
+	var configs []model.OAuthConfig
+	if err := h.db.Order("id ASC").Find(&configs).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	out := make([]gin.H, 0, len(configs))
+	for _, cfg := range configs {
+		out = append(out, oauthConfigPublic(cfg))
+	}
+	response.Success(c, out)
+}
+
+// CreateConfig creates an OAuth provider config.
+func (h *OAuthHandler) CreateConfig(c *gin.Context) {
+	var req struct {
+		Provider     string `json:"provider" binding:"required"`
+		Name         string `json:"name" binding:"required"`
+		ClientID     string `json:"client_id" binding:"required"`
+		ClientSecret string `json:"client_secret" binding:"required"`
+		RedirectURL  string `json:"redirect_url" binding:"required"`
+		AuthURL      string `json:"auth_url"`
+		TokenURL     string `json:"token_url"`
+		UserInfoURL  string `json:"userinfo_url"`
+		Scopes       string `json:"scopes"`
+		Enabled      *bool  `json:"enabled"`
+		DefaultRole  uint   `json:"default_role"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	defaults := oauthProviderDefaults(provider)
+	cfg := model.OAuthConfig{
+		Provider:     provider,
+		Name:         req.Name,
+		ClientID:     req.ClientID,
+		ClientSecret: req.ClientSecret,
+		RedirectURL:  req.RedirectURL,
+		AuthURL:      firstNonEmpty(req.AuthURL, defaults.AuthURL),
+		TokenURL:     firstNonEmpty(req.TokenURL, defaults.TokenURL),
+		UserInfoURL:  firstNonEmpty(req.UserInfoURL, defaults.UserInfoURL),
+		Scopes:       firstNonEmpty(req.Scopes, defaults.Scopes),
+		Enabled:      true,
+		DefaultRole:  2,
+	}
+	if req.Enabled != nil {
+		cfg.Enabled = *req.Enabled
+	}
+	if req.DefaultRole > 0 {
+		cfg.DefaultRole = req.DefaultRole
+	}
+	if err := h.db.Create(&cfg).Error; err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Created(c, oauthConfigPublic(cfg))
+}
+
+// UpdateConfig updates an OAuth provider config.
+func (h *OAuthHandler) UpdateConfig(c *gin.Context) {
+	id := c.Param("id")
+	var cfg model.OAuthConfig
+	if err := h.db.First(&cfg, id).Error; err != nil {
+		response.NotFound(c, "oauth config not found")
+		return
+	}
+	var req struct {
+		Name         *string `json:"name"`
+		ClientID     *string `json:"client_id"`
+		ClientSecret *string `json:"client_secret"`
+		RedirectURL  *string `json:"redirect_url"`
+		AuthURL      *string `json:"auth_url"`
+		TokenURL     *string `json:"token_url"`
+		UserInfoURL  *string `json:"userinfo_url"`
+		Scopes       *string `json:"scopes"`
+		Enabled      *bool   `json:"enabled"`
+		DefaultRole  *uint   `json:"default_role"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if req.Name != nil {
+		cfg.Name = *req.Name
+	}
+	if req.ClientID != nil {
+		cfg.ClientID = *req.ClientID
+	}
+	if req.ClientSecret != nil && strings.TrimSpace(*req.ClientSecret) != "" {
+		cfg.ClientSecret = *req.ClientSecret
+	}
+	if req.RedirectURL != nil {
+		cfg.RedirectURL = *req.RedirectURL
+	}
+	if req.AuthURL != nil {
+		cfg.AuthURL = *req.AuthURL
+	}
+	if req.TokenURL != nil {
+		cfg.TokenURL = *req.TokenURL
+	}
+	if req.UserInfoURL != nil {
+		cfg.UserInfoURL = *req.UserInfoURL
+	}
+	if req.Scopes != nil {
+		cfg.Scopes = *req.Scopes
+	}
+	if req.Enabled != nil {
+		cfg.Enabled = *req.Enabled
+	}
+	if req.DefaultRole != nil && *req.DefaultRole > 0 {
+		cfg.DefaultRole = *req.DefaultRole
+	}
+	if err := h.db.Save(&cfg).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, oauthConfigPublic(cfg))
+}
+
+// DeleteConfig deletes an OAuth provider config.
+func (h *OAuthHandler) DeleteConfig(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.db.Delete(&model.OAuthConfig{}, id).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessWithMessage(c, "oauth config deleted", nil)
+}
+
+type oauthDefaults struct {
+	AuthURL     string
+	TokenURL    string
+	UserInfoURL string
+	Scopes      string
+}
+
+func oauthProviderDefaults(provider string) oauthDefaults {
+	switch provider {
+	case "github":
+		return oauthDefaults{
+			AuthURL: "https://github.com/login/oauth/authorize", TokenURL: "https://github.com/login/oauth/access_token",
+			UserInfoURL: "https://api.github.com/user", Scopes: "read:user user:email",
+		}
+	case "gitlab":
+		return oauthDefaults{
+			AuthURL: "https://gitlab.com/oauth/authorize", TokenURL: "https://gitlab.com/oauth/token",
+			UserInfoURL: "https://gitlab.com/api/v4/user", Scopes: "read_user",
+		}
+	case "google":
+		return oauthDefaults{
+			AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: "https://oauth2.googleapis.com/token",
+			UserInfoURL: "https://openidconnect.googleapis.com/v1/userinfo", Scopes: "openid email profile",
+		}
+	default:
+		return oauthDefaults{}
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }

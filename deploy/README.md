@@ -79,6 +79,39 @@ kubectl delete namespace kubepilot      # 删除所有资源
 
 ## 生产环境建议
 
+- 修改默认密码与 JWT Secret
+- 使用独立 PostgreSQL / Redis，并做好备份
+- 配置 Ingress TLS
+
+## 运行时依赖：kubectl
+
+镜像构建（`Dockerfile`）会安装 kubectl，供 AI describe、YAML apply/delete 等能力使用。
+
+若使用 hostPath 挂载二进制（Alpine 基础镜像），请同时把 kubectl 放到同一目录并挂载进容器，例如：
+
+```bash
+# 宿主机
+curl -fsSL -o /opt/kubepilot/bin/kubectl \
+  https://dl.k8s.io/release/v1.29.14/bin/linux/amd64/kubectl
+chmod +x /opt/kubepilot/bin/kubectl
+
+# Deployment volumeMount 示例
+# mountPath: /usr/local/bin/kubectl
+# subPath: kubectl
+# name: app-binary   # hostPath=/opt/kubepilot/bin
+```
+
+## 备份依赖 Velero
+
+KubePilot 备份模块会在目标集群创建真实的 `velero.io/v1` Backup/Restore。  
+一键安装（开发/单机，含 MinIO）见：
+
+```bash
+./deploy/velero/install.sh install
+```
+
+说明文档：[`deploy/velero/README.md`](velero/README.md)
+
 1. **修改默认密码**: 立即修改 admin 默认密码
 2. **修改 JWT 密钥**: 设置强随机密钥
 3. **启用 HTTPS**: 配置 Ingress TLS

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	maxTerminalSessions        = 100
+	maxTerminalSessions       = 100
 	maxTerminalSessionsPerUser = 3
 	terminalSessionDuration    = 30 * time.Minute
 	terminalIdleTimeout        = 15 * time.Minute
@@ -21,9 +21,9 @@ const (
 )
 
 type terminalSessionRegistry struct {
-	mu     sync.Mutex
-	total  int
-	byUser map[uint]int
+	mu      sync.Mutex
+	total   int
+	byUser  map[uint]int
 }
 
 var terminalSessions = terminalSessionRegistry{

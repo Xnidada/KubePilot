@@ -92,20 +92,21 @@ func (ChatMessage) TableName() string {
 
 // AgentAction Agent执行的动作
 type AgentAction struct {
-	ID             uint             `json:"id" gorm:"primaryKey"`
-	ConversationID uint             `json:"conversation_id" gorm:"index;not null"`
-	Conversation   ChatConversation `json:"conversation" gorm:"foreignKey:ConversationID"`
-	ActionType     string           `json:"action_type" gorm:"size:20;not null"` // query, create, update, delete
-	ResourceType   string           `json:"resource_type" gorm:"size:64;not null"`
-	ResourceName   string           `json:"resource_name" gorm:"size:128"`
-	Namespace      string           `json:"namespace" gorm:"size:64"`
-	ClusterID      uint             `json:"cluster_id"`
-	Description    string           `json:"description" gorm:"type:text"`
-	Parameters     string           `json:"parameters" gorm:"type:text"` // JSON
-	Status         string           `json:"status" gorm:"size:20;default:'pending'"` // pending, confirmed, executed, failed
-	Result         string           `json:"result" gorm:"type:text"`
-	CreatedAt      time.Time        `json:"created_at"`
-	ExecutedAt     *time.Time       `json:"executed_at"`
+	ID             uint       `json:"id" gorm:"primaryKey"`
+	UserID         uint       `json:"user_id" gorm:"index"`
+	ConversationID *uint      `json:"conversation_id" gorm:"index"` // optional; staged actions may have no chat
+	ActionType     string     `json:"action_type" gorm:"size:20;not null"` // query, create, update, delete, scale
+	ResourceType   string     `json:"resource_type" gorm:"size:64;not null"`
+	ResourceName   string     `json:"resource_name" gorm:"size:128"`
+	Namespace      string     `json:"namespace" gorm:"size:64"`
+	ClusterID      uint       `json:"cluster_id"`
+	Description    string     `json:"description" gorm:"type:text"`
+	Parameters     string     `json:"parameters" gorm:"type:text"` // JSON
+	DryRunResult   string     `json:"dry_run_result" gorm:"type:text"`
+	Status         string     `json:"status" gorm:"size:20;default:'pending'"` // pending, confirmed, executed, failed, cancelled
+	Result         string     `json:"result" gorm:"type:text"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ExecutedAt     *time.Time `json:"executed_at"`
 }
 
 func (AgentAction) TableName() string {

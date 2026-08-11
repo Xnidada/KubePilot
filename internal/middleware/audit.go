@@ -13,11 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	maxAuditBodyBytes = 4096
-	maxAuditTextBytes = 2048
-)
-
 type responseBodyWriter struct {
 	gin.ResponseWriter
 	body *bytes.Buffer
@@ -28,77 +23,70 @@ func (r *responseBodyWriter) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-var sensitiveFieldNames = map[string]struct{}{
-	"password":      {},
-	"new_password":  {},
-	"old_password":  {},
-	"token":         {},
-	"access_token":  {},
-	"refresh_token": {},
-	"secret":        {},
-	"client_secret": {},
-	"api_key":       {},
-	"apikey":        {},
-	"kubeconfig":    {},
-	"private_key":   {},
-	"credentials":   {},
-	"authorization": {},
+// sensitivePaths 需要脱敏的路径
+var sensitivePaths = []string{
+	"/auth/login",
+	"/auth/register",
+	"/secrets",
+	"/aiops/configs",
+	"/profile/password",
 }
 
-func normalizeFieldName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, "-", "_"))
-}
-
-func isSensitiveField(name string) bool {
-	_, ok := sensitiveFieldNames[normalizeFieldName(name)]
-	return ok
-}
-
-func redactValue(value interface{}) interface{} {
-	switch typed := value.(type) {
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(typed))
-		for key, nested := range typed {
-			if isSensitiveField(key) {
-				out[key] = "******"
-				continue
-			}
-			out[key] = redactValue(nested)
+// isSensitivePath 检查是否是敏感路径
+func isSensitivePath(path string) bool {
+	for _, sp := range sensitivePaths {
+		if strings.Contains(path, sp) {
+			return true
 		}
-		return out
-	case []interface{}:
-		out := make([]interface{}, len(typed))
-		for i, nested := range typed {
-			out[i] = redactValue(nested)
-		}
-		return out
-	default:
-		return value
 	}
+	return false
 }
 
+// maskSensitiveData 脱敏请求体
 func maskSensitiveData(data []byte, path string) string {
 	if len(data) == 0 {
 		return ""
 	}
+
+	// 对于登录/注册请求，隐藏密码
+	if strings.Contains(path, "/auth/") {
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err == nil {
+			if _, ok := m["password"]; ok {
+				m["password"] = "******"
+			}
+			if masked, err := json.Marshal(m); err == nil {
+				return string(masked)
+			}
+		}
+		return "[masked]"
+	}
+
+	// 对于 Secret 操作，不记录内容
 	if strings.Contains(path, "/secrets") {
 		return "[secret data masked]"
 	}
-	var payload interface{}
-	if err := json.Unmarshal(data, &payload); err == nil {
-		masked, err := json.Marshal(redactValue(payload))
-		if err == nil {
-			return truncateAuditText(string(masked), maxAuditBodyBytes)
-		}
-	}
-	return truncateAuditText(string(data), maxAuditBodyBytes)
-}
 
-func truncateAuditText(value string, limit int) string {
-	if len(value) <= limit {
-		return value
+	// 对于 LLM 配置，隐藏 API Key
+	if strings.Contains(path, "/aiops/configs") {
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err == nil {
+			if _, ok := m["api_key"]; ok {
+				m["api_key"] = "******"
+			}
+			if masked, err := json.Marshal(m); err == nil {
+				return string(masked)
+			}
+		}
+		return "[masked]"
 	}
-	return value[:limit] + "...[truncated]"
+
+	// 限制请求体大小
+	if len(data) > 4096 {
+		return string(data[:4096]) + "...[truncated]"
+	}
+
+	return string(data)
 }
 
 func AuditMiddleware() gin.HandlerFunc {
@@ -106,123 +94,94 @@ func AuditMiddleware() gin.HandlerFunc {
 		startTime := time.Now()
 		path := c.Request.URL.Path
 
+		// 读取请求体
 		var requestBody []byte
-		if c.Request.Body != nil {
+		if c.Request.Body != nil && !isSensitivePath(path) {
+			// 非敏感路径，读取并记录
+			requestBody, _ = io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		} else if c.Request.Body != nil {
+			// 敏感路径，读取但脱敏
 			requestBody, _ = io.ReadAll(c.Request.Body)
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		}
 
-		w := &responseBodyWriter{body: &bytes.Buffer{}, ResponseWriter: c.Writer}
+		// Wrap response writer
+		w := &responseBodyWriter{
+			body:           &bytes.Buffer{},
+			ResponseWriter: c.Writer,
+		}
 		c.Writer = w
 
 		c.Next()
 
 		latency := time.Since(startTime).Milliseconds()
+
+		// Get user info
 		userID, _ := c.Get("user_id")
 		username, _ := c.Get("username")
 
-		action := extractAction(c.Request.Method)
-		resourceType := extractResourceType(path)
-		if raw, ok := c.Get("authz_resource"); ok {
-			if value, castOK := raw.(string); castOK && value != "" {
-				resourceType = value
-			}
-		}
-		if raw, ok := c.Get("authz_action"); ok {
-			if value, castOK := raw.(string); castOK && value != "" {
-				action = value
-			}
-		}
+		// Extract resource info from path
+		resourceType := extractResourceType(c.FullPath())
+		resourceName := c.Param("name")
+		clusterID := c.Param("id")
+		namespace := c.Param("ns")
 
-		var uid *uint
-		if id, ok := userID.(uint); ok {
-			uid = &id
-		}
-		uname, _ := username.(string)
-
+		// Mask request body for sensitive paths
 		maskedBody := maskSensitiveData(requestBody, path)
-		decision, _ := c.Get("authz_decision")
-		reason, _ := c.Get("authz_reason")
-		clusterRaw, _ := c.Get("authz_cluster_id")
-		namespaceRaw, _ := c.Get("authz_namespace")
 
-		var clusterID *uint
-		if id, ok := clusterRaw.(uint); ok && id > 0 {
-			clusterID = &id
+		// Parse cluster ID
+		var clusterIDUint uint
+		if clusterID != "" {
+			for _, c := range clusterID {
+				if c >= '0' && c <= '9' {
+					clusterIDUint = clusterIDUint*10 + uint(c-'0')
+				}
+			}
 		}
-		namespace, _ := namespaceRaw.(string)
 
-		resultParts := []string{}
-		if decisionStr, ok := decision.(string); ok && decisionStr != "" {
-			resultParts = append(resultParts, "decision="+decisionStr)
-		}
-		if reasonStr, ok := reason.(string); ok && reasonStr != "" {
-			resultParts = append(resultParts, "reason="+reasonStr)
-		}
-		result := truncateAuditText(strings.Join(resultParts, "; "), maxAuditTextBytes)
-
-		auditLog := &model.AuditLog{
-			UserID:       uid,
-			Username:     uname,
-			Action:       action,
+		auditLog := model.AuditLog{
+			Action:       c.Request.Method,
 			ResourceType: resourceType,
-			ResourceName: extractResourceName(c),
-			ClusterID:    clusterID,
+			ResourceName: resourceName,
 			Namespace:    namespace,
 			RequestBody:  maskedBody,
 			ResponseCode: c.Writer.Status(),
 			Latency:      latency,
 			IP:           c.ClientIP(),
-			UserAgent:    truncateAuditText(c.Request.UserAgent(), 256),
+			UserAgent:    c.Request.UserAgent(),
 			Success:      c.Writer.Status() < 400,
-			Error:        truncateAuditText(c.Errors.ByType(gin.ErrorTypeAny).String(), maxAuditTextBytes),
-			Result:       result,
-			CreatedAt:    time.Now(),
 		}
 
-		go func(log *model.AuditLog) {
-			if err := model.DB.Create(log).Error; err != nil {
+		// 设置用户信息
+		if userID != nil {
+			id := userID.(uint)
+			auditLog.UserID = &id
+			auditLog.Username = username.(string)
+		} else {
+			auditLog.Username = "anonymous"
+		}
+
+		// 设置集群ID（如果存在）
+		if clusterIDUint > 0 {
+			auditLog.ClusterID = &clusterIDUint
+		}
+
+		// Save audit log asynchronously
+		go func() {
+			if err := model.DB.Create(&auditLog).Error; err != nil {
 				logger.Error("failed to save audit log", zap.Error(err))
 			}
-		}(auditLog)
-	}
-}
-
-func extractAction(method string) string {
-	switch method {
-	case "GET":
-		return "get"
-	case "POST":
-		return "create"
-	case "PUT", "PATCH":
-		return "update"
-	case "DELETE":
-		return "delete"
-	default:
-		return strings.ToLower(method)
+		}()
 	}
 }
 
 func extractResourceType(path string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, part := range parts {
-		if part == "api" || part == "v1" {
-			continue
+	resources := []string{"clusters", "deployments", "pods", "services", "configmaps", "secrets", "namespaces", "nodes", "ingresses", "jobs", "cronjobs", "statefulsets", "daemonsets", "users", "roles", "audit-logs"}
+	for _, r := range resources {
+		if strings.Contains(path, r) {
+			return r
 		}
-		if i+1 < len(parts) {
-			return part
-		}
-		return part
 	}
 	return "unknown"
-}
-
-func extractResourceName(c *gin.Context) string {
-	if name := c.Param("name"); name != "" {
-		return name
-	}
-	if id := c.Param("id"); id != "" {
-		return id
-	}
-	return ""
 }
