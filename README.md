@@ -18,21 +18,59 @@
 
 ## 📖 简介
 
-KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观的 Web 界面来管理 K8S 集群。支持多集群管理、工作负载管理、AI 智能运维、任务调度、实时终端等功能，帮助企业简化 K8S 运维操作。
+KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统一管理、工作负载全生命周期、进程内可启停功能模块、AI Agent（原生 Tool Calling + 写操作确认）、备份/SSO/巡检/Event 转发等能力，帮助团队在同一套界面完成日常运维。
+
+默认演示账号（首次登录后请改密）：
+
+| 账号 | 密码 | 角色 |
+|------|------|------|
+| `admin` | `admin123` | 管理员 |
+| `aiviewer` | `admin123` | AI 只读（可浏览 AI/他人 Agent 对话，不可执行写操作） |
+| `viewer` | `admin123` | 只读（不含 AI 智能） |
 
 ## 📸 功能截图
 
-| 仪表盘 | 集群管理 | Deployment |
-|:------:|:--------:|:----------:|
-| ![仪表盘](images/00仪表盘.png) | ![集群管理](images/01集群管理.png) | ![Deployment](images/02deploy.png) |
+### 概览与集群
 
-| AI Agent | 智能诊断 | 资源监控 |
-|:--------:|:--------:|:--------:|
-| ![Agent](images/08AIAGENT.png) | ![诊断](images/16AI%20智能诊断.png) | ![监控](images/06资源监控.png) |
+| 仪表盘 | 集群管理 | 资源监控 |
+|:------:|:--------:|:--------:|
+| ![仪表盘](images/00仪表盘.png) | ![集群管理](images/01集群管理.png) | ![资源监控](images/06资源监控.png) |
 
-| 资源依赖 | 闲置资源 | 用户权限 |
-|:--------:|:--------:|:--------:|
-| ![依赖](images/14资源依赖.png) | ![闲置](images/15闲置资源检测.png) | ![权限](images/12用户权限管理.png) |
+### 工作负载与网络
+
+| Deployment | 创建 Deployment | Pod |
+|:----------:|:--------------:|:---:|
+| ![Deployment](images/02deploy.png) | ![创建 Deployment](images/03create%20deply.png) | ![Pod](images/04pod.png) |
+
+| Service | HPA | CRD |
+|:-------:|:---:|:---:|
+| ![Service](images/18SERVICE.png) | ![HPA](images/17HPA.png) | ![CRD](images/05crd.png) |
+
+### 存储与成本
+
+| PersistentVolume | 资源成本分析 |
+|:----------------:|:------------:|
+| ![PV](images/19PV.png) | ![成本分析](images/07资源成本分析.png) |
+
+### AI 智能
+
+| AI Agent | AI 智能诊断 | 智能诊断 |
+|:--------:|:-----------:|:--------:|
+| ![AI Agent](images/08AIAGENT.png) | ![AI 智能诊断](images/16AI%20智能诊断.png) | ![智能诊断](images/09智能诊断.png) |
+
+| 日志问诊 | 资源指南 | 资源状态诊断 |
+|:--------:|:--------:|:------------:|
+| ![日志问诊](images/10日志问诊.png) | ![资源指南](images/11资源指南.png) | ![资源状态诊断](images/13pod诊断.png) |
+
+### 运维与系统
+
+| 资源依赖图 | 闲置资源检测 | 用户权限 |
+|:----------:|:------------:|:--------:|
+| ![资源依赖](images/14资源依赖.png) | ![闲置资源](images/15闲置资源检测.png) | ![用户权限](images/12用户权限管理.png) |
+
+| 备份管理 | Webhook 通知 |
+|:--------:|:------------:|
+| ![备份管理](images/20备份管理.png) | ![Webhook](images/21%20Webhook%20通知.png) |
 
 ## ✨ 核心功能
 
@@ -52,8 +90,12 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 | Pod | ✅ | ✅ | - | ✅ |
 | Job | - | ✅ | - | ✅ |
 | CronJob | ✅ | ✅ | ✅ | ✅ |
+| HPA | ✅ | ✅ | ✅ | ✅ |
 | Service | ✅ | ✅ | ✅ | ✅ |
 | Ingress | ✅ | ✅ | ✅ | ✅ |
+| CRD / 自定义资源 | - | ✅ | - | - |
+
+**页面内能力**：工作负载列表支持批量删除/重启；Deployment/Pod 详情支持 YAML 编辑与对比；诊断能力集成在 AI「智能诊断」与资源详情中（不再提供独立运维子菜单）。
 
 **CronJob 特色功能**：
 - 可视化调度配置（每N分钟/每N小时/每天/每周/每月）
@@ -85,34 +127,40 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 - **NetworkPolicy** - 创建、查看、删除
 
 ### 🤖 AI 智能运维
-- **AI Agent** - 自然语言操作 K8S，支持多任务批量执行
-- **智能诊断** - 问题诊断（自动获取 describe）、日志分析
+- **AI Agent**（原生 Tool Calling）
+  - 读操作：list/get/describe/events/logs、Service/工作负载诊断
+  - 写操作：`stage_mutation` 暂存 → UI 确认后执行（支持 NodePort、hostPath 挂载等）
+  - `aiviewer` 可浏览全部用户 Agent 对话（只读）
+- **智能诊断** - 问题诊断（自动获取 describe）、日志分析、资源状态建议
 - **AI 工具箱**：
   - 划词解释 - 解释 K8S 概念、命令、配置、错误信息
   - 资源指南 - 分析资源状态，给出健康评分和优化建议
   - YAML 翻译 - YAML 配置中英文翻译
+  - 日志问诊 - 粘贴或拉取日志后给出排查建议
 
 ### 🔒 安全特性
-- JWT 认证 + RBAC 权限控制（16 种资源 × 6 种操作）
+- JWT 认证 + 平台 RBAC 与集群/命名空间授权 fail-closed（角色决定「能做什么」，集群授权决定「在哪做」）
+- 用户组与有效权限预览
 - 两步验证 (2FA/TOTP)，支持备份码
+- SSO/OAuth2（GitHub、GitLab、Google 等）
 - 审计日志（敏感数据自动脱敏）
-- WebSocket 连接认证
-- CORS 安全配置
+- WebSocket 连接认证；Webhook/告警出站 SSRF 校验
 
-### 🔧 运维工具
+### 🔧 运维与系统模块
+进程内模块可启停，统一暴露健康状态与菜单（系统 → 模块）：
 - **集群巡检** - 自定义规则，定时巡检，生成报告
-- **Event 转发** - 转发 K8S 事件到 Webhook，支持过滤
-- **备份管理（Velero）** - 在目标集群创建真实 `velero.io/v1` Backup/Restore；未安装 Velero 时拒绝假成功
-- **SSO/OAuth** - 支持 GitHub、GitLab、Google 等 OAuth2 登录（登录页按钮 + 系统 → SSO 配置）
-- **数据持久化** - 使用 PostgreSQL 存储平台配置与审计数据
-- **缓存系统** - 支持内存缓存和 Redis
+- **Event 转发** - 转发 K8S 事件到 Webhook，支持过滤与健康迟滞
+- **备份管理（Velero）** - 真实 `velero.io/v1` Backup/Restore；未安装 Velero 时拒绝假成功
+- **Webhook 通知** - 平台事件通知渠道
+- **任务调度 / AIOps / AppStore** - 对应功能模块
+- **环境克隆 / GPU 调度 / 资源依赖图 / 闲置资源清理**
 
 ### 📊 监控告警
 - 集群资源概览仪表盘
 - 节点压力可视化（CPU/内存/Pod）
 - 资源成本分析（支持自定义单价）
 - 事件时间线（按时间聚合）
-- 告警规则管理
+- 告警规则管理（含评估失败可见）
 - 通知渠道配置
 
 ### 🖥️ 终端功能
@@ -120,10 +168,6 @@ KubePilot 是一个功能完整的 Kubernetes 运维管理平台，提供直观�
 - Node Shell (nsenter，支持 Pod 复用)
 - 文件管理（浏览、编辑、上传、下载）
 - 日志查看（搜索、高亮、下载）
-
-### 📋 其他功能
-- **资源依赖图** - 可视化 Deployment→ReplicaSet→Pod→Service 关系
-- **环境克隆** - 一键克隆命名空间配置
 
 ## 🛠️ 技术栈
 
@@ -233,27 +277,23 @@ chmod +x deploy/velero/install.sh
 KubePilot/
 ├── cmd/server/              # 程序入口
 ├── internal/
+│   ├── authz/               # 显式 PolicyRegistry / Authorizer
 │   ├── config/              # 配置管理
-│   ├── handler/             # HTTP 处理器
-│   │   ├── aiops/           # AI 运维
-│   │   ├── alert/           # 告警管理
-│   │   ├── auth/            # 认证（含 2FA）
-│   │   ├── cluster/         # 集群管理
-│   │   ├── scheduler/       # 任务调度
-│   │   ├── system/          # 系统管理
-│   │   └── workload/        # 工作负载
+│   ├── handler/             # HTTP 处理器（aiops/alert/auth/cluster/ops/...）
 │   ├── k8s/                 # K8S 客户端
-│   ├── llm/                 # LLM 集成
-│   ├── middleware/           # 中间件（认证/RBAC/审计/CORS）
-│   ├── model/               # 数据模型
+│   ├── llm/                 # LLM 集成（Tool Calling）
+│   ├── middleware/          # 认证 / RBAC / 审计 / CORS
+│   ├── model/               # 数据模型与种子角色（含 aiviewer）
+│   ├── module/              # 进程内模块框架
+│   ├── modules/             # aiops / backup / inspection / eventforward / ...
 │   ├── pkg/                 # 公共包（缓存/加密/日志）
 │   ├── repository/          # 数据仓库
-│   ├── router/              # 路由（含巡检/Event转发/OAuth/调度）
+│   ├── router/              # 路由与策略注册
 │   └── service/             # 业务服务
 ├── frontend/                # 前端项目
 │   └── src/
 │       ├── api/             # API 调用
-│       ├── components/      # 组件（Markdown/终端/文件管理）
+│       ├── components/      # 组件（终端/YAML/只读横幅等）
 │       ├── hooks/           # Hooks（会话管理）
 │       ├── pages/           # 页面
 │       └── stores/          # 状态管理
@@ -262,7 +302,7 @@ KubePilot/
 │   ├── k8s/                 # K8S YAML
 │   ├── helm/                # Helm Chart
 │   └── velero/              # Velero + MinIO 安装模板（备份依赖）
-├── images/                  # 项目截图
+├── images/                  # README 功能截图（00–21）
 ├── scripts/                 # 脚本工具
 ├── docker-compose.yml       # Docker Compose
 └── Dockerfile               # Docker 镜像
@@ -351,12 +391,14 @@ POST   /api/v1/scheduler/tasks/:id/retry   # 重试任务
 
 ### AI 运维
 ```
-POST   /api/v1/aiops/agent          # AI Agent
-POST   /api/v1/aiops/diagnose       # 智能诊断
-POST   /api/v1/aiops/explain        # 划词解释
-POST   /api/v1/aiops/resource-guide # 资源指南
-POST   /api/v1/aiops/translate-yaml # YAML 翻译
-POST   /api/v1/aiops/analyze-logs   # 日志问诊
+POST   /api/v1/aiops/agent                 # AI Agent（流式见 /agent/stream）
+POST   /api/v1/aiops/agent/confirm/:id     # 确认暂存写操作
+GET    /api/v1/aiops/conversations         # 对话列表（aiviewer 可见全部）
+POST   /api/v1/aiops/diagnose              # 智能诊断
+POST   /api/v1/aiops/explain               # 划词解释
+POST   /api/v1/aiops/resource-guide        # 资源指南
+POST   /api/v1/aiops/translate-yaml        # YAML 翻译
+POST   /api/v1/aiops/analyze-logs          # 日志问诊
 ```
 
 ### 运维工具
@@ -366,6 +408,7 @@ GET    /api/v1/ops/:id/events/timeline          # 事件时间线
 GET    /api/v1/ops/:id/resource-graph           # 资源依赖图
 GET    /api/v1/ops/:id/rbac                     # RBAC 可视化
 GET    /api/v1/ops/:id/idle-resources           # 闲置资源
+GET    /api/v1/modules                          # 功能模块健康与详情
 ```
 
 ### 巡检与事件
@@ -386,11 +429,13 @@ POST   /api/v1/event-forward/rules/:id/test # 测试转发
 | operator | 运维人员 | 管理工作负载、告警、任务调度 |
 | user | 开发人员 | 查看、创建工作负载 |
 | viewer | 只读用户 | 仅查看（不含 AI 智能） |
-| aiviewer | AI 只读用户 | viewer + 可浏览 AI 智能全部页面（不可执行 AI 操作） |
+| aiviewer | AI 只读用户 | viewer + 可浏览 AI 智能全部页面与他人 Agent 对话（不可 execute） |
 
-### 资源类型
+> 非 admin 账号还需在「用户 → 集群权限」中授权集群，否则集群列表为空。种子数据会为 `viewer` / `aiviewer` 等演示账号自动补齐已有集群的只读/读写授权。
 
-clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespaces, nodes, events, alerts, users, roles, audit_logs, scheduler
+### 资源类型（节选）
+
+clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespaces, nodes, events, alerts, users, roles, audit_logs, scheduler, aiops, aiops_config, backups, inspection, event_forward, operations, metrics, cost
 
 ## 🏗️ 架构设计
 
@@ -406,12 +451,12 @@ clusters, deployments, pods, services, configmaps, secrets, pvcs, pvs, namespace
 │                              │                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │                    后端 (Go + Gin)                       │   │
-│  │  JWT认证 → RBAC权限 → 业务处理 → K8S API               │   │
+│  │  JWT → Authz(RBAC+集群授权) → 模块/业务 → K8S API      │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                              │                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    数据层                                │   │
-│  │  PostgreSQL (持久化) | Redis (缓存) | K8S API (资源)    │   │
+│  │                    数据与运行时                          │   │
+│  │  PostgreSQL | Redis | 进程内 Modules | K8S API         │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
