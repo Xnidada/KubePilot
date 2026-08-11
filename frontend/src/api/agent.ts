@@ -81,6 +81,9 @@ export interface StageResponse {
 export interface ConfirmResponse {
   success: boolean
   message: string
+  details?: string[]
+  action_id?: number
+  status?: string
   result?: any
 }
 

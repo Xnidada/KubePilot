@@ -39,8 +39,14 @@ func SeedData() error {
 		},
 		{
 			Name:        "viewer",
-			Description: "只读用户，仅查看资源",
-			Permissions: `[{"resource":"*","actions":["view"]}]`,
+			Description: "只读用户，仅查看资源（不含 AI 智能）",
+			Permissions: RoleTemplates["viewer"].ToJSON(),
+			IsSystem:    false,
+		},
+		{
+			Name:        "aiviewer",
+			Description: "只读用户，额外可浏览 AI 智能全部页面（不可执行 AI 操作）",
+			Permissions: RoleTemplates["aiviewer"].ToJSON(),
 			IsSystem:    false,
 		},
 	}
@@ -93,6 +99,7 @@ func SeedData() error {
 		{Username: "operator", Email: "operator@kubepilot.io", RealName: "运维工程师", RoleName: "operator"},
 		{Username: "developer", Email: "developer@kubepilot.io", RealName: "开发人员", RoleName: "user"},
 		{Username: "viewer", Email: "viewer@kubepilot.io", RealName: "只读用户", RoleName: "viewer"},
+		{Username: "aiviewer", Email: "aiviewer@kubepilot.io", RealName: "AI 只读用户", RoleName: "aiviewer"},
 	}
 
 	// 创建或更新用户
@@ -118,8 +125,72 @@ func SeedData() error {
 			} else {
 				logger.Info("user created", zap.String("user", u.Username), zap.String("role", u.RoleName))
 			}
+		} else if existingUser.RoleID != roleID {
+			// Keep demo users aligned with their seeded roles (e.g. aiviewer).
+			if err := DB.Model(&existingUser).Update("role_id", roleID).Error; err != nil {
+				logger.Error("failed to update user role", zap.String("user", u.Username), zap.Error(err))
+			}
 		}
 	}
 
+	if err := ensureDemoUserClusterGrants(); err != nil {
+		logger.Error("failed to ensure demo user cluster grants", zap.Error(err))
+	}
+
+	return nil
+}
+
+// ensureDemoUserClusterGrants grants all existing clusters to seeded non-admin demo users.
+// Without UserCluster rows, cluster list APIs filter to empty for these accounts.
+func ensureDemoUserClusterGrants() error {
+	levelByUser := map[string]string{
+		"viewer":    "read",
+		"aiviewer":  "read",
+		"developer": "write",
+		"operator":  "write",
+	}
+
+	var clusters []Cluster
+	if err := DB.Find(&clusters).Error; err != nil {
+		return err
+	}
+	if len(clusters) == 0 {
+		return nil
+	}
+
+	for username, level := range levelByUser {
+		var user User
+		if err := DB.Where("username = ?", username).First(&user).Error; err != nil {
+			continue
+		}
+		for _, cluster := range clusters {
+			var count int64
+			if err := DB.Model(&UserCluster{}).
+				Where("user_id = ? AND cluster_id = ? AND namespace = ?", user.ID, cluster.ID, "*").
+				Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				continue
+			}
+			grant := UserCluster{
+				UserID:          user.ID,
+				ClusterID:       cluster.ID,
+				Namespace:       "*",
+				PermissionLevel: level,
+			}
+			if err := DB.Create(&grant).Error; err != nil {
+				logger.Error("failed to grant cluster access",
+					zap.String("user", username),
+					zap.Uint("cluster_id", cluster.ID),
+					zap.Error(err))
+				continue
+			}
+			logger.Info("demo cluster grant ensured",
+				zap.String("user", username),
+				zap.Uint("cluster_id", cluster.ID),
+				zap.String("level", level))
+		}
+	}
 	return nil
 }

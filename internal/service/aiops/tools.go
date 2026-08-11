@@ -67,14 +67,14 @@ func agentToolDefinitions() []llm.ToolDefinition {
 			"Diagnose ANY Service access issue (NodePort/ClusterIP). Pass name+namespace, OR node_port (optionally namespace) to auto-resolve. Returns ports, Endpoints, selector match, and ranked selector near-miss vs Pods/Deployments — no app-specific assumptions.",
 			`{"type":"object","properties":{"namespace":{"type":"string"},"name":{"type":"string"},"node_port":{"type":"integer"}},"required":[]}`),
 		llm.NewFunctionTool("propose_mutation",
-			"Dry-run preview of a mutating action WITHOUT staging. action: create_deployment|create_service|delete_deployment|delete_service|delete_pod|scale_deployment.",
-			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}}},"required":["action","namespace","name"]}`),
+			"Dry-run preview of a mutating action WITHOUT staging. action: create_deployment|create_service|delete_deployment|delete_service|delete_pod|scale_deployment. For host mounts on create_deployment use host_path_mounts.",
+			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}}},"required":["action","namespace","name"]}`),
 		llm.NewFunctionTool("stage_mutation",
-			"Stage one mutating action for user confirmation (does NOT apply yet). For external access: action=create_service, service_type=NodePort, and REQUIRED node_port (30000-32767, e.g. 30089). Omitting node_port will fail.",
-			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}`),
+			"Stage one mutating action for user confirmation (does NOT apply yet). For external access: action=create_service, service_type=NodePort, and REQUIRED node_port (30000-32767). For hostPath mounts on create_deployment: REQUIRED host_path_mounts=[{host_path,mount_path}] when user asks to mount local dirs (e.g. /opt/nginx/html -> /usr/share/nginx/html).",
+			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}`),
 		llm.NewFunctionTool("stage_mutations",
 			"Stage multiple mutating actions in one call (batch). Each item same schema as stage_mutation.",
-			`{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}}},"required":["items"]}`),
+			`{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}}},"required":["items"]}`),
 		llm.NewFunctionTool("delete_by_prefix",
 			"Stage delete_pod for all Pods in a namespace whose name starts with name_prefix. Does NOT delete immediately — stages for UI confirmation.",
 			`{"type":"object","properties":{"namespace":{"type":"string"},"name_prefix":{"type":"string"},"limit":{"type":"integer"}},"required":["namespace","name_prefix"]}`),
@@ -490,6 +490,19 @@ func parseMutationParams(argsJSON string) (StagedActionParams, error) {
 			params.NodePort = aliases.NodePortPascal
 		}
 	}
+	if len(params.HostPathMounts) == 0 {
+		var mountAliases struct {
+			VolumeMounts        []HostPathMount `json:"volume_mounts"`
+			HostPathMountsCamel []HostPathMount `json:"hostPathMounts"`
+		}
+		_ = parseToolArgs(argsJSON, &mountAliases)
+		if len(mountAliases.VolumeMounts) > 0 {
+			params.HostPathMounts = mountAliases.VolumeMounts
+		} else if len(mountAliases.HostPathMountsCamel) > 0 {
+			params.HostPathMounts = mountAliases.HostPathMountsCamel
+		}
+	}
+	normalizeHostPathMounts(&params)
 	params.Action = strings.TrimSpace(params.Action)
 	if params.Action == "" {
 		return params, fmt.Errorf("action is required")
@@ -506,8 +519,254 @@ func parseMutationParams(argsJSON string) (StagedActionParams, error) {
 			params.Namespace = "default"
 		}
 	}
+	if params.Action == "create_deployment" {
+		params.Image = normalizeDeploymentImage(params.Image)
+		if len(params.Ports) == 0 && strings.HasPrefix(strings.ToLower(params.Image), "nginx:") {
+			params.Ports = []int32{80}
+		}
+	}
 	normalizeServiceParams(&params)
 	return params, nil
+}
+
+const pinnedNginxImage = "nginx:1.25.4"
+
+func normalizeDeploymentImage(image string) string {
+	img := strings.TrimSpace(image)
+	lower := strings.ToLower(img)
+	switch lower {
+	case "nginx", "nginx:latest", "nginx:stable", "nginx:mainline":
+		return pinnedNginxImage
+	}
+	if strings.HasPrefix(lower, "nginx:") {
+		tag := strings.TrimPrefix(lower, "nginx:")
+		// Models often pick floating tags (nginx:1.25) after latest is refused — pin patch.
+		if tag == "1.25" || tag == "1.25-alpine" || tag == "1.27" || tag == "1.27-alpine" {
+			if strings.Contains(tag, "alpine") {
+				return "nginx:1.25.4-alpine"
+			}
+			return pinnedNginxImage
+		}
+	}
+	return img
+}
+
+// extractHostPathMountHints infers hostPath mounts from natural-language paths.
+func extractHostPathMountHints(msg string) []HostPathMount {
+	paths := extractAbsolutePaths(msg)
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]HostPathMount, 0, len(paths))
+	seenHost := map[string]bool{}
+	for _, hp := range paths {
+		if seenHost[hp] {
+			continue
+		}
+		seenHost[hp] = true
+		mp := inferContainerMountPath(hp, msg)
+		if mp == "" {
+			continue
+		}
+		out = append(out, HostPathMount{HostPath: hp, MountPath: mp, Type: "DirectoryOrCreate"})
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func extractAbsolutePaths(msg string) []string {
+	var out []string
+	for i := 0; i < len(msg); i++ {
+		if msg[i] != '/' {
+			continue
+		}
+		j := i + 1
+		for j < len(msg) {
+			c := msg[j]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+				c == '_' || c == '-' || c == '.' || c == '/' {
+				j++
+				continue
+			}
+			break
+		}
+		p := strings.TrimRight(msg[i:j], "/.")
+		if len(p) >= 2 && strings.Count(p, "/") >= 1 {
+			out = append(out, p)
+		}
+		i = j
+	}
+	return out
+}
+
+func inferContainerMountPath(hostPath, msg string) string {
+	lower := strings.ToLower(hostPath)
+	switch {
+	case strings.Contains(lower, "html") || strings.Contains(lower, "www") || strings.HasSuffix(lower, "/web"):
+		return "/usr/share/nginx/html"
+	case strings.Contains(lower, "log"):
+		return "/var/log/nginx"
+	}
+	// Context near the path: 网页/主目录 → html; 日志 → log dir
+	idx := strings.Index(msg, hostPath)
+	if idx >= 0 {
+		start := idx - 24
+		if start < 0 {
+			start = 0
+		}
+		ctx := msg[start:idx]
+		if strings.Contains(ctx, "网页") || strings.Contains(ctx, "主目录") || strings.Contains(ctx, "html") {
+			return "/usr/share/nginx/html"
+		}
+		if strings.Contains(ctx, "日志") || strings.Contains(strings.ToLower(ctx), "log") {
+			return "/var/log/nginx"
+		}
+	}
+	return ""
+}
+
+// enrichMutationArgsWithUserHints injects host_path_mounts (and pins image) when the model omits them.
+func enrichMutationArgsWithUserHints(userMsg, argsJSON string) string {
+	if strings.TrimSpace(argsJSON) == "" {
+		return argsJSON
+	}
+	hints := extractHostPathMountHints(userMsg)
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(argsJSON), &root); err != nil {
+		return argsJSON
+	}
+	changed := false
+	if rawItems, ok := root["items"]; ok {
+		var items []json.RawMessage
+		if err := json.Unmarshal(rawItems, &items); err == nil {
+			for i, item := range items {
+				enriched, did := enrichOneMutationJSON(string(item), hints, userMsg)
+				if did {
+					items[i] = json.RawMessage(enriched)
+					changed = true
+				}
+			}
+			if changed {
+				b, _ := json.Marshal(items)
+				root["items"] = b
+			}
+		}
+	} else {
+		enriched, did := enrichOneMutationJSON(argsJSON, hints, userMsg)
+		if did {
+			return enriched
+		}
+		return argsJSON
+	}
+	if !changed {
+		return argsJSON
+	}
+	b, err := json.Marshal(root)
+	if err != nil {
+		return argsJSON
+	}
+	return string(b)
+}
+
+func enrichOneMutationJSON(argsJSON string, hints []HostPathMount, userMsg string) (string, bool) {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
+		return argsJSON, false
+	}
+	action, _ := m["action"].(string)
+	if action != "create_deployment" {
+		return argsJSON, false
+	}
+	changed := false
+	if img, ok := m["image"].(string); ok {
+		norm := normalizeDeploymentImage(img)
+		if norm != img {
+			m["image"] = norm
+			changed = true
+		}
+	} else if isHostMountIntent(userMsg) || strings.Contains(strings.ToLower(userMsg), "nginx") {
+		m["image"] = pinnedNginxImage
+		changed = true
+	}
+	hasMounts := false
+	if _, ok := m["host_path_mounts"]; ok {
+		hasMounts = true
+	}
+	if _, ok := m["volume_mounts"]; ok {
+		hasMounts = true
+	}
+	if !hasMounts && len(hints) > 0 && isHostMountIntent(userMsg) {
+		arr := make([]map[string]interface{}, 0, len(hints))
+		for _, h := range hints {
+			arr = append(arr, map[string]interface{}{
+				"host_path":  h.HostPath,
+				"mount_path": h.MountPath,
+				"type":       "DirectoryOrCreate",
+			})
+		}
+		m["host_path_mounts"] = arr
+		changed = true
+	}
+	if ports, ok := m["ports"].([]interface{}); (!ok || len(ports) == 0) && strings.Contains(strings.ToLower(fmt.Sprint(m["image"])), "nginx") {
+		m["ports"] = []int{80}
+		changed = true
+	}
+	if !changed {
+		return argsJSON, false
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return argsJSON, false
+	}
+	return string(b), true
+}
+
+func normalizeHostPathMounts(params *StagedActionParams) {
+	if len(params.HostPathMounts) == 0 {
+		return
+	}
+	out := make([]HostPathMount, 0, len(params.HostPathMounts))
+	for _, m := range params.HostPathMounts {
+		m.HostPath = strings.TrimSpace(m.HostPath)
+		m.MountPath = strings.TrimSpace(m.MountPath)
+		m.Name = strings.TrimSpace(m.Name)
+		m.Type = strings.TrimSpace(m.Type)
+		if m.HostPath == "" && m.MountPath == "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	params.HostPathMounts = out
+}
+
+func validateHostPathMounts(mounts []HostPathMount) error {
+	if len(mounts) > 8 {
+		return fmt.Errorf("host_path_mounts: max 8 mounts")
+	}
+	seen := map[string]bool{}
+	for i, m := range mounts {
+		if m.HostPath == "" || m.MountPath == "" {
+			return fmt.Errorf("host_path_mounts[%d]: host_path and mount_path are required", i)
+		}
+		if !strings.HasPrefix(m.HostPath, "/") || !strings.HasPrefix(m.MountPath, "/") {
+			return fmt.Errorf("host_path_mounts[%d]: paths must be absolute", i)
+		}
+		if strings.Contains(m.HostPath, "..") || strings.Contains(m.MountPath, "..") {
+			return fmt.Errorf("host_path_mounts[%d]: path must not contain '..'", i)
+		}
+		if seen[m.MountPath] {
+			return fmt.Errorf("host_path_mounts[%d]: duplicate mount_path %s", i, m.MountPath)
+		}
+		seen[m.MountPath] = true
+		switch m.Type {
+		case "", "Directory", "DirectoryOrCreate", "File", "FileOrCreate":
+		default:
+			return fmt.Errorf("host_path_mounts[%d]: unsupported type %q", i, m.Type)
+		}
+	}
+	return nil
 }
 
 func normalizeServiceParams(params *StagedActionParams) {
@@ -543,11 +802,15 @@ func validateMutationParams(params StagedActionParams) error {
 			return fmt.Errorf("create_deployment requires image (do not invent defaults)")
 		}
 		lower := strings.ToLower(img)
+		// nginx / nginx:latest are normalized in parseMutationParams; refuse remaining placeholders.
 		if lower == "nginx" || lower == "nginx:latest" || strings.Contains(lower, "example.com") {
 			return fmt.Errorf("create_deployment: refuse placeholder image %q; ask the user for a real image", img)
 		}
 		if params.Replicas < 0 {
 			return fmt.Errorf("create_deployment replicas must be >= 0")
+		}
+		if err := validateHostPathMounts(params.HostPathMounts); err != nil {
+			return err
 		}
 	case "create_service":
 		if len(params.Selector) == 0 {
@@ -620,6 +883,13 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	dry, err := s.DryRunStagedAction(ctx, clusterID, params)
 	if err != nil {
 		return nil, "", err
+	}
+	// Supersede earlier pending create for the same resource in this conversation.
+	if conversationID > 0 && (params.Action == "create_deployment" || params.Action == "create_service") {
+		_ = s.db.Model(&model.AgentAction{}).
+			Where("conversation_id = ? AND status = ? AND resource_type = ? AND resource_name = ? AND namespace = ?",
+				conversationID, "pending", params.Action, params.Name, params.Namespace).
+			Update("status", "cancelled").Error
 	}
 	paramBytes, _ := json.Marshal(params)
 	desc := strings.TrimSpace(description)

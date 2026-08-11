@@ -51,10 +51,11 @@ func (m *Module) Permissions() []module.PermissionDef {
 
 func (m *Module) Menus() []module.MenuItem {
 	return []module.MenuItem{
+		// Menu visibility uses view; mutating AI APIs still require execute/create/edit.
 		{Key: "/aiops", Label: "AI 智能", Order: 100, Resource: "aiops", Action: "view"},
-		{Key: "/aiops/agent", Label: "AI Agent", Parent: "/aiops", Order: 1, Resource: "aiops", Action: "execute"},
-		{Key: "/aiops/diagnosis", Label: "智能诊断", Parent: "/aiops", Order: 2, Resource: "aiops", Action: "execute"},
-		{Key: "/aiops/tools", Label: "AI 工具箱", Parent: "/aiops", Order: 3, Resource: "aiops", Action: "execute"},
+		{Key: "/aiops/agent", Label: "AI Agent", Parent: "/aiops", Order: 1, Resource: "aiops", Action: "view"},
+		{Key: "/aiops/diagnosis", Label: "智能诊断", Parent: "/aiops", Order: 2, Resource: "aiops", Action: "view"},
+		{Key: "/aiops/tools", Label: "AI 工具箱", Parent: "/aiops", Order: 3, Resource: "aiops", Action: "view"},
 		{Key: "/aiops/settings", Label: "AI 设置", Parent: "/aiops", Order: 4, Resource: "aiops_config", Action: "view"},
 	}
 }

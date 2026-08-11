@@ -4,6 +4,10 @@ export interface Conversation {
   id: number
   title: string
   cluster_id: number | null
+  user_id?: number
+  username?: string
+  real_name?: string
+  mine?: boolean
   message_count: number
   created_at: string
   updated_at: string

@@ -8,12 +8,53 @@ import (
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 )
 
-// ListConversations 获取用户对话列表
+// canBrowseAllConversations allows admins and AI read-only roles (aiviewer) to
+// inspect other users' Agent conversations. Mutating APIs stay owner-scoped.
+func (h *Handler) canBrowseAllConversations(c *gin.Context) bool {
+	roleID, ok := c.Get("role_id")
+	if !ok {
+		return false
+	}
+	var role model.Role
+	if err := h.db.First(&role, roleID).Error; err != nil {
+		return false
+	}
+	if role.IsSystem || role.Name == "admin" || role.Name == "aiviewer" {
+		return true
+	}
+	permissions, err := model.ParsePermissions(role.Permissions)
+	if err != nil {
+		return false
+	}
+	// Generic AI read-only pattern: view without execute.
+	return permissions.HasPermission("aiops", "view") && !permissions.HasPermission("aiops", "execute")
+}
+
+func (h *Handler) loadConversation(c *gin.Context, convID string, forWrite bool) (*model.ChatConversation, bool) {
+	userID, _ := c.Get("user_id")
+	query := h.db.Where("id = ?", convID)
+	if forWrite || !h.canBrowseAllConversations(c) {
+		query = query.Where("user_id = ?", userID)
+	}
+	var conversation model.ChatConversation
+	if err := query.First(&conversation).Error; err != nil {
+		response.NotFound(c, "conversation not found")
+		return nil, false
+	}
+	return &conversation, true
+}
+
+// ListConversations 获取对话列表（所有者自己的；aiviewer/admin 可见全部）
 func (h *Handler) ListConversations(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
+	query := h.db.Model(&model.ChatConversation{}).Preload("User").Order("updated_at DESC")
+	if !h.canBrowseAllConversations(c) {
+		query = query.Where("user_id = ?", userID)
+	}
+
 	var conversations []model.ChatConversation
-	if err := h.db.Where("user_id = ?", userID).Order("updated_at DESC").Find(&conversations).Error; err != nil {
+	if err := query.Find(&conversations).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -22,11 +63,16 @@ func (h *Handler) ListConversations(c *gin.Context) {
 		ID           uint   `json:"id"`
 		Title        string `json:"title"`
 		ClusterID    *uint  `json:"cluster_id"`
+		UserID       uint   `json:"user_id"`
+		Username     string `json:"username"`
+		RealName     string `json:"real_name,omitempty"`
 		MessageCount int    `json:"message_count"`
+		Mine         bool   `json:"mine"`
 		CreatedAt    string `json:"created_at"`
 		UpdatedAt    string `json:"updated_at"`
 	}
 
+	uid := userID.(uint)
 	result := make([]ConversationInfo, 0, len(conversations))
 	for _, conv := range conversations {
 		var count int64
@@ -36,7 +82,11 @@ func (h *Handler) ListConversations(c *gin.Context) {
 			ID:           conv.ID,
 			Title:        conv.Title,
 			ClusterID:    conv.ClusterID,
+			UserID:       conv.UserID,
+			Username:     conv.User.Username,
+			RealName:     conv.User.RealName,
 			MessageCount: int(count),
+			Mine:         conv.UserID == uid,
 			CreatedAt:    conv.CreatedAt.Format("2006-01-02 15:04:05"),
 			UpdatedAt:    conv.UpdatedAt.Format("2006-01-02 15:04:05"),
 		})
@@ -82,12 +132,8 @@ func (h *Handler) CreateConversation(c *gin.Context) {
 
 // GetConversation 获取对话详情
 func (h *Handler) GetConversation(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), false)
+	if !ok {
 		return
 	}
 
@@ -114,10 +160,18 @@ func (h *Handler) GetConversation(c *gin.Context) {
 		})
 	}
 
+	var owner model.User
+	_ = h.db.Select("id", "username", "real_name").First(&owner, conversation.UserID).Error
+	userID, _ := c.Get("user_id")
+
 	response.Success(c, gin.H{
 		"id":         conversation.ID,
 		"title":      conversation.Title,
 		"cluster_id": conversation.ClusterID,
+		"user_id":    conversation.UserID,
+		"username":   owner.Username,
+		"real_name":  owner.RealName,
+		"mine":       conversation.UserID == userID.(uint),
 		"messages":   msgList,
 		"created_at": conversation.CreatedAt,
 		"updated_at": conversation.UpdatedAt,
@@ -126,12 +180,8 @@ func (h *Handler) GetConversation(c *gin.Context) {
 
 // UpdateConversation 更新对话
 func (h *Handler) UpdateConversation(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), true)
+	if !ok {
 		return
 	}
 
@@ -153,7 +203,7 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 	}
 
 	if len(updates) > 0 {
-		h.db.Model(&conversation).Updates(updates)
+		h.db.Model(conversation).Updates(updates)
 	}
 
 	response.SuccessWithMessage(c, "conversation updated", nil)
@@ -161,12 +211,8 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 
 // DeleteConversation 删除对话
 func (h *Handler) DeleteConversation(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), true)
+	if !ok {
 		return
 	}
 
@@ -174,19 +220,15 @@ func (h *Handler) DeleteConversation(c *gin.Context) {
 	h.db.Where("conversation_id = ?", conversation.ID).Delete(&model.ChatMessage{})
 
 	// 删除对话
-	h.db.Delete(&conversation)
+	h.db.Delete(conversation)
 
 	response.SuccessWithMessage(c, "conversation deleted", nil)
 }
 
 // ClearConversation 清空对话消息
 func (h *Handler) ClearConversation(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), true)
+	if !ok {
 		return
 	}
 
@@ -197,13 +239,8 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 
 // ListMessages 获取消息列表
 func (h *Handler) ListMessages(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	// 验证对话属于用户
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), false)
+	if !ok {
 		return
 	}
 
@@ -250,13 +287,8 @@ func (h *Handler) ListMessages(c *gin.Context) {
 
 // AddMessage 添加消息
 func (h *Handler) AddMessage(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-
-	// 验证对话属于用户
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), true)
+	if !ok {
 		return
 	}
 
@@ -286,7 +318,7 @@ func (h *Handler) AddMessage(c *gin.Context) {
 	}
 
 	// 更新对话的更新时间
-	h.db.Model(&conversation).Update("updated_at", message.CreatedAt)
+	h.db.Model(conversation).Update("updated_at", message.CreatedAt)
 
 	// 如果是用户的第一条消息，更新对话标题
 	if req.Role == "user" {
@@ -297,7 +329,7 @@ func (h *Handler) AddMessage(c *gin.Context) {
 			if len(title) > 50 {
 				title = title[:50] + "..."
 			}
-			h.db.Model(&conversation).Update("title", title)
+			h.db.Model(conversation).Update("title", title)
 		}
 	}
 
@@ -311,16 +343,11 @@ func (h *Handler) AddMessage(c *gin.Context) {
 
 // DeleteMessage 删除消息
 func (h *Handler) DeleteMessage(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	convID := c.Param("id")
-	msgID := c.Param("msgId")
-
-	// 验证对话属于用户
-	var conversation model.ChatConversation
-	if err := h.db.Where("id = ? AND user_id = ?", convID, userID).First(&conversation).Error; err != nil {
-		response.NotFound(c, "conversation not found")
+	conversation, ok := h.loadConversation(c, c.Param("id"), true)
+	if !ok {
 		return
 	}
+	msgID := c.Param("msgId")
 
 	var message model.ChatMessage
 	if err := h.db.Where("id = ? AND conversation_id = ?", msgID, conversation.ID).First(&message).Error; err != nil {

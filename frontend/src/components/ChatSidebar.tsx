@@ -21,6 +21,9 @@ export interface Conversation {
   createdAt: Date
   updatedAt: Date
   messageCount: number
+  username?: string
+  realName?: string
+  mine?: boolean
 }
 
 interface ChatSidebarProps {
@@ -323,8 +326,10 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             </Text>
                           </div>
                           <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              {item.messageCount} 条消息
+                            <Text type="secondary" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {item.username
+                                ? `${item.mine === false ? item.username : '我'} · ${item.messageCount} 条`
+                                : `${item.messageCount} 条消息`}
                             </Text>
                             <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
                               {formatTime(item.updatedAt)}

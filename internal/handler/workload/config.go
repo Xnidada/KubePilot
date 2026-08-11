@@ -2,7 +2,6 @@ package workload
 
 import (
 	"context"
-	"encoding/base64"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -324,37 +323,14 @@ func (h *Handler) GetSecret(c *gin.Context) {
 		return
 	}
 
-	keys := make([]string, 0, len(secret.Data))
-	for k := range secret.Data {
-		keys = append(keys, k)
-	}
-
-	// Metadata is always returned for secrets:view.
-	// Plaintext data requires secrets:view_data (or admin/*).
+	// 返回时将data转为string（base64编码）
 	result := map[string]interface{}{
-		"name":       secret.Name,
-		"namespace":  secret.Namespace,
-		"type":       string(secret.Type),
-		"keys":       keys,
-		"data_count": len(secret.Data),
-		"labels":     secret.Labels,
-		"age":        timeSince(secret.CreationTimestamp.Time),
-		"data":       map[string]string{},
-		"revealed":   false,
-	}
-
-	reveal := c.Query("reveal") == "true" || c.Query("reveal") == "1"
-	if reveal {
-		if err := authz.RequireScope(c, "secrets", "view_data", uint(clusterID), namespace); err != nil {
-			response.Forbidden(c, "secret data access denied")
-			return
-		}
-		data := make(map[string]string, len(secret.Data))
-		for k, v := range secret.Data {
-			data[k] = base64.StdEncoding.EncodeToString(v)
-		}
-		result["data"] = data
-		result["revealed"] = true
+		"name":      secret.Name,
+		"namespace": secret.Namespace,
+		"type":      string(secret.Type),
+		"data":      secret.Data,
+		"labels":    secret.Labels,
+		"age":       timeSince(secret.CreationTimestamp.Time),
 	}
 
 	response.Success(c, result)

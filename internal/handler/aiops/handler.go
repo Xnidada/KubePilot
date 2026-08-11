@@ -808,19 +808,20 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	}
 
 	var req struct {
-		ClusterID      uint              `json:"cluster_id" binding:"required"`
-		Action         string            `json:"action" binding:"required"`
-		Namespace      string            `json:"namespace"`
-		Name           string            `json:"name"`
-		Image          string            `json:"image"`
-		Replicas       int32             `json:"replicas"`
-		Ports          []int32           `json:"ports"`
-		ServiceType    string            `json:"service_type"`
-		Port           int32             `json:"port"`
-		TargetPort     int32             `json:"target_port"`
-		NodePort       int32             `json:"node_port"`
-		Selector       map[string]string `json:"selector"`
-		ConversationID uint              `json:"conversation_id"`
+		ClusterID      uint                   `json:"cluster_id" binding:"required"`
+		Action         string                 `json:"action" binding:"required"`
+		Namespace      string                 `json:"namespace"`
+		Name           string                 `json:"name"`
+		Image          string                 `json:"image"`
+		Replicas       int32                  `json:"replicas"`
+		Ports          []int32                `json:"ports"`
+		ServiceType    string                 `json:"service_type"`
+		Port           int32                  `json:"port"`
+		TargetPort     int32                  `json:"target_port"`
+		NodePort       int32                  `json:"node_port"`
+		Selector       map[string]string      `json:"selector"`
+		HostPathMounts []aiops.HostPathMount  `json:"host_path_mounts"`
+		ConversationID uint                   `json:"conversation_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -853,17 +854,18 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	}
 
 	params := aiops.StagedActionParams{
-		Action:      req.Action,
-		Namespace:   req.Namespace,
-		Name:        req.Name,
-		Image:       req.Image,
-		Replicas:    req.Replicas,
-		Ports:       req.Ports,
-		ServiceType: req.ServiceType,
-		Port:        req.Port,
-		TargetPort:  req.TargetPort,
-		NodePort:    req.NodePort,
-		Selector:    req.Selector,
+		Action:         req.Action,
+		Namespace:      req.Namespace,
+		Name:           req.Name,
+		Image:          req.Image,
+		Replicas:       req.Replicas,
+		Ports:          req.Ports,
+		ServiceType:    req.ServiceType,
+		Port:           req.Port,
+		TargetPort:     req.TargetPort,
+		NodePort:       req.NodePort,
+		Selector:       req.Selector,
+		HostPathMounts: req.HostPathMounts,
 	}
 	dryRun, err := h.service.DryRunStagedAction(c.Request.Context(), req.ClusterID, params)
 	if err != nil {

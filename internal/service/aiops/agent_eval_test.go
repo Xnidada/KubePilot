@@ -37,6 +37,27 @@ func TestValidateMutationParams(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "placeholder") {
 		t.Fatalf("expected placeholder image rejection, got %v", err)
 	}
+	err = validateMutationParams(StagedActionParams{Action: "create_deployment", Namespace: "default", Name: "x", Image: "nginx:1.25.4"})
+	if err != nil {
+		t.Fatalf("expected pinned nginx image ok, got %v", err)
+	}
+	err = validateMutationParams(StagedActionParams{
+		Action: "create_deployment", Namespace: "default", Name: "x", Image: "nginx:1.25.4",
+		HostPathMounts: []HostPathMount{{HostPath: "opt/nginx/html", MountPath: "/usr/share/nginx/html"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected absolute path validation, got %v", err)
+	}
+	err = validateMutationParams(StagedActionParams{
+		Action: "create_deployment", Namespace: "default", Name: "x", Image: "nginx:1.25.4",
+		HostPathMounts: []HostPathMount{
+			{HostPath: "/opt/nginx/html", MountPath: "/usr/share/nginx/html"},
+			{HostPath: "/opt/nginx/log", MountPath: "/var/log/nginx"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected host path mounts ok, got %v", err)
+	}
 	err = validateMutationParams(StagedActionParams{Action: "create_service", Namespace: "default", Name: "x", Port: 80})
 	if err == nil || !strings.Contains(err.Error(), "selector") {
 		t.Fatalf("expected selector required, got %v", err)
@@ -64,6 +85,76 @@ func TestParseMutationParamsNodePortAlias(t *testing.T) {
 	}
 	if p.NodePort != 30089 || p.ServiceType != "NodePort" {
 		t.Fatalf("got node_port=%d type=%s", p.NodePort, p.ServiceType)
+	}
+}
+
+func TestParseMutationParamsHostPathMountsAndImage(t *testing.T) {
+	p, err := parseMutationParams(`{"action":"create_deployment","namespace":"default","name":"nginx-web","image":"nginx:latest","replicas":1,"ports":[80],"volume_mounts":[{"host_path":"/opt/nginx/html","mount_path":"/usr/share/nginx/html"},{"host_path":"/opt/nginx/log","mount_path":"/var/log/nginx"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Image != "nginx:1.25.4" {
+		t.Fatalf("expected image normalize, got %s", p.Image)
+	}
+	if len(p.HostPathMounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(p.HostPathMounts))
+	}
+	dep := buildDeploymentObject(p)
+	if len(dep.Spec.Template.Spec.Volumes) != 2 || len(dep.Spec.Template.Spec.Containers[0].VolumeMounts) != 2 {
+		t.Fatalf("expected volumes/mounts on deployment")
+	}
+	if dep.Spec.Template.Spec.Volumes[0].HostPath == nil || dep.Spec.Template.Spec.Volumes[0].HostPath.Path != "/opt/nginx/html" {
+		t.Fatalf("unexpected hostPath: %+v", dep.Spec.Template.Spec.Volumes[0].HostPath)
+	}
+}
+
+func TestNormalizeDeploymentImageFloatingTags(t *testing.T) {
+	if got := normalizeDeploymentImage("nginx:1.25"); got != "nginx:1.25.4" {
+		t.Fatalf("got %s", got)
+	}
+	if got := normalizeDeploymentImage("nginx:latest"); got != "nginx:1.25.4" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestEnrichMutationArgsInjectsHostPathMounts(t *testing.T) {
+	msg := "使用nginx:latest创建1个deploy，网页主目录挂载到本地/opt/nginx/html下，日志放本地/opt/nginx/log下。并且使用nodeport对外开放30081端口"
+	in := `{"action":"create_deployment","namespace":"default","name":"nginx-web","image":"nginx:1.25","replicas":1}`
+	out := enrichMutationArgsWithUserHints(msg, in)
+	p, err := parseMutationParams(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Image != "nginx:1.25.4" {
+		t.Fatalf("image=%s", p.Image)
+	}
+	if len(p.HostPathMounts) != 2 {
+		t.Fatalf("mounts=%v from args %s", p.HostPathMounts, out)
+	}
+	if len(p.Ports) != 1 || p.Ports[0] != 80 {
+		t.Fatalf("ports=%v", p.Ports)
+	}
+	dryMount := false
+	for _, m := range p.HostPathMounts {
+		if m.HostPath == "/opt/nginx/html" && m.MountPath == "/usr/share/nginx/html" {
+			dryMount = true
+		}
+	}
+	if !dryMount {
+		t.Fatalf("missing html mount: %+v", p.HostPathMounts)
+	}
+}
+
+func TestAgentNudgeHostMountMissing(t *testing.T) {
+	s := &Service{}
+	nudge := s.agentNudgeIfNeeded(
+		"使用 nginx:latest 创建 1 个 deploy，网页主目录挂载到本地 /opt/nginx/html，日志放 /opt/nginx/log，NodePort 30081",
+		"已暂存 Deployment",
+		[]ToolTraceItem{{Name: "stage_mutation", Args: `{"action":"create_deployment","image":"nginx:1.25.4"}`, Result: "staged\n+ volumes: (none)", IsError: false}},
+		[]PendingActionInfo{{Action: "create_deployment", DryRun: "+ volumes: (none)"}},
+	)
+	if nudge == "" || !strings.Contains(nudge, "host_path_mounts") {
+		t.Fatalf("expected host mount nudge, got %q", nudge)
 	}
 }
 

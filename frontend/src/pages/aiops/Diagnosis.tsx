@@ -32,6 +32,8 @@ import { diagnoseResource, DiagnosisResponse, analyzeLogs, AnalyzeLogsResponse }
 import { getClusterList, Cluster } from '../../api/cluster'
 import { getNamespaceNames, getPods, getDeployments, getServices, getNodes } from '../../api/workload'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { AIReadOnlyBanner } from '../../components/AIReadOnlyBanner'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -50,6 +52,8 @@ const resourceTypes = [
 ]
 
 const AIDiagnosis: React.FC = () => {
+  const { hasPermission } = useAuthStore()
+  const canExecute = hasPermission('aiops', 'execute')
   const [form] = Form.useForm()
   const [logForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
@@ -134,6 +138,10 @@ const AIDiagnosis: React.FC = () => {
 
   // 问题诊断
   const handleSubmit = async (values: any) => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法执行诊断')
+      return
+    }
     setLoading(true)
     setResult(null)
     setLogResult(null)
@@ -162,6 +170,10 @@ const AIDiagnosis: React.FC = () => {
 
   // 日志问诊
   const handleLogSubmit = async (values: any) => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法执行日志问诊')
+      return
+    }
     setLoading(true)
     setResult(null)
     setLogResult(null)
@@ -415,6 +427,7 @@ const AIDiagnosis: React.FC = () => {
 
   return (
     <div>
+      <AIReadOnlyBanner />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <Title level={4} style={{ margin: 0 }}>🔍 AI 智能诊断</Title>
         <Segmented
@@ -532,6 +545,7 @@ const AIDiagnosis: React.FC = () => {
                 icon={<SearchOutlined />}
                 loading={loading}
                 size="large"
+                disabled={!canExecute}
               >
                 开始诊断
               </Button>
@@ -643,6 +657,7 @@ const AIDiagnosis: React.FC = () => {
                 icon={<BugOutlined />}
                 loading={loading}
                 size="large"
+                disabled={!canExecute}
               >
                 开始分析
               </Button>

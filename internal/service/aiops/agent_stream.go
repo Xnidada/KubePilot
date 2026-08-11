@@ -248,6 +248,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 
 	var finalContent string
 	nudgeUsed := false
+	mountNudgeCount := 0
 	for round := 0; round < agentMaxToolRounds; round++ {
 		if err := chatCtx.Err(); err != nil {
 			if finalContent == "" && len(pending) > 0 {
@@ -275,17 +276,24 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 
 		if len(resp.ToolCalls) == 0 {
 			finalContent = resp.Content
-			if !nudgeUsed {
-				nudge := s.agentNudgeIfNeeded(message, finalContent, trace, pending)
-				if nudge != "" {
+			nudge := s.agentNudgeIfNeeded(message, finalContent, trace, pending)
+			if nudge != "" {
+				isMountNudge := strings.Contains(nudge, "host_path_mounts")
+				if isMountNudge && mountNudgeCount < 2 {
+					mountNudgeCount++
+				} else if !isMountNudge && !nudgeUsed {
 					nudgeUsed = true
-					messages = append(messages,
-						llm.Message{Role: "assistant", Content: finalContent},
-						llm.Message{Role: "user", Content: nudge},
-					)
-					finalContent = ""
-					continue
+				} else {
+					nudge = ""
 				}
+			}
+			if nudge != "" {
+				messages = append(messages,
+					llm.Message{Role: "assistant", Content: finalContent},
+					llm.Message{Role: "user", Content: nudge},
+				)
+				finalContent = ""
+				continue
 			}
 			break
 		}
@@ -305,6 +313,9 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			}
 			name := tc.Function.Name
 			args := tc.Function.Arguments
+			if name == "stage_mutation" || name == "stage_mutations" || name == "propose_mutation" {
+				args = enrichMutationArgsWithUserHints(message, args)
+			}
 			if emit != nil {
 				emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
 			}
@@ -319,9 +330,9 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			}
 			trace = append(trace, item)
 			if len(exec.PendingList) > 0 {
-				pending = append(pending, exec.PendingList...)
+				pending = mergePendingActions(pending, exec.PendingList)
 			} else if exec.Pending != nil {
-				pending = append(pending, *exec.Pending)
+				pending = mergePendingActions(pending, []PendingActionInfo{*exec.Pending})
 			}
 			if emit != nil {
 				ev := AgentStreamEvent{
@@ -364,8 +375,46 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	if len(pending) > 0 {
 		finalContent = stripFakeAgentActionBlocks(finalContent)
 	}
+	pending = s.dropIncompleteMountDeployments(message, pending)
 
 	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace}, nil
+}
+
+func mergePendingActions(existing []PendingActionInfo, incoming []PendingActionInfo) []PendingActionInfo {
+	out := append([]PendingActionInfo{}, existing...)
+	for _, in := range incoming {
+		replaced := false
+		for i, old := range out {
+			if old.Action == in.Action && old.Namespace == in.Namespace && old.Name == in.Name {
+				out[i] = in
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// dropIncompleteMountDeployments cancels staged create_deployment that still lack hostPath when user required mounts.
+func (s *Service) dropIncompleteMountDeployments(userMsg string, pending []PendingActionInfo) []PendingActionInfo {
+	if !isHostMountIntent(userMsg) || len(pending) == 0 {
+		return pending
+	}
+	kept := make([]PendingActionInfo, 0, len(pending))
+	for _, p := range pending {
+		if p.Action == "create_deployment" && !strings.Contains(p.DryRun, "hostPath.path") {
+			if s.db != nil && p.ID > 0 {
+				_ = s.db.Model(&model.AgentAction{}).Where("id = ? AND status = ?", p.ID, "pending").
+					Update("status", "cancelled").Error
+			}
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
 }
 
 func isFixIntent(msg string) bool {
@@ -384,6 +433,27 @@ func (s *Service) agentNudgeIfNeeded(userMsg, assistantContent string, trace []T
 	}
 	if len(pending) == 0 && isWriteIntent(userMsg) && !traceHasTool(trace, "stage_mutation") && !traceHasTool(trace, "stage_mutations") && !traceHasTool(trace, "delete_by_prefix") {
 		return "这是写操作请求。请先用 list_resources/get_resource 核对准确名称，再调用 stage_mutation / stage_mutations / delete_by_prefix。禁止只列名单或声称已执行。"
+	}
+	// Prefer mount completeness before NodePort — users often ask for both in one request.
+	if isHostMountIntent(userMsg) && (isWriteIntent(userMsg) || len(pending) > 0) {
+		hasMount := false
+		for _, pend := range pending {
+			if strings.Contains(pend.DryRun, "hostPath.path") || strings.Contains(pend.DryRun, "volumeMounts") {
+				hasMount = true
+				break
+			}
+		}
+		for _, t := range trace {
+			if (t.Name == "stage_mutation" || t.Name == "stage_mutations" || t.Name == "propose_mutation") &&
+				(strings.Contains(t.Args, "host_path") || strings.Contains(t.Args, "hostPath") || strings.Contains(t.Result, "hostPath.path")) &&
+				!t.IsError {
+				hasMount = true
+				break
+			}
+		}
+		if !hasMount {
+			return "用户要求主机路径挂载。请重新 stage_mutation：action=create_deployment，并传 host_path_mounts=[{host_path,mount_path},...]。例如网页目录 host_path=/opt/nginx/html mount_path=/usr/share/nginx/html，日志 host_path=/opt/nginx/log mount_path=/var/log/nginx。禁止省略挂载。"
+		}
 	}
 	if wanted := extractRequestedNodePorts(userMsg); len(wanted) > 0 {
 		for _, p := range wanted {
@@ -443,6 +513,17 @@ func isExternalExposeIntent(msg string) bool {
 	keys := []string{"外部", "对外", "NodePort", "nodeport", "暴露", "可以访问", "能访问", "访问到"}
 	for _, k := range keys {
 		if strings.Contains(msg, k) || strings.Contains(strings.ToLower(msg), strings.ToLower(k)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHostMountIntent(msg string) bool {
+	lower := strings.ToLower(msg)
+	keys := []string{"挂载", "hostpath", "host_path", "host path", "主机路径", "本地路径", "网页主目录", "volume_mount", "volumemount"}
+	for _, k := range keys {
+		if strings.Contains(lower, k) || strings.Contains(msg, k) {
 			return true
 		}
 	}

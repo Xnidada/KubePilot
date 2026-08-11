@@ -157,6 +157,7 @@ const SystemUsers: React.FC = () => {
       operator: { color: 'blue' },
       user: { color: 'green' },
       viewer: { color: 'default' },
+      aiviewer: { color: 'cyan' },
     }
     const config = map[roleName] || map.viewer
     return <Tag color={config.color}>{roleName}</Tag>

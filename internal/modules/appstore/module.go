@@ -42,8 +42,9 @@ func (m *Module) Permissions() []module.PermissionDef {
 }
 
 func (m *Module) Menus() []module.MenuItem {
-	// HTTP APIs not implemented — hide from navigation until ready.
-	return nil
+	return []module.MenuItem{
+		{Key: "/appstore", Label: "应用商店", Order: 70, Resource: "appstore", Action: "view"},
+	}
 }
 
 func (m *Module) RegisterPolicies(reg *authz.Registry) {

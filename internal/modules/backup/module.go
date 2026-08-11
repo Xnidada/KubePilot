@@ -53,9 +53,7 @@ func (m *Module) Menus() []module.MenuItem {
 func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("GET", "/api/v1/backups", authz.Policy{Resource: "backups", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/backups", authz.Policy{Resource: "backups", Action: "create", Scope: authz.ScopeHandler})
-	reg.MustRegister("GET", "/api/v1/backups/capability", authz.Policy{Resource: "backups", Action: "view", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/backups/:id", authz.Policy{Resource: "backups", Action: "view", Scope: authz.ScopeHandler})
-	reg.MustRegister("DELETE", "/api/v1/backups/:id", authz.Policy{Resource: "backups", Action: "delete", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/backups/schedules", authz.Policy{Resource: "backups", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/backups/schedules", authz.Policy{Resource: "backups", Action: "create", Scope: authz.ScopeHandler})
 	reg.MustRegister("PUT", "/api/v1/backups/schedules/:id", authz.Policy{Resource: "backups", Action: "create", Scope: authz.ScopeHandler})
@@ -65,7 +63,6 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("DELETE", "/api/v1/backups/schedules/:id/cron", authz.Policy{Resource: "backups", Action: "create", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/backups/restore", authz.Policy{Resource: "backups", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/backups/restores", authz.Policy{Resource: "backups", Action: "view", Scope: authz.ScopePlatform})
-	reg.MustRegister("DELETE", "/api/v1/backups/restores/:id", authz.Policy{Resource: "backups", Action: "delete", Scope: authz.ScopeHandler})
 }
 
 func (m *Module) ensureHandler(host *module.Host) *backupHandler.Handler {
@@ -140,11 +137,8 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.DELETE("/schedules/:id/cron", h.ClearBackupCron)
 		g.POST("", h.CreateBackup)
 		g.GET("", h.ListBackupRecords)
-		g.GET("/capability", h.BackupCapability)
-		g.GET("/restores", h.ListRestoreRecords)
-		g.DELETE("/restores/:id", h.DeleteRestoreRecord)
-		g.POST("/restore", h.CreateRestore)
 		g.GET("/:id", h.GetBackupRecord)
-		g.DELETE("/:id", h.DeleteBackupRecord)
+		g.POST("/restore", h.CreateRestore)
+		g.GET("/restores", h.ListRestoreRecords)
 	}
 }

@@ -48,9 +48,15 @@ func main() {
 	}
 	logger.Info("database connected", zap.String("driver", driver))
 
-	// Auto migrate
-	if err := model.AutoMigrate(); err != nil {
-		logger.Fatal("failed to migrate database", zap.Error(err))
+	modReg := module.NewRegistry(cfg.ModuleEnabled, logger.GetLogger())
+	modules.RegisterAll(modReg)
+
+	// Auto migrate core + enabled modules
+	if err := model.AutoMigrateCore(); err != nil {
+		logger.Fatal("failed to migrate core database", zap.Error(err))
+	}
+	if err := modReg.Migrate(model.DB); err != nil {
+		logger.Fatal("failed to migrate module database", zap.Error(err))
 	}
 	logger.Info("database migrated")
 
@@ -74,7 +80,7 @@ func main() {
 	logger.Info("cache initialized", zap.String("type", cfg.Cache.Type))
 
 	// Initialize K8S client manager with database adapter
-	dbAdapter := k8s.NewClusterDBAdapter(cfg.JWT.Secret)
+	dbAdapter := k8s.NewClusterDBAdapter(cfg.EncryptKey())
 	k8s.InitClientManager(cfg.K8S.QPS, cfg.K8S.Burst, dbAdapter)
 	logger.Info("K8S client manager initialized")
 
@@ -94,15 +100,6 @@ func main() {
 		}
 	}()
 
-	// Setup router + feature-module migrations
-	modReg := module.NewRegistry(nil, logger.GetLogger())
-	modules.RegisterAll(modReg)
-	if err := modReg.Migrate(model.DB); err != nil {
-		logger.Fatal("failed to migrate module tables", zap.Error(err))
-	}
-	logger.Info("module tables migrated")
-	r := router.Setup(cfg, cacheInstance, modReg)
-
 	host := &module.Host{
 		DB:         model.DB,
 		Config:     cfg,
@@ -110,11 +107,12 @@ func main() {
 		EncryptKey: cfg.EncryptKey(),
 		Logger:     logger.GetLogger(),
 	}
-	// Must Start after routes so module handlers exist; wires backup/inspection cron, eventforward watchers, etc.
 	if err := modReg.Start(context.Background(), host); err != nil {
 		logger.Fatal("failed to start modules", zap.Error(err))
 	}
-	logger.Info("feature modules started")
+
+	// Setup router
+	r := router.Setup(cfg, cacheInstance, modReg)
 
 	// Create HTTP server
 	srv := &http.Server{
@@ -142,12 +140,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Fatal("server forced to shutdown", zap.Error(err))
-	}
-
 	if err := modReg.Stop(ctx); err != nil {
 		logger.Error("failed to stop modules", zap.Error(err))
+	}
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatal("server forced to shutdown", zap.Error(err))
 	}
 
 	// Close database

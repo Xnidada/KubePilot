@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kubepilot/kubepilot/internal/k8s"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -20,58 +22,20 @@ type ExecuteResult struct {
 }
 
 // ExecuteCreateDeployment 执行创建Deployment
-func (s *Service) ExecuteCreateDeployment(ctx context.Context, clusterID uint, namespace, name, image string, replicas int32, ports []int32) (*ExecuteResult, error) {
+func (s *Service) ExecuteCreateDeployment(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	if strings.TrimSpace(image) == "" {
+	if strings.TrimSpace(params.Image) == "" {
 		return nil, fmt.Errorf("image is required")
 	}
-
-	if replicas == 0 {
-		replicas = 1
+	if params.Replicas <= 0 {
+		params.Replicas = 1
 	}
 
-	// 构建容器端口
-	containerPorts := make([]corev1.ContainerPort, 0)
-	for _, p := range ports {
-		containerPorts = append(containerPorts, corev1.ContainerPort{
-			ContainerPort: p,
-		})
-	}
-
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app": name,
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": name},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": name},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  name,
-							Image: image,
-							Ports: containerPorts,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	_, err = client.Clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	deployment := buildDeploymentObject(params)
+	_, err = client.Clientset.AppsV1().Deployments(params.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
 		return &ExecuteResult{
 			Success: false,
@@ -79,14 +43,19 @@ func (s *Service) ExecuteCreateDeployment(ctx context.Context, clusterID uint, n
 		}, nil
 	}
 
+	details := []string{
+		fmt.Sprintf("命名空间: %s", params.Namespace),
+		fmt.Sprintf("副本数: %d", params.Replicas),
+		fmt.Sprintf("镜像: %s", params.Image),
+	}
+	for _, m := range params.HostPathMounts {
+		details = append(details, fmt.Sprintf("挂载: %s -> %s", m.HostPath, m.MountPath))
+	}
+
 	return &ExecuteResult{
 		Success: true,
-		Message: fmt.Sprintf("Deployment %s 创建成功", name),
-		Details: []string{
-			fmt.Sprintf("命名空间: %s", namespace),
-			fmt.Sprintf("副本数: %d", replicas),
-			fmt.Sprintf("镜像: %s", image),
-		},
+		Message: fmt.Sprintf("Deployment %s 创建成功", params.Name),
+		Details: details,
 	}, nil
 }
 
@@ -223,14 +192,42 @@ func (s *Service) ExecuteDeletePod(ctx context.Context, clusterID uint, namespac
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
 
-	// 先检查是否存在
-	_, err = client.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	pod, err := client.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		// 不存在则返回成功
+		if apierrors.IsNotFound(err) {
+			return &ExecuteResult{
+				Success: true,
+				Message: fmt.Sprintf("Pod %s 不存在或已被删除", name),
+			}, nil
+		}
 		return &ExecuteResult{
-			Success: true,
-			Message: fmt.Sprintf("Pod %s 不存在或已被删除", name),
+			Success: false,
+			Message: fmt.Sprintf("获取 Pod 失败: %v", err),
 		}, nil
+	}
+
+	var rsOwner string
+	var deployOwner string
+	for _, o := range pod.OwnerReferences {
+		if o.Controller != nil && !*o.Controller {
+			continue
+		}
+		switch o.Kind {
+		case "ReplicaSet":
+			rsOwner = o.Name
+		case "Deployment":
+			deployOwner = o.Name
+		}
+	}
+	if rsOwner != "" && deployOwner == "" {
+		if rs, rsErr := client.Clientset.AppsV1().ReplicaSets(namespace).Get(ctx, rsOwner, metav1.GetOptions{}); rsErr == nil {
+			for _, o := range rs.OwnerReferences {
+				if o.Kind == "Deployment" {
+					deployOwner = o.Name
+					break
+				}
+			}
+		}
 	}
 
 	err = client.Clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
@@ -241,10 +238,105 @@ func (s *Service) ExecuteDeletePod(ctx context.Context, clusterID uint, namespac
 		}, nil
 	}
 
+	details := []string{fmt.Sprintf("deleted: %s/%s", namespace, name)}
+	msg := fmt.Sprintf("Pod %s 已删除", name)
+
+	// 控制器托管的 Pod 删除后常被立即重建；探测并如实反馈，避免“显示成功但看起来没删掉”
+	if rsOwner != "" || deployOwner != "" {
+		replacements := waitForReplacementPods(ctx, client, namespace, name, rsOwner, pod.Labels, 3*time.Second)
+		if len(replacements) > 0 {
+			target := "工作负载"
+			if deployOwner != "" {
+				target = "Deployment/" + deployOwner
+			} else if rsOwner != "" {
+				target = "ReplicaSet/" + rsOwner
+			}
+			msg = fmt.Sprintf(
+				"Pod %s 已删除，但控制器已立即重建：%s。当前命名空间里仍会看到同类 Pod。若要彻底移除，请删除 %s（不要只删单个 Pod）。",
+				name, strings.Join(replacements, ", "), target,
+			)
+			details = append(details, "recreated_by_controller=true")
+			details = append(details, "replacements="+strings.Join(replacements, ","))
+			if deployOwner != "" {
+				details = append(details, "suggested_action=delete_deployment:"+deployOwner)
+			}
+		} else if deployOwner != "" || rsOwner != "" {
+			details = append(details, "owned_by_controller=true")
+			msg = fmt.Sprintf("Pod %s 已删除（暂未检测到重建；若归属 Deployment/ReplicaSet，稍后仍可能被拉起）", name)
+		}
+	}
+
 	return &ExecuteResult{
 		Success: true,
-		Message: fmt.Sprintf("Pod %s 已删除", name),
+		Message: msg,
+		Details: details,
 	}, nil
+}
+
+// waitForReplacementPods polls briefly for a new Pod created by the same ReplicaSet/labels.
+func waitForReplacementPods(
+	ctx context.Context,
+	client *k8s.ClusterClient,
+	namespace, deletedName, rsOwner string,
+	podLabels map[string]string,
+	timeout time.Duration,
+) []string {
+	deadline := time.Now().Add(timeout)
+	selector := ""
+	if hash := podLabels["pod-template-hash"]; hash != "" {
+		selector = labels.Set{"pod-template-hash": hash}.AsSelector().String()
+	} else if len(podLabels) > 0 {
+		// Fallback: use non-controller-specific labels carefully — prefer app label.
+		set := labels.Set{}
+		if v := podLabels["app"]; v != "" {
+			set["app"] = v
+		} else if v := podLabels["app.kubernetes.io/name"]; v != "" {
+			set["app.kubernetes.io/name"] = v
+		}
+		if len(set) > 0 {
+			selector = set.AsSelector().String()
+		}
+	}
+
+	var found []string
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return found
+		default:
+		}
+		opts := metav1.ListOptions{}
+		if selector != "" {
+			opts.LabelSelector = selector
+		}
+		list, err := client.Clientset.CoreV1().Pods(namespace).List(ctx, opts)
+		if err == nil {
+			found = found[:0]
+			for _, p := range list.Items {
+				if p.Name == deletedName || p.DeletionTimestamp != nil {
+					continue
+				}
+				if rsOwner != "" {
+					owned := false
+					for _, o := range p.OwnerReferences {
+						if o.Kind == "ReplicaSet" && o.Name == rsOwner {
+							owned = true
+							break
+						}
+					}
+					if !owned {
+						continue
+					}
+				}
+				found = append(found, p.Name)
+			}
+			if len(found) > 0 {
+				return found
+			}
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return found
 }
 
 // ExecuteScaleDeployment 执行扩容/缩容

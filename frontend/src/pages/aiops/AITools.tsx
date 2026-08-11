@@ -37,12 +37,14 @@ import {
   TranslateYAMLResponse,
 } from '../../api/aiops'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { AIReadOnlyBanner } from '../../components/AIReadOnlyBanner'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text, Paragraph } = Typography
 const { TextArea } = Input
 
 // 划词解释组件
-const ExplainTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
+const ExplainTab: React.FC<{ clusters: Cluster[]; canExecute: boolean }> = ({ clusters, canExecute }) => {
   const [text, setText] = useState('')
   const [context, setContext] = useState('')
   const [clusterId, setClusterId] = useState<number>(0)
@@ -50,6 +52,10 @@ const ExplainTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
   const [result, setResult] = useState<ExplainResponse | null>(null)
 
   const handleExplain = async () => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法执行解释')
+      return
+    }
     if (!text.trim()) {
       message.warning('请输入需要解释的内容')
       return
@@ -118,6 +124,7 @@ const ExplainTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
               icon={<SearchOutlined />}
               onClick={handleExplain}
               loading={loading}
+              disabled={!canExecute}
             >
               解释
             </Button>
@@ -144,7 +151,7 @@ const ExplainTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
 }
 
 // 资源指南组件
-const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
+const ResourceGuideTab: React.FC<{ clusters: Cluster[]; canExecute: boolean }> = ({ clusters, canExecute }) => {
   const [clusterId, setClusterId] = useState<number>(0)
   const [resourceType, setResourceType] = useState('pod')
   const [resourceName, setResourceName] = useState('')
@@ -209,6 +216,10 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
   }
 
   const handleAnalyze = async () => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法执行分析')
+      return
+    }
     if (!clusterId) {
       message.warning('请选择集群')
       return
@@ -295,6 +306,7 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
                 icon={<BookOutlined />}
                 onClick={handleAnalyze}
                 loading={loading}
+                disabled={!canExecute}
                 block
                 style={{ marginTop: 8 }}
               >
@@ -386,13 +398,17 @@ const ResourceGuideTab: React.FC<{ clusters: Cluster[] }> = ({ clusters }) => {
 }
 
 // YAML 翻译组件
-const TranslateYAMLTab: React.FC = () => {
+const TranslateYAMLTab: React.FC<{ canExecute: boolean }> = ({ canExecute }) => {
   const [yaml, setYaml] = useState('')
   const [direction, setDirection] = useState('to_chinese')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<TranslateYAMLResponse | null>(null)
 
   const handleTranslate = async () => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法执行翻译')
+      return
+    }
     if (!yaml.trim()) {
       message.warning('请输入 YAML 内容')
       return
@@ -483,6 +499,7 @@ spec:
               icon={<TranslationOutlined />}
               onClick={handleTranslate}
               loading={loading}
+              disabled={!canExecute}
             >
               翻译
             </Button>
@@ -516,6 +533,8 @@ spec:
 
 // 主页面
 const AITools: React.FC = () => {
+  const { hasPermission } = useAuthStore()
+  const canExecute = hasPermission('aiops', 'execute')
   const [clusters, setClusters] = useState<Cluster[]>([])
 
   useEffect(() => {
@@ -540,7 +559,7 @@ const AITools: React.FC = () => {
           划词解释
         </span>
       ),
-      children: <ExplainTab clusters={clusters} />,
+      children: <ExplainTab clusters={clusters} canExecute={canExecute} />,
     },
     {
       key: 'resource-guide',
@@ -550,7 +569,7 @@ const AITools: React.FC = () => {
           资源指南
         </span>
       ),
-      children: <ResourceGuideTab clusters={clusters} />,
+      children: <ResourceGuideTab clusters={clusters} canExecute={canExecute} />,
     },
     {
       key: 'translate-yaml',
@@ -560,12 +579,13 @@ const AITools: React.FC = () => {
           YAML 翻译
         </span>
       ),
-      children: <TranslateYAMLTab />,
+      children: <TranslateYAMLTab canExecute={canExecute} />,
     },
   ]
 
   return (
     <div style={{ padding: 24 }}>
+      <AIReadOnlyBanner />
       <Title level={3} style={{ marginBottom: 24 }}>
         AI 智能工具
       </Title>

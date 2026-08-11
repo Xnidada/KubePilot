@@ -36,8 +36,10 @@ import {
   testLLMConfig,
   LLMConfig,
 } from '../../api/aiops'
+import { AIReadOnlyBanner } from '../../components/AIReadOnlyBanner'
+import { useAuthStore } from '../../stores/auth'
 
-const { Title, Paragraph } = Typography
+const { Title, Paragraph, Text } = Typography
 
 const modelOptions = [
   { label: 'GPT-4o', value: 'gpt-4o' },
@@ -61,6 +63,12 @@ const modelOptions = [
 ]
 
 const AISettings: React.FC = () => {
+  const { hasPermission } = useAuthStore()
+  const canCreate = hasPermission('aiops_config', 'create')
+  const canEdit = hasPermission('aiops_config', 'edit')
+  const canDelete = hasPermission('aiops_config', 'delete')
+  const canAdmin = hasPermission('aiops_config', 'admin')
+  const canTest = hasPermission('aiops_config', 'execute')
   const [configs, setConfigs] = useState<LLMConfig[]>([])
   const [loading, setLoading] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
@@ -256,7 +264,7 @@ const AISettings: React.FC = () => {
       width: 300,
       render: (_, record) => (
         <Space size="small">
-          {!record.is_active && (
+          {canAdmin && !record.is_active && (
             <Button
               type="link"
               icon={<StarOutlined />}
@@ -265,14 +273,16 @@ const AISettings: React.FC = () => {
               设为默认
             </Button>
           )}
-          <Button
-            type="link"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
-          {!record.is_active && (
+          {canEdit && (
+            <Button
+              type="link"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            >
+              编辑
+            </Button>
+          )}
+          {canDelete && !record.is_active && (
             <Popconfirm
               title="确定删除此配置？"
               onConfirm={() => handleDelete(record.id)}
@@ -282,6 +292,9 @@ const AISettings: React.FC = () => {
               </Button>
             </Popconfirm>
           )}
+          {!canEdit && !canDelete && !canAdmin && (
+            <Text type="secondary">只读</Text>
+          )}
         </Space>
       ),
     },
@@ -290,6 +303,7 @@ const AISettings: React.FC = () => {
   return (
     <div>
       <Title level={4}>🤖 AI 设置</Title>
+      <AIReadOnlyBanner resource="aiops_config" action="edit" />
 
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -298,7 +312,9 @@ const AISettings: React.FC = () => {
           </Paragraph>
           <Space>
             <Button icon={<ReloadOutlined />} onClick={fetchConfigs}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>添加配置</Button>
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>添加配置</Button>
+            )}
           </Space>
         </div>
 
@@ -386,15 +402,17 @@ const AISettings: React.FC = () => {
             <InputNumber min={10} max={600} step={10} style={{ width: '100%' }} />
           </Form.Item>
 
-          <Form.Item>
-            <Button
-              icon={<ApiOutlined />}
-              onClick={handleTest}
-              loading={testing}
-            >
-              测试连接
-            </Button>
-          </Form.Item>
+          {canTest && (
+            <Form.Item>
+              <Button
+                icon={<ApiOutlined />}
+                onClick={handleTest}
+                loading={testing}
+              >
+                测试连接
+              </Button>
+            </Form.Item>
+          )}
         </Form>
 
         {testResult && (

@@ -327,9 +327,10 @@ const menuPermissionMap: Record<string, { resource: string; action: string }> = 
   '/system/backup': { resource: 'backups', action: 'view' },
   '/system/webhooks': { resource: 'webhooks', action: 'view' },
   '/system/sso': { resource: 'users', action: 'admin' },
-  '/aiops/agent': { resource: 'aiops', action: 'execute' },
-  '/aiops/diagnosis': { resource: 'aiops', action: 'execute' },
-  '/aiops/tools': { resource: 'aiops', action: 'execute' },
+  // 浏览 AI 页面只需 view；实际对话/诊断等 API 仍校验 execute
+  '/aiops/agent': { resource: 'aiops', action: 'view' },
+  '/aiops/diagnosis': { resource: 'aiops', action: 'view' },
+  '/aiops/tools': { resource: 'aiops', action: 'view' },
   '/aiops/settings': { resource: 'aiops_config', action: 'view' },
   '/scheduler': { resource: 'scheduler', action: 'view' },
   '/cluster/inspection': { resource: 'inspection', action: 'view' },

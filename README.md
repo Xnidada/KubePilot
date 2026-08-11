@@ -388,7 +388,8 @@ POST   /api/v1/event-forward/rules/:id/test # 测试转发
 | admin | 系统管理员 | 全部权限 |
 | operator | 运维人员 | 管理工作负载、告警、任务调度 |
 | user | 开发人员 | 查看、创建工作负载 |
-| viewer | 只读用户 | 仅查看 |
+| viewer | 只读用户 | 仅查看（不含 AI 智能） |
+| aiviewer | AI 只读用户 | viewer + 可浏览 AI 智能全部页面（不可执行 AI 操作） |
 
 ### 资源类型
 

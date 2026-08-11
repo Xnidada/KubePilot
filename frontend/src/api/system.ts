@@ -292,6 +292,10 @@ export const disable2FA = (code: string) => {
   return post('/2fa/disable', { code })
 }
 
+export const verify2FALogin = (userId: number, code: string) => {
+  return post<{ code: number; data: { verified: boolean; user_id: number } }>('/auth/2fa/verify', { user_id: userId, code })
+}
+
 // ==================== 集群巡检 ====================
 
 export interface InspectionRule {
@@ -476,7 +480,6 @@ export interface BackupRecordItem {
   namespaces: string
   resources: string
   status: string
-  phase?: string
   volume_snapshots: number
   errors: number
   warnings: number
@@ -535,10 +538,7 @@ export const createBackupRecord = (data: {
   namespaces?: string[]
   resources?: string[]
   ttl?: string
-  storage_location?: string
 }) => post<{ code: number; data: BackupRecordItem }>('/backups', data)
-
-export const deleteBackupRecord = (id: number) => del(`/backups/${id}`)
 
 export const listRestoreRecords = () =>
   get<{ code: number; data: RestoreRecordItem[] }>('/backups/restores')
@@ -548,8 +548,6 @@ export const createRestore = (data: {
   cluster_id: number
   namespaces?: string[]
 }) => post<{ code: number; data: RestoreRecordItem }>('/backups/restore', data)
-
-export const deleteRestoreRecord = (id: number) => del(`/backups/restores/${id}`)
 
 // ==================== SSO/OAuth ====================
 
@@ -596,4 +594,3 @@ export const updateOAuthConfig = (id: number, data: Record<string, unknown>) =>
 
 export const deleteOAuthConfig = (id: number) =>
   del(`/system/oauth/configs/${id}`)
-

@@ -42,6 +42,8 @@ import {
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { AIReadOnlyBanner } from '../../components/AIReadOnlyBanner'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -205,7 +207,103 @@ type MessageExtras = {
   toolTrace?: ToolTraceItem[]
   pendingActions?: PendingAction[]
 }
+
+function isControllerOwnedDelete(action: PendingAction): boolean {
+  const text = `${action.action || ''} ${action.dry_run || ''} ${action.description || ''}`
+  return (
+    action.action === 'delete_pod' &&
+    (/WARNING:.*Deployment\//i.test(text) ||
+      /WARNING:.*ReplicaSet\//i.test(text) ||
+      /会立刻重建|可能被立即重建|may be recreated/i.test(text))
+  )
+}
+
+/** 待确认写操作面板：固定渲染在本轮助手回答气泡底部 */
+function PendingConfirmPanel({
+  actions,
+  onConfirm,
+  onCancel,
+}: {
+  actions: PendingAction[]
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  if (!actions.length) return null
+  const hasRecreateRisk = actions.some(isControllerOwnedDelete)
+  return (
+    <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
+      <Alert
+        type="warning"
+        showIcon
+        icon={<WarningOutlined />}
+        message={<Text strong>待确认写操作（{actions.length}）</Text>}
+        description={
+          <div style={{ marginTop: 8 }}>
+            {hasRecreateRisk && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="删除控制器托管的 Pod 会被立即重建"
+                description="Deployment/ReplicaSet 管理的 Pod 删掉后会马上拉起新实例，工作负载看起来像“没删掉”。若要彻底移除，请改为删除 Deployment。"
+              />
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {actions.map((p) => (
+                <div
+                  key={p.action_id || p.id}
+                  style={{
+                    background: '#fff',
+                    borderRadius: 8,
+                    border: '1px solid #ffe58f',
+                    padding: '8px 10px',
+                  }}
+                >
+                  <Space wrap size={6} style={{ marginBottom: 4 }}>
+                    <Tag color="orange">{p.action}</Tag>
+                    <Text code>
+                      {p.namespace}/{p.name}
+                    </Text>
+                    {isControllerOwnedDelete(p) && <Tag color="red">可能被重建</Tag>}
+                  </Space>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: '#666',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {p.dry_run || p.description}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Space>
+              <Button
+                type="primary"
+                size="small"
+                danger
+                icon={<CheckCircleOutlined />}
+                onClick={onConfirm}
+              >
+                确认执行
+              </Button>
+              <Button size="small" icon={<CloseCircleOutlined />} onClick={onCancel}>
+                取消
+              </Button>
+            </Space>
+          </div>
+        }
+      />
+    </div>
+  )
+}
+
 const AIAgent: React.FC = () => {
+  const { hasPermission } = useAuthStore()
+  const canExecute = hasPermission('aiops', 'execute')
   const {
     conversations,
     activeConversation,
@@ -236,6 +334,8 @@ const AIAgent: React.FC = () => {
   const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([])
   /** 当前会话待确认写操作（后端 stage_mutation 产物） */
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
+  /** 本轮产生 pending 的助手消息 id（固定挂在该气泡底部） */
+  const [pendingHostMessageId, setPendingHostMessageId] = useState<number | null>(null)
   /** 按消息 id 挂载工具轨迹 / 待确认面板（会话内有效） */
   const [messageExtras, setMessageExtras] = useState<Record<number, MessageExtras>>({})
   /** 流式中的临时助手气泡（结束后由会话详情替换） */
@@ -254,13 +354,20 @@ const AIAgent: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom()
-  }, [activeConversation?.messages, liveAssistant?.content, liveAssistant?.toolTrace?.length, liveAssistant?.status])
+  }, [
+    activeConversation?.messages,
+    liveAssistant?.content,
+    liveAssistant?.toolTrace?.length,
+    liveAssistant?.status,
+    pendingActions.length,
+  ])
 
   // 切换会话：清空本地态，并从后端恢复 pending / extras
   useEffect(() => {
     setMsgSelectMode(false)
     setSelectedMsgIds([])
     setPendingActions([])
+    setPendingHostMessageId(null)
     setMessageExtras({})
     setLiveAssistant(null)
     if (!activeId) return
@@ -282,11 +389,12 @@ const AIAgent: React.FC = () => {
     }
   }, [activeId])
 
-  // 会话详情加载后，从消息 extras 恢复工具轨迹
+  // 会话详情加载后，从消息 extras 恢复工具轨迹，并把 pending 挂到对应助手消息
   useEffect(() => {
     const msgs = activeConversation?.messages
     if (!msgs?.length) return
     const next: Record<number, MessageExtras> = {}
+    let hostFromExtras: number | null = null
     for (const m of msgs) {
       if (m.role !== 'assistant' || !m.extras) continue
       try {
@@ -294,16 +402,18 @@ const AIAgent: React.FC = () => {
           tool_trace?: ToolTraceItem[]
           pending_action_ids?: number[]
         }
+        const linked =
+          pendingActions.length > 0 && raw.pending_action_ids?.length
+            ? pendingActions.filter((p) =>
+                raw.pending_action_ids!.includes(p.action_id || p.id)
+              )
+            : undefined
+        if (linked?.length) {
+          hostFromExtras = m.id
+        }
         next[m.id] = {
           toolTrace: raw.tool_trace,
-          pendingActions:
-            pendingActions.length > 0 &&
-            raw.pending_action_ids?.length &&
-            m.id === [...msgs].reverse().find((x) => x.role === 'assistant')?.id
-              ? pendingActions.filter((p) =>
-                  raw.pending_action_ids!.includes(p.action_id || p.id)
-                )
-              : undefined,
+          pendingActions: linked?.length ? linked : undefined,
         }
       } catch {
         /* ignore */
@@ -311,6 +421,10 @@ const AIAgent: React.FC = () => {
     }
     if (Object.keys(next).length > 0) {
       setMessageExtras((prev) => ({ ...prev, ...next }))
+    }
+    // 若本轮尚未记录 host（例如刷新/切回会话），用 extras 反推
+    if (hostFromExtras && pendingActions.length > 0) {
+      setPendingHostMessageId((prev) => prev ?? hostFromExtras)
     }
   }, [activeConversation?.messages, pendingActions])
 
@@ -352,6 +466,10 @@ const AIAgent: React.FC = () => {
   }
 
   const handleSend = async (content?: string) => {
+    if (!canExecute) {
+      message.warning('当前为只读权限，无法发送 AI 对话')
+      return
+    }
     const sendContent = content || inputValue.trim()
     if (!sendContent || loading) return
     if (!selectedCluster) {
@@ -373,6 +491,7 @@ const AIAgent: React.FC = () => {
 
     setLoading(true)
     setPendingActions([])
+    setPendingHostMessageId(null)
     setLiveAssistant({ content: '', streaming: true, status: 'thinking', toolTrace: [] })
 
     const abortController = new AbortController()
@@ -416,9 +535,8 @@ const AIAgent: React.FC = () => {
               }
               return { ...prev, toolTrace: trace }
             })
-            if (ev.pending) {
-              setPendingActions((prev) => [...prev, ev.pending!])
-            }
+            // 不在 tool_result 时展示待确认：需等最终回答流式结束后（done）再挂载，
+            // 否则会抢在 AI 输出完成前出现在上一条助手气泡上。
           } else if (ev.type === 'content_delta') {
             setLiveAssistant((prev) =>
               prev
@@ -433,6 +551,7 @@ const AIAgent: React.FC = () => {
             const pending = ev.pending_actions || []
             const trace = ev.tool_trace || []
             setPendingActions(pending)
+            setPendingHostMessageId(ev.message_id || null)
             setLiveAssistant({
               content: ev.content || '',
               streaming: false,
@@ -496,6 +615,15 @@ const AIAgent: React.FC = () => {
     } finally {
       setLoading(false)
       abortControllerRef.current = null
+      // 中止/异常时工具可能已落库 pending，结束后再同步一次
+      if (currentId) {
+        try {
+          const res = await listPendingActions(currentId)
+          setPendingActions(res.data?.pending_actions || [])
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -509,6 +637,7 @@ const AIAgent: React.FC = () => {
     }
 
     const staged = [...pendingActions]
+    const recreateRisk = staged.some(isControllerOwnedDelete)
     Modal.confirm({
       title: `确认执行 ${staged.length} 项写操作？`,
       width: 560,
@@ -518,6 +647,15 @@ const AIAgent: React.FC = () => {
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
             确认后将真正变更集群，此操作不可自动回滚。
           </Text>
+          {recreateRisk && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="注意：删除 Deployment 托管的 Pod 会被立刻重建"
+              description="API 删除单个 Pod 会成功，但 ReplicaSet 会马上创建新 Pod，界面上仍能看到同类实例。彻底移除请删除 Deployment。"
+            />
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflow: 'auto' }}>
             {staged.map((s) => (
               <div
@@ -534,8 +672,17 @@ const AIAgent: React.FC = () => {
                   <Text strong>
                     {s.namespace}/{s.name}
                   </Text>
+                  {isControllerOwnedDelete(s) && <Tag color="red">可能被重建</Tag>}
                 </div>
-                <Text type="secondary" style={{ fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                <Text
+                  type="secondary"
+                  style={{
+                    fontSize: 12,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    whiteSpace: 'pre-wrap',
+                    display: 'block',
+                  }}
+                >
                   {s.dry_run || s.description}
                 </Text>
               </div>
@@ -543,7 +690,7 @@ const AIAgent: React.FC = () => {
           </div>
         </div>
       ),
-      okText: '确认执行',
+      okText: recreateRisk ? '仍要删除该 Pod' : '确认执行',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -556,15 +703,20 @@ const AIAgent: React.FC = () => {
           try {
             const res = await confirmK8SOperation(actionId)
             if (res.code === 0 && res.data?.success) {
-              results.push(`✅ ${res.data.message}`)
+              const details = res.data.details?.length
+                ? `\n${res.data.details.map((d) => `- ${d}`).join('\n')}`
+                : ''
+              const recreated = res.data.details?.some((d) => d.includes('recreated_by_controller=true'))
+              results.push(`${recreated ? '⚠️' : '✅'} ${res.data.message}${details}`)
             } else {
-              results.push(`❌ ${label}: 执行失败`)
+              results.push(`❌ ${label}: ${res.data?.message || '执行失败'}`)
             }
           } catch (error: any) {
             results.push(`❌ ${label}: ${error?.response?.data?.message || error.message || '执行失败'}`)
           }
         }
         setPendingActions([])
+        setPendingHostMessageId(null)
         setMessageExtras((prev) => {
           const next = { ...prev }
           for (const id of Object.keys(next)) {
@@ -596,6 +748,7 @@ const AIAgent: React.FC = () => {
       console.error(e)
     }
     setPendingActions([])
+    setPendingHostMessageId(null)
     await addMessage(currentId, 'assistant', '❌ 操作已取消')
   }
 
@@ -609,22 +762,24 @@ const AIAgent: React.FC = () => {
   const renderMessage = (msg: any, index: number) => {
     const isUser = msg.role === 'user'
     const isEmpty = !msg.content && !isUser
-    const isLastAssistant =
-      !isUser &&
-      activeConversation?.messages &&
-      [...activeConversation.messages].reverse().find((m) => m.role === 'assistant')?.id === msg.id
     const extras = !isUser ? messageExtras[msg.id] : undefined
-    const showPending =
-      !isUser &&
-      isLastAssistant &&
-      pendingActions.length > 0 &&
-      (extras?.pendingActions?.length || pendingActions.length) > 0
+    // live 气泡仍在时由 live 承载 pending，避免双份；流式未结束也不展示
+    const streamBusy = !!liveAssistant?.streaming
+    const liveOwnsPending = !!liveAssistant && !liveAssistant.streaming && pendingActions.length > 0
+    const isPendingHost = !isUser && (
+      msg.id === pendingHostMessageId ||
+      !!(extras?.pendingActions && extras.pendingActions.length > 0)
+    )
     const pendingForPanel =
-      isLastAssistant && pendingActions.length > 0
-        ? pendingActions
-        : extras?.pendingActions || []
+      !streamBusy && !liveOwnsPending && isPendingHost
+        ? (extras?.pendingActions?.length
+            ? extras.pendingActions
+            : msg.id === pendingHostMessageId
+              ? pendingActions
+              : [])
+        : []
     const toolTrace = extras?.toolTrace || []
-    const needsConfirm = showPending && pendingForPanel.length > 0
+    const needsConfirm = pendingForPanel.length > 0
     const showDelete = !msgSelectMode && hoveredMsgId === msg.id
     const checked = selectedMsgIds.includes(msg.id)
     const displayContent = isUser ? msg.content : stripLegacyAgentExtras(msg.content || '')
@@ -722,70 +877,11 @@ const AIAgent: React.FC = () => {
             )}
 
             {needsConfirm && !msgSelectMode && (
-              <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
-                <Alert
-                  type="warning"
-                  showIcon
-                  icon={<WarningOutlined />}
-                  message={
-                    <Text strong>
-                      待确认写操作（{pendingForPanel.length}）
-                    </Text>
-                  }
-                  description={
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                        {pendingForPanel.map((p) => (
-                          <div
-                            key={p.action_id || p.id}
-                            style={{
-                              background: '#fff',
-                              borderRadius: 8,
-                              border: '1px solid #ffe58f',
-                              padding: '8px 10px',
-                            }}
-                          >
-                            <Space wrap size={6} style={{ marginBottom: 4 }}>
-                              <Tag color="orange">{p.action}</Tag>
-                              <Text code>
-                                {p.namespace}/{p.name}
-                              </Text>
-                            </Space>
-                            <div
-                              style={{
-                                fontSize: 12,
-                                color: '#666',
-                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                                lineHeight: 1.5,
-                              }}
-                            >
-                              {p.dry_run || p.description}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <Space>
-                        <Button
-                          type="primary"
-                          size="small"
-                          danger
-                          icon={<CheckCircleOutlined />}
-                          onClick={handleConfirm}
-                        >
-                          确认执行
-                        </Button>
-                        <Button
-                          size="small"
-                          icon={<CloseCircleOutlined />}
-                          onClick={handleCancel}
-                        >
-                          取消
-                        </Button>
-                      </Space>
-                    </div>
-                  }
-                />
-              </div>
+              <PendingConfirmPanel
+                actions={pendingForPanel}
+                onConfirm={handleConfirm}
+                onCancel={handleCancel}
+              />
             )}
 
             <div
@@ -843,6 +939,9 @@ const AIAgent: React.FC = () => {
     createdAt: new Date(c.created_at),
     updatedAt: new Date(c.updated_at),
     messageCount: c.message_count,
+    username: c.username,
+    realName: c.real_name,
+    mine: c.mine,
   }))
 
   const hasMessages = !!activeConversation && activeConversation.messages.length > 0
@@ -862,16 +961,48 @@ const AIAgent: React.FC = () => {
   }
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 180px)', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
+    <div>
+      <AIReadOnlyBanner />
+      <div style={{ display: 'flex', height: 'calc(100vh - 180px)', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
       <ChatSidebar
         conversations={sidebarConversations}
         activeId={activeId ? String(activeId) : null}
         onSelect={(id) => selectConversation(Number(id))}
-        onCreate={() => { void createConversation() }}
-        onDelete={async (id) => { await deleteConversation(Number(id)) }}
-        onBatchDelete={async (ids) => { await deleteConversations(ids.map(Number)) }}
-        onRename={async (id, title) => { await renameConversation(Number(id), title) }}
-        onClear={async (id) => { await clearConversation(Number(id)) }}
+        onCreate={() => {
+          if (!canExecute) {
+            message.warning('当前为只读权限，无法创建对话')
+            return
+          }
+          void createConversation()
+        }}
+        onDelete={async (id) => {
+          if (!canExecute) {
+            message.warning('当前为只读权限，无法删除对话')
+            return
+          }
+          await deleteConversation(Number(id))
+        }}
+        onBatchDelete={async (ids) => {
+          if (!canExecute) {
+            message.warning('当前为只读权限，无法删除对话')
+            return
+          }
+          await deleteConversations(ids.map(Number))
+        }}
+        onRename={async (id, title) => {
+          if (!canExecute) {
+            message.warning('当前为只读权限，无法重命名对话')
+            return
+          }
+          await renameConversation(Number(id), title)
+        }}
+        onClear={async (id) => {
+          if (!canExecute) {
+            message.warning('当前为只读权限，无法清空对话')
+            return
+          }
+          await clearConversation(Number(id))
+        }}
         deletingId={deletingId != null ? String(deletingId) : null}
         batchDeleting={batchDeleting}
         collapsed={sidebarCollapsed}
@@ -1062,6 +1193,18 @@ const AIAgent: React.FC = () => {
                       ) : (
                         !liveAssistant.toolTrace.length && liveAssistant.streaming && <Spin size="small" />
                       )}
+                      {/* 本轮回答结束后，待确认固定挂在本轮 live 气泡底部 */}
+                      {!liveAssistant.streaming &&
+                        pendingActions.length > 0 &&
+                        (liveAssistant.status === 'done' ||
+                          liveAssistant.status === 'stopped' ||
+                          liveAssistant.status === 'error') && (
+                          <PendingConfirmPanel
+                            actions={pendingActions}
+                            onConfirm={handleConfirm}
+                            onCancel={handleCancel}
+                          />
+                        )}
                     </div>
                   </div>
                 </div>
@@ -1099,9 +1242,9 @@ const AIAgent: React.FC = () => {
                 value={inputValue}
                 onChange={e => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="描述你想做的操作... (Enter 发送，Shift+Enter 换行)"
+                placeholder={canExecute ? '描述你想做的操作... (Enter 发送，Shift+Enter 换行)' : '只读模式：可浏览历史对话，不可发送'}
                 autoSize={{ minRows: 1, maxRows: 4 }}
-                disabled={loading}
+                disabled={loading || !canExecute}
                 style={{ flex: 1 }}
               />
               {loading ? (
@@ -1109,13 +1252,14 @@ const AIAgent: React.FC = () => {
                   停止
                 </Button>
               ) : (
-                <Button type="primary" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!inputValue.trim()} style={{ height: 'auto', backgroundColor: '#722ed1', borderColor: '#722ed1' }}>
+                <Button type="primary" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!canExecute || !inputValue.trim()} style={{ height: 'auto', backgroundColor: '#722ed1', borderColor: '#722ed1' }}>
                   发送
                 </Button>
               )}
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   )

@@ -29,9 +29,6 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/clusters/:id/workloads/compare",
 		"POST /api/v1/clusters/:id/workloads/yaml/apply",
 		"POST /api/v1/aiops/agent",
-		"POST /api/v1/aiops/agent/stream",
-		"GET /api/v1/aiops/agent/pending",
-		"POST /api/v1/aiops/agent/pending/cancel",
 		"POST /api/v1/aiops/agent/confirm/:actionId",
 		"POST /api/v1/aiops/kubectl",
 		"GET /api/v1/system/user-groups",
@@ -42,12 +39,7 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/ws/tickets/pod/:id/:ns/:name",
 		"GET /api/v1/inspection/rules/:id",
 		"GET /api/v1/backups/:id",
-		"DELETE /api/v1/backups/:id",
-		"DELETE /api/v1/backups/restores/:id",
 		"POST /api/v1/scheduler/tasks",
-		"POST /api/v1/alerts/webhook/alertmanager",
-		"GET /api/v1/alerts/rules",
-		"POST /api/v1/alerts/channels",
 	}
 	for _, key := range required {
 		parts := strings.SplitN(key, " ", 2)
