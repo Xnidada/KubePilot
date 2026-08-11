@@ -99,6 +99,7 @@ func (h *Handler) GetConversation(c *gin.Context) {
 		ID        uint   `json:"id"`
 		Role      string `json:"role"`
 		Content   string `json:"content"`
+		Extras    string `json:"extras,omitempty"`
 		CreatedAt string `json:"created_at"`
 	}
 
@@ -108,6 +109,7 @@ func (h *Handler) GetConversation(c *gin.Context) {
 			ID:        msg.ID,
 			Role:      msg.Role,
 			Content:   msg.Content,
+			Extras:    msg.Extras,
 			CreatedAt: msg.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}
@@ -228,6 +230,7 @@ func (h *Handler) ListMessages(c *gin.Context) {
 		ID        uint   `json:"id"`
 		Role      string `json:"role"`
 		Content   string `json:"content"`
+		Extras    string `json:"extras,omitempty"`
 		CreatedAt string `json:"created_at"`
 	}
 
@@ -237,6 +240,7 @@ func (h *Handler) ListMessages(c *gin.Context) {
 			ID:        msg.ID,
 			Role:      msg.Role,
 			Content:   msg.Content,
+			Extras:    msg.Extras,
 			CreatedAt: msg.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}

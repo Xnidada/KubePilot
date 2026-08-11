@@ -6,6 +6,7 @@ export interface Message {
   id: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  extras?: string
   created_at: string
 }
 

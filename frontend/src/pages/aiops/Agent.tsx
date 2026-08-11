@@ -31,7 +31,14 @@ import {
   WarningOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
-import { confirmK8SOperation, PendingAction, ToolTraceItem } from '../../api/agent'
+import {
+  agentChatStream,
+  cancelPendingActions,
+  confirmK8SOperation,
+  listPendingActions,
+  PendingAction,
+  ToolTraceItem,
+} from '../../api/agent'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -59,6 +66,141 @@ function summarizeToolTrace(trace: ToolTraceItem[]): { name: string; count: numb
   return [...map.entries()].map(([name, v]) => ({ name, ...v }))
 }
 
+/** 回答「依据」：可点开的工具轨迹面板 */
+function ToolEvidencePanel({
+  trace,
+  compact,
+}: {
+  trace: ToolTraceItem[]
+  compact?: boolean
+}) {
+  const [open, setOpen] = useState<string[]>([])
+  const [focusIdx, setFocusIdx] = useState<number | null>(null)
+
+  if (!trace.length) return null
+
+  const openPanel = (idx?: number) => {
+    setOpen(['tools'])
+    if (typeof idx === 'number') {
+      setFocusIdx(idx)
+      requestAnimationFrame(() => {
+        document.getElementById(`tool-evidence-${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      })
+    }
+  }
+
+  return (
+    <div style={{ marginTop: compact ? 0 : 12, marginBottom: compact ? 8 : 0 }} onClick={(e) => e.stopPropagation()}>
+      <Collapse
+        size="small"
+        ghost
+        activeKey={open}
+        onChange={(keys) => setOpen(Array.isArray(keys) ? keys.map(String) : [String(keys)])}
+        items={[
+          {
+            key: 'tools',
+            label: (
+              <Space size={6} wrap>
+                <ToolOutlined style={{ color: '#722ed1' }} />
+                <Text
+                  style={{ fontSize: 13, cursor: 'pointer', color: '#722ed1' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openPanel()
+                  }}
+                >
+                  基于 {trace.length} 次工具
+                </Text>
+                {summarizeToolTrace(trace).map((t) => {
+                  const firstIdx = trace.findIndex((x) => x.name === t.name)
+                  return (
+                    <Tag
+                      key={t.name}
+                      color={t.hasError ? 'error' : 'purple'}
+                      style={{ margin: 0, cursor: 'pointer' }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        openPanel(firstIdx >= 0 ? firstIdx : undefined)
+                      }}
+                    >
+                      {t.name}
+                      {t.count > 1 ? ` ×${t.count}` : ''}
+                    </Tag>
+                  )
+                })}
+              </Space>
+            ),
+            children: (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {trace.map((t, i) => (
+                  <div
+                    id={`tool-evidence-${i}`}
+                    key={`${t.name}-${i}`}
+                    style={{
+                      background: '#fff',
+                      borderRadius: 8,
+                      border: focusIdx === i ? '1px solid #722ed1' : '1px solid #e8e8e8',
+                      padding: '8px 10px',
+                    }}
+                  >
+                    <Space size={8} style={{ marginBottom: 4 }} wrap>
+                      <Tag color={t.is_error ? 'error' : 'processing'}>{t.name}</Tag>
+                      {typeof t.duration_ms === 'number' && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>{t.duration_ms}ms</Text>
+                      )}
+                      {t.is_error && <Text type="danger" style={{ fontSize: 12 }}>失败</Text>}
+                    </Space>
+                    {t.args && (
+                      <div style={{ marginBottom: 6 }}>
+                        <Text type="secondary" style={{ fontSize: 11 }}>参数</Text>
+                        <pre
+                          style={{
+                            margin: '2px 0 0',
+                            padding: 8,
+                            background: '#fafafa',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            maxHeight: 96,
+                            overflow: 'auto',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                          }}
+                        >
+                          {t.args}
+                        </pre>
+                      </div>
+                    )}
+                    {t.result && (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 11 }}>结果摘要</Text>
+                        <pre
+                          style={{
+                            margin: '2px 0 0',
+                            padding: 8,
+                            background: '#fafafa',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            maxHeight: 120,
+                            overflow: 'auto',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                          }}
+                        >
+                          {t.result}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ),
+          },
+        ]}
+      />
+    </div>
+  )
+}
+
 type MessageExtras = {
   toolTrace?: ToolTraceItem[]
   pendingActions?: PendingAction[]
@@ -80,6 +222,7 @@ const AIAgent: React.FC = () => {
     deleteConversation,
     deleteConversations,
     renameConversation,
+    fetchConversationDetail,
   } = useConversations()
 
   const [inputValue, setInputValue] = useState('')
@@ -95,6 +238,13 @@ const AIAgent: React.FC = () => {
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   /** 按消息 id 挂载工具轨迹 / 待确认面板（会话内有效） */
   const [messageExtras, setMessageExtras] = useState<Record<number, MessageExtras>>({})
+  /** 流式中的临时助手气泡（结束后由会话详情替换） */
+  const [liveAssistant, setLiveAssistant] = useState<{
+    content: string
+    streaming: boolean
+    status?: string
+    toolTrace: ToolTraceItem[]
+  } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -104,15 +254,65 @@ const AIAgent: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom()
-  }, [activeConversation?.messages])
+  }, [activeConversation?.messages, liveAssistant?.content, liveAssistant?.toolTrace?.length, liveAssistant?.status])
 
-  // 切换会话时退出消息多选，并清空待确认写操作
+  // 切换会话：清空本地态，并从后端恢复 pending / extras
   useEffect(() => {
     setMsgSelectMode(false)
     setSelectedMsgIds([])
     setPendingActions([])
     setMessageExtras({})
+    setLiveAssistant(null)
+    if (!activeId) return
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await listPendingActions(activeId)
+        if (cancelled) return
+        if (res.code === 0) {
+          setPendingActions(res.data?.pending_actions || [])
+        }
+      } catch (e) {
+        console.error('Failed to load pending actions', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [activeId])
+
+  // 会话详情加载后，从消息 extras 恢复工具轨迹
+  useEffect(() => {
+    const msgs = activeConversation?.messages
+    if (!msgs?.length) return
+    const next: Record<number, MessageExtras> = {}
+    for (const m of msgs) {
+      if (m.role !== 'assistant' || !m.extras) continue
+      try {
+        const raw = JSON.parse(m.extras) as {
+          tool_trace?: ToolTraceItem[]
+          pending_action_ids?: number[]
+        }
+        next[m.id] = {
+          toolTrace: raw.tool_trace,
+          pendingActions:
+            pendingActions.length > 0 &&
+            raw.pending_action_ids?.length &&
+            m.id === [...msgs].reverse().find((x) => x.role === 'assistant')?.id
+              ? pendingActions.filter((p) =>
+                  raw.pending_action_ids!.includes(p.action_id || p.id)
+                )
+              : undefined,
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (Object.keys(next).length > 0) {
+      setMessageExtras((prev) => ({ ...prev, ...next }))
+    }
+  }, [activeConversation?.messages, pendingActions])
 
   useEffect(() => {
     if (!loading) {
@@ -169,69 +369,129 @@ const AIAgent: React.FC = () => {
       setInputValue('')
     }
 
-    // 保存用户消息到后端
     await addMessage(currentId, 'user', sendContent)
 
     setLoading(true)
+    setPendingActions([])
+    setLiveAssistant({ content: '', streaming: true, status: 'thinking', toolTrace: [] })
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
 
     try {
-      const token = getAuthToken()
-      const response = await fetch('/api/v1/aiops/agent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      await agentChatStream(
+        {
           message: sendContent,
           cluster_id: selectedCluster,
           conversation_id: currentId,
-        }),
-        signal: abortController.signal,
-      })
+        },
+        (ev) => {
+          if (ev.type === 'status') {
+            setLiveAssistant((prev) =>
+              prev ? { ...prev, status: ev.status || prev.status } : prev
+            )
+          } else if (ev.type === 'tool_start') {
+            setLiveAssistant((prev) => {
+              if (!prev) return prev
+              const trace = [
+                ...prev.toolTrace,
+                { name: ev.name || 'tool', args: ev.args || '', result: '', is_error: false },
+              ]
+              return { ...prev, status: `running:${ev.name}`, toolTrace: trace }
+            })
+          } else if (ev.type === 'tool_result') {
+            setLiveAssistant((prev) => {
+              if (!prev) return prev
+              const trace = [...prev.toolTrace]
+              for (let i = trace.length - 1; i >= 0; i--) {
+                if (trace[i].name === ev.name && !trace[i].result) {
+                  trace[i] = {
+                    ...trace[i],
+                    result: ev.result || '',
+                    is_error: !!ev.is_error,
+                    duration_ms: ev.duration_ms,
+                  }
+                  break
+                }
+              }
+              return { ...prev, toolTrace: trace }
+            })
+            if (ev.pending) {
+              setPendingActions((prev) => [...prev, ev.pending!])
+            }
+          } else if (ev.type === 'content_delta') {
+            setLiveAssistant((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    content: prev.content + (ev.delta || ''),
+                    status: 'writing',
+                  }
+                : prev
+            )
+          } else if (ev.type === 'done') {
+            const pending = ev.pending_actions || []
+            const trace = ev.tool_trace || []
+            setPendingActions(pending)
+            setLiveAssistant({
+              content: ev.content || '',
+              streaming: false,
+              status: 'done',
+              toolTrace: trace,
+            })
+          } else if (ev.type === 'error') {
+            throw new Error(ev.message || 'Agent 流式错误')
+          }
+        },
+        abortController.signal
+      )
 
-      const raw = await response.text()
-      let res: any = null
-      try {
-        res = raw ? JSON.parse(raw) : null
-      } catch {
-        throw new Error(raw || `服务返回非 JSON（HTTP ${response.status}）`)
-      }
-
-      if (!response.ok || !res || res.code !== 0) {
-        const errMsg = res?.message || `HTTP ${response.status}` || '未知错误'
-        setPendingActions([])
-        await addMessage(currentId, 'assistant', '❌ 请求失败: ' + errMsg)
-        message.error(errMsg)
-        return
-      }
-
-      const reply = res.data?.content || '抱歉，我无法理解您的请求。'
-      const pending: PendingAction[] = res.data?.pending_actions || []
-      const trace: ToolTraceItem[] = res.data?.tool_trace || []
-      setPendingActions(pending)
-
-      const saved = await addMessage(currentId, 'assistant', reply)
-      if (saved?.id && (pending.length > 0 || trace.length > 0)) {
-        setMessageExtras((prev) => ({
-          ...prev,
-          [saved.id]: {
-            toolTrace: trace.length > 0 ? trace : undefined,
-            pendingActions: pending.length > 0 ? pending : undefined,
-          },
-        }))
-      }
+      // 后端已落库助手消息；刷新详情并挂上 extras
+      await fetchConversationDetail(currentId)
+      setLiveAssistant(null)
     } catch (error: any) {
       if (error.name === 'AbortError') {
         console.log('Request aborted')
+        setLiveAssistant((prev) =>
+          prev
+            ? {
+                ...prev,
+                streaming: false,
+                status: 'stopped',
+                content:
+                  prev.content ||
+                  (prev.toolTrace.length
+                    ? '（已停止；可展开上方工具依据查看已拉取结果）'
+                    : '（已停止）'),
+              }
+            : null
+        )
       } else {
         console.error('Chat error:', error)
         const detail = error?.message || '网络异常或服务超时'
         message.error(detail)
-        await addMessage(currentId!, 'assistant', `❌ AI 请求失败：${detail}\n\n可检查 **AI 设置** 中的 LLM 配置，或缩短问题后重试。`)
+        let kept = false
+        setLiveAssistant((prev) => {
+          if (prev && (prev.content || prev.toolTrace.length > 0)) {
+            kept = true
+            return {
+              ...prev,
+              streaming: false,
+              status: 'error',
+              content: prev.content
+                ? `${prev.content}\n\n❌ ${detail}`
+                : `❌ AI 请求失败：${detail}`,
+            }
+          }
+          return null
+        })
+        if (!kept) {
+          await addMessage(
+            currentId!,
+            'assistant',
+            `❌ AI 请求失败：${detail}\n\n可检查 **AI 设置** 中的 LLM 配置，或缩短问题后重试。`
+          )
+        }
       }
     } finally {
       setLoading(false)
@@ -326,6 +586,14 @@ const AIAgent: React.FC = () => {
     if (!currentId) {
       currentId = await createConversation()
       if (!currentId) return
+    }
+    try {
+      await cancelPendingActions(
+        currentId,
+        pendingActions.map((p) => p.action_id || p.id)
+      )
+    } catch (e) {
+      console.error(e)
     }
     setPendingActions([])
     await addMessage(currentId, 'assistant', '❌ 操作已取消')
@@ -450,94 +718,7 @@ const AIAgent: React.FC = () => {
             )}
 
             {!isUser && !isEmpty && toolTrace.length > 0 && (
-              <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
-                <Collapse
-                  size="small"
-                  ghost
-                  items={[
-                    {
-                      key: 'tools',
-                      label: (
-                        <Space size={6} wrap>
-                          <ToolOutlined style={{ color: '#722ed1' }} />
-                          <Text style={{ fontSize: 13 }}>工具调用</Text>
-                          <Tag style={{ margin: 0 }}>{toolTrace.length}</Tag>
-                          {summarizeToolTrace(toolTrace).map((t) => (
-                            <Tag
-                              key={t.name}
-                              color={t.hasError ? 'error' : 'purple'}
-                              style={{ margin: 0 }}
-                            >
-                              {t.name}
-                              {t.count > 1 ? ` ×${t.count}` : ''}
-                            </Tag>
-                          ))}
-                        </Space>
-                      ),
-                      children: (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {toolTrace.map((t, i) => (
-                            <div
-                              key={`${t.name}-${i}`}
-                              style={{
-                                background: '#fff',
-                                borderRadius: 8,
-                                border: '1px solid #e8e8e8',
-                                padding: '8px 10px',
-                              }}
-                            >
-                              <Space size={8} style={{ marginBottom: 4 }}>
-                                <Tag color={t.is_error ? 'error' : 'processing'}>{t.name}</Tag>
-                                {t.is_error && <Text type="danger" style={{ fontSize: 12 }}>失败</Text>}
-                              </Space>
-                              {t.args && (
-                                <div style={{ marginBottom: 6 }}>
-                                  <Text type="secondary" style={{ fontSize: 11 }}>参数</Text>
-                                  <pre
-                                    style={{
-                                      margin: '2px 0 0',
-                                      padding: 8,
-                                      background: '#fafafa',
-                                      borderRadius: 6,
-                                      fontSize: 11,
-                                      maxHeight: 96,
-                                      overflow: 'auto',
-                                      whiteSpace: 'pre-wrap',
-                                      wordBreak: 'break-all',
-                                    }}
-                                  >
-                                    {t.args}
-                                  </pre>
-                                </div>
-                              )}
-                              {t.result && (
-                                <div>
-                                  <Text type="secondary" style={{ fontSize: 11 }}>结果摘要</Text>
-                                  <pre
-                                    style={{
-                                      margin: '2px 0 0',
-                                      padding: 8,
-                                      background: '#fafafa',
-                                      borderRadius: 6,
-                                      fontSize: 11,
-                                      maxHeight: 120,
-                                      overflow: 'auto',
-                                      whiteSpace: 'pre-wrap',
-                                      wordBreak: 'break-all',
-                                    }}
-                                  >
-                                    {t.result}
-                                  </pre>
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ),
-                    },
-                  ]}
-                />
-              </div>
+              <ToolEvidencePanel trace={toolTrace} />
             )}
 
             {needsConfirm && !msgSelectMode && (
@@ -812,34 +993,80 @@ const AIAgent: React.FC = () => {
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 0', background: '#fff' }}>
-          {(!activeConversation || activeConversation.messages.length === 0) ? (
+          {(!activeConversation || (activeConversation.messages.length === 0 && !liveAssistant)) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#999' }}>
               <ToolOutlined style={{ fontSize: 64, marginBottom: 24, color: '#d9d9d9' }} />
               <Title level={4} style={{ color: '#666' }}>AI Agent</Title>
               <Text type="secondary" style={{ textAlign: 'center', maxWidth: 400 }}>
-                使用自然语言描述你想做的操作，AI 会自动执行 K8S 命令
+                使用自然语言描述你想做的操作，AI 会通过工具查询/变更集群
               </Text>
               <div style={{ marginTop: 24, textAlign: 'left' }}>
                 <Text type="secondary">示例：</Text>
                 <ul style={{ color: '#999', marginTop: 8 }}>
-                  <li>帮我创建一个 nginx deployment，3个副本</li>
-                  <li>查看 default 命名空间的 service</li>
-                  <li>删除 test 命名空间的所有 pod</li>
+                  <li>列出 default 命名空间的 Pod</li>
+                  <li>查看某个 Pod 的事件和日志</li>
+                  <li>删除 default 下 cj-test 开头的 Pod（需确认）</li>
                 </ul>
               </div>
             </div>
           ) : (
-            activeConversation.messages.map((msg, index) => renderMessage(msg, index))
-          )}
-          {loading && (
-            <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 24 }}>
-              <Avatar icon={<ThunderboltOutlined />} style={{ backgroundColor: '#722ed1', marginRight: 12 }} />
-              <Spin size="small" />
-              <Text type="secondary" style={{ marginLeft: 8 }}>
-                AI Agent 思考中...{thinkingSeconds > 0 ? `（已等待 ${thinkingSeconds}s）` : ''}
-                {thinkingSeconds >= 20 ? '，复杂问题可能需要更久' : ''}
-              </Text>
-            </div>
+            <>
+              {activeConversation?.messages.map((msg, index) => renderMessage(msg, index))}
+              {liveAssistant && (
+                <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-start', marginBottom: 24, padding: '0 16px', gap: 8 }}>
+                  <Avatar icon={<ThunderboltOutlined />} style={{ backgroundColor: '#722ed1', marginRight: 12, flexShrink: 0 }} />
+                  <div style={{ maxWidth: '75%', width: '100%' }}>
+                    <div style={{ padding: '12px 16px', borderRadius: 12, backgroundColor: '#f0f2f5', color: '#333', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
+                      {liveAssistant.status &&
+                        liveAssistant.status !== 'done' &&
+                        liveAssistant.status !== 'writing' &&
+                        liveAssistant.status !== 'stopped' &&
+                        liveAssistant.status !== 'error' && (
+                        <div style={{ marginBottom: 8 }}>
+                          <Space size={6}>
+                            <Spin size="small" />
+                            <Text type="secondary" style={{ fontSize: 13 }}>
+                              {liveAssistant.status.startsWith('running:')
+                                ? `正在调用 ${liveAssistant.status.replace('running:', '')}…`
+                                : liveAssistant.status === 'thinking'
+                                  ? `思考中…${thinkingSeconds > 0 ? `（${thinkingSeconds}s）` : ''}`
+                                  : liveAssistant.status === 'summarizing'
+                                    ? '整理回答…'
+                                    : liveAssistant.status}
+                            </Text>
+                          </Space>
+                        </div>
+                      )}
+                      {(liveAssistant.status === 'stopped' || liveAssistant.status === 'error') && (
+                        <div style={{ marginBottom: 8 }}>
+                          <Text type={liveAssistant.status === 'error' ? 'danger' : 'secondary'} style={{ fontSize: 13 }}>
+                            {liveAssistant.status === 'stopped' ? '已停止生成' : '生成中断'}
+                          </Text>
+                        </div>
+                      )}
+                      {liveAssistant.toolTrace.length > 0 && (
+                        <ToolEvidencePanel trace={liveAssistant.toolTrace} compact />
+                      )}
+                      {/* 流式中用纯文本，避免半截 Markdown 破坏渲染 */}
+                      {liveAssistant.content ? (
+                        liveAssistant.streaming ? (
+                          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+                            {liveAssistant.content}
+                            <span style={{ opacity: 0.4 }}>▍</span>
+                          </div>
+                        ) : (
+                          <div className="markdown-body">
+                            <MarkdownRenderer content={liveAssistant.content} />
+                          </div>
+                        )
+                      ) : (
+                        !liveAssistant.toolTrace.length && liveAssistant.streaming && <Spin size="small" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -892,17 +1119,6 @@ const AIAgent: React.FC = () => {
       </div>
     </div>
   )
-}
-
-function getAuthToken(): string {
-  const token = localStorage.getItem('auth-storage')
-  if (token) {
-    try {
-      const authData = JSON.parse(token)
-      return authData?.state?.token || ''
-    } catch { return '' }
-  }
-  return ''
 }
 
 export default AIAgent

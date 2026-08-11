@@ -82,6 +82,7 @@ type ChatMessage struct {
 	Conversation   ChatConversation `json:"conversation" gorm:"foreignKey:ConversationID"`
 	Role           string           `json:"role" gorm:"size:20;not null"` // user, assistant, system
 	Content        string           `json:"content" gorm:"type:text;not null"`
+	Extras         string           `json:"extras" gorm:"type:text"` // JSON: tool_trace, pending_action_ids
 	TokenUsage     int              `json:"token_usage"`
 	CreatedAt      time.Time        `json:"created_at"`
 }
@@ -111,6 +112,21 @@ type AgentAction struct {
 
 func (AgentAction) TableName() string {
 	return "agent_actions"
+}
+
+// AgentToolTrace stores one agent turn's tool call observability payload.
+type AgentToolTrace struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	UserID         uint      `json:"user_id" gorm:"index"`
+	ClusterID      uint      `json:"cluster_id" gorm:"index"`
+	ConversationID uint      `json:"conversation_id" gorm:"index"`
+	Payload        string    `json:"payload" gorm:"type:text"`
+	ToolCount      int       `json:"tool_count"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (AgentToolTrace) TableName() string {
+	return "agent_tool_traces"
 }
 
 // LLMConfig LLM配置

@@ -651,6 +651,83 @@ func (h *Handler) AgentChat(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// AgentChatStream Agent 对话 SSE：工具过程 + 最终回答增量
+func (h *Handler) AgentChatStream(c *gin.Context) {
+	if h.service == nil {
+		response.InternalError(c, "AI service not configured")
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+
+	var req struct {
+		Message        string `json:"message" binding:"required"`
+		ClusterID      uint   `json:"cluster_id" binding:"required"`
+		ConversationID uint   `json:"conversation_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	_ = h.service.AgentChatStream(c.Request.Context(), userID.(uint), req.ClusterID, req.ConversationID, req.Message, func(ev aiops.AgentStreamEvent) {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	})
+}
+
+// AgentListPending 列出会话下待确认写操作
+func (h *Handler) AgentListPending(c *gin.Context) {
+	if h.service == nil {
+		response.InternalError(c, "AI service not configured")
+		return
+	}
+	userID, _ := c.Get("user_id")
+	var convID uint
+	if _, err := fmt.Sscanf(c.Query("conversation_id"), "%d", &convID); err != nil || convID == 0 {
+		response.BadRequest(c, "conversation_id is required")
+		return
+	}
+	list, err := h.service.ListPendingActions(userID.(uint), convID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"pending_actions": list})
+}
+
+// AgentCancelPending 取消会话下待确认写操作
+func (h *Handler) AgentCancelPending(c *gin.Context) {
+	if h.service == nil {
+		response.InternalError(c, "AI service not configured")
+		return
+	}
+	userID, _ := c.Get("user_id")
+	var req struct {
+		ConversationID uint   `json:"conversation_id" binding:"required"`
+		ActionIDs      []uint `json:"action_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if err := h.service.CancelPendingActions(userID.(uint), req.ConversationID, req.ActionIDs); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessWithMessage(c, "cancelled", nil)
+}
+
 // AgentConfirmAction 确认执行已暂存的 Agent 动作（必须先 dry-run / stage）。
 func (h *Handler) AgentConfirmAction(c *gin.Context) {
 	if h.service == nil {

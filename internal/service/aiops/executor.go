@@ -14,8 +14,8 @@ import (
 
 // ExecuteResult 执行结果
 type ExecuteResult struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
+	Success bool     `json:"success"`
+	Message string   `json:"message"`
 	Details []string `json:"details,omitempty"`
 }
 
@@ -24,6 +24,9 @@ func (s *Service) ExecuteCreateDeployment(ctx context.Context, clusterID uint, n
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	if strings.TrimSpace(image) == "" {
+		return nil, fmt.Errorf("image is required")
 	}
 
 	if replicas == 0 {
@@ -92,6 +95,12 @@ func (s *Service) ExecuteCreateService(ctx context.Context, clusterID uint, name
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	if len(selector) == 0 {
+		return nil, fmt.Errorf("selector is required")
+	}
+	if port <= 0 {
+		return nil, fmt.Errorf("port is required")
 	}
 
 	if serviceType == "" {
@@ -298,55 +307,20 @@ func (s *Service) ParseAndExecute(ctx context.Context, clusterID uint, message s
 	}, nil
 }
 
-// parseAndCreateDeployment 解析并创建Deployment
+// parseAndCreateDeployment 解析并创建Deployment（已废弃默认镜像填充；必须由 staged 参数提供）
 func (s *Service) parseAndCreateDeployment(ctx context.Context, clusterID uint, message string) (*ExecuteResult, error) {
-	// 默认值
-	name := "nginx-deployment"
-	namespace := "default"
-	image := "nginx:latest"
-	replicas := int32(1)
-	ports := []int32{80}
-
-	// 尝试解析名称
-	if strings.Contains(message, "nginx") {
-		name = "nginx-deployment"
-		image = "nginx:latest"
-	} else if strings.Contains(message, "redis") {
-		name = "redis-deployment"
-		image = "redis:latest"
-	} else if strings.Contains(message, "mysql") {
-		name = "mysql-deployment"
-		image = "mysql:latest"
-	}
-
-	// 尝试解析副本数
-	if strings.Contains(message, "2个") || strings.Contains(message, "2副本") || strings.Contains(message, "两个") {
-		replicas = 2
-	} else if strings.Contains(message, "3个") || strings.Contains(message, "3副本") || strings.Contains(message, "三个") {
-		replicas = 3
-	}
-
-	return s.ExecuteCreateDeployment(ctx, clusterID, namespace, name, image, replicas, ports)
+	return &ExecuteResult{
+		Success: false,
+		Message: "请通过 Agent stage_mutation 提供明确的 name/namespace/image，禁止使用默认镜像",
+	}, nil
 }
 
-// parseAndCreateService 解析并创建Service
+// parseAndCreateService 解析并创建Service（禁止默认 selector）
 func (s *Service) parseAndCreateService(ctx context.Context, clusterID uint, message string) (*ExecuteResult, error) {
-	name := "nginx-service"
-	namespace := "default"
-	serviceType := "NodePort"
-	selector := map[string]string{"app": "nginx-deployment"}
-	port := int32(80)
-	targetPort := int32(80)
-	nodePort := int32(30080)
-
-	// 尝试解析 NodePort
-	if strings.Contains(message, "30080") {
-		nodePort = 30080
-	} else if strings.Contains(message, "30081") {
-		nodePort = 30081
-	}
-
-	return s.ExecuteCreateService(ctx, clusterID, namespace, name, serviceType, selector, port, targetPort, nodePort)
+	return &ExecuteResult{
+		Success: false,
+		Message: "请通过 Agent stage_mutation 提供明确的 name/namespace/selector/port，禁止使用默认 selector",
+	}, nil
 }
 
 // parseAndDelete 解析并删除

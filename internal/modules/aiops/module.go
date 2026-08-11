@@ -37,6 +37,7 @@ func (m *Module) Migrations() []any {
 		&model.ChatConversation{},
 		&model.ChatMessage{},
 		&model.AgentAction{},
+		&model.AgentToolTrace{},
 		&model.LLMConfig{},
 	}
 }
@@ -85,6 +86,9 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("POST", "/api/v1/aiops/analyze-logs", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/diagnose", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/aiops/agent/stream", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("GET", "/api/v1/aiops/agent/pending", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/aiops/agent/pending/cancel", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent/confirm/:actionId", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent/execute", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/kubectl", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
@@ -181,6 +185,9 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.POST("/analyze-logs", m.handler.AnalyzeLogs)
 		g.POST("/diagnose", m.handler.Diagnose)
 		g.POST("/agent", m.handler.AgentChat)
+		g.POST("/agent/stream", m.handler.AgentChatStream)
+		g.GET("/agent/pending", m.handler.AgentListPending)
+		g.POST("/agent/pending/cancel", m.handler.AgentCancelPending)
 		g.POST("/agent/confirm/:actionId", m.handler.AgentConfirmAction)
 		g.POST("/agent/execute", m.handler.AgentExecute)
 		g.POST("/kubectl", m.handler.KubectlExecute)

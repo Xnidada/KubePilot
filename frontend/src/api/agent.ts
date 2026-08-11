@@ -1,4 +1,4 @@
-import { post } from './request'
+import { get, post } from './request'
 
 export interface AgentChatRequest {
   cluster_id: number
@@ -23,6 +23,7 @@ export interface ToolTraceItem {
   args: string
   result: string
   is_error?: boolean
+  duration_ms?: number
 }
 
 export interface AgentChatResponse {
@@ -30,6 +31,28 @@ export interface AgentChatResponse {
   actions?: any[]
   pending_actions?: PendingAction[]
   tool_trace?: ToolTraceItem[]
+}
+
+export interface MessageExtras {
+  tool_trace?: ToolTraceItem[]
+  pending_action_ids?: number[]
+}
+
+export interface AgentStreamEvent {
+  type: 'status' | 'tool_start' | 'tool_result' | 'content_delta' | 'done' | 'error'
+  status?: string
+  name?: string
+  args?: string
+  result?: string
+  is_error?: boolean
+  delta?: string
+  content?: string
+  message?: string
+  pending_actions?: PendingAction[]
+  tool_trace?: ToolTraceItem[]
+  message_id?: number
+  pending?: PendingAction
+  duration_ms?: number
 }
 
 export interface ExecuteRequest {
@@ -67,17 +90,96 @@ export interface ApiResult<T> {
   message: string
 }
 
-// AI Agent 对话
 export const agentChat = (data: AgentChatRequest) => {
   return post<ApiResult<AgentChatResponse>>('/aiops/agent', data)
 }
 
-/** 暂存写操作并 dry-run（旧路径；新 Agent 由后端 stage_mutation 直接返回 action_id） */
 export const stageK8SOperation = (data: ExecuteRequest) => {
   return post<ApiResult<StageResponse>>('/aiops/agent/execute', data)
 }
 
-/** 确认执行已暂存操作 */
 export const confirmK8SOperation = (actionId: number) => {
   return post<ApiResult<ConfirmResponse>>(`/aiops/agent/confirm/${actionId}`)
+}
+
+export const listPendingActions = (conversationId: number) => {
+  return get<ApiResult<{ pending_actions: PendingAction[] }>>(
+    `/aiops/agent/pending?conversation_id=${conversationId}`
+  )
+}
+
+export const cancelPendingActions = (conversationId: number, actionIds?: number[]) => {
+  return post<ApiResult<null>>('/aiops/agent/pending/cancel', {
+    conversation_id: conversationId,
+    action_ids: actionIds || [],
+  })
+}
+
+function getAuthToken(): string {
+  const raw = localStorage.getItem('auth-storage')
+  if (!raw) return ''
+  try {
+    const authData = JSON.parse(raw)
+    return authData?.state?.token || ''
+  } catch {
+    return ''
+  }
+}
+
+/** Consume Agent SSE stream; calls onEvent for each parsed event. */
+export async function agentChatStream(
+  data: AgentChatRequest,
+  onEvent: (ev: AgentStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const response = await fetch('/api/v1/aiops/agent/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${getAuthToken()}`,
+    },
+    body: JSON.stringify(data),
+    signal,
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    let msg = text || `HTTP ${response.status}`
+    try {
+      const j = JSON.parse(text)
+      msg = j.message || msg
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('无法读取流式响应')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() || ''
+    for (const part of parts) {
+      const line = part
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('data:'))
+      if (!line) continue
+      const raw = line.replace(/^data:\s*/, '')
+      if (!raw || raw === '[DONE]') continue
+      try {
+        const ev = JSON.parse(raw) as AgentStreamEvent
+        onEvent(ev)
+      } catch {
+        /* skip malformed */
+      }
+    }
+  }
 }

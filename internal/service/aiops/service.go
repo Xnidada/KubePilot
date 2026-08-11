@@ -86,14 +86,14 @@ func (s *Service) IsConfigured() bool {
 
 // Chat 对话请求
 type ChatRequest struct {
-	Message    string `json:"message" binding:"required"`
-	ClusterID  uint   `json:"cluster_id"`
-	Context    string `json:"context"` // 额外上下文
+	Message   string `json:"message" binding:"required"`
+	ClusterID uint   `json:"cluster_id"`
+	Context   string `json:"context"` // 额外上下文
 }
 
 // ChatResponse 对话响应
 type ChatResponse struct {
-	Content string `json:"content"`
+	Content string    `json:"content"`
 	Usage   llm.Usage `json:"usage"`
 }
 
@@ -245,11 +245,11 @@ type DiagnosisRequest struct {
 
 // DiagnosisResponse 诊断响应
 type DiagnosisResponse struct {
-	Analysis   string   `json:"analysis"`    // 原因分析
-	Steps      []string `json:"steps"`       // 排查步骤
-	Solutions  []string `json:"solutions"`   // 解决方案
-	Prevention []string `json:"prevention"`  // 预防措施
-	Commands   []string `json:"commands"`    // 相关命令
+	Analysis   string   `json:"analysis"`   // 原因分析
+	Steps      []string `json:"steps"`      // 排查步骤
+	Solutions  []string `json:"solutions"`  // 解决方案
+	Prevention []string `json:"prevention"` // 预防措施
+	Commands   []string `json:"commands"`   // 相关命令
 }
 
 // Diagnose 智能诊断
@@ -778,12 +778,12 @@ type ResourceGuideRequest struct {
 
 // ResourceGuideResponse 资源指南响应
 type ResourceGuideResponse struct {
-	Overview     string   `json:"overview"`      // 概述
-	Status       string   `json:"status"`        // 状态分析
-	HealthScore  int      `json:"health_score"`  // 健康评分 0-100
-	Suggestions  []string `json:"suggestions"`   // 优化建议
-	Operations   []string `json:"operations"`    // 常用操作
-	Warnings     []string `json:"warnings"`      // 潜在风险
+	Overview    string   `json:"overview"`     // 概述
+	Status      string   `json:"status"`       // 状态分析
+	HealthScore int      `json:"health_score"` // 健康评分 0-100
+	Suggestions []string `json:"suggestions"`  // 优化建议
+	Operations  []string `json:"operations"`   // 常用操作
+	Warnings    []string `json:"warnings"`     // 潜在风险
 }
 
 // GetResourceGuide 资源指南
@@ -1098,11 +1098,11 @@ type AnalyzeDescribeRequest struct {
 
 // AnalyzeDescribeResponse Describe 解读响应
 type AnalyzeDescribeResponse struct {
-	Summary      string   `json:"summary"`       // 摘要
-	KeyInfo      []string `json:"key_info"`      // 关键信息
-	Issues       []string `json:"issues"`        // 发现的问题
-	Suggestions  []string `json:"suggestions"`   // 建议
-	Commands     []string `json:"commands"`      // 相关命令
+	Summary     string   `json:"summary"`     // 摘要
+	KeyInfo     []string `json:"key_info"`    // 关键信息
+	Issues      []string `json:"issues"`      // 发现的问题
+	Suggestions []string `json:"suggestions"` // 建议
+	Commands    []string `json:"commands"`    // 相关命令
 }
 
 // AnalyzeDescribe Describe 解读
@@ -1209,13 +1209,13 @@ type AnalyzeLogsRequest struct {
 
 // AnalyzeLogsResponse 日志问诊响应
 type AnalyzeLogsResponse struct {
-	Summary      string   `json:"summary"`       // 日志摘要
-	Patterns     []string `json:"patterns"`      // 发现的模式
-	Errors       []string `json:"errors"`        // 错误信息
-	RootCause    string   `json:"root_cause"`    // 根因分析
-	Solutions    []string `json:"solutions"`     // 解决方案
-	Commands     []string `json:"commands"`      // 排查命令
-	Severity     string   `json:"severity"`      // 严重程度: low, medium, high, critical
+	Summary   string   `json:"summary"`    // 日志摘要
+	Patterns  []string `json:"patterns"`   // 发现的模式
+	Errors    []string `json:"errors"`     // 错误信息
+	RootCause string   `json:"root_cause"` // 根因分析
+	Solutions []string `json:"solutions"`  // 解决方案
+	Commands  []string `json:"commands"`   // 排查命令
+	Severity  string   `json:"severity"`   // 严重程度: low, medium, high, critical
 }
 
 // AnalyzeLogs 日志问诊
@@ -1380,12 +1380,17 @@ const agentSystemPrompt = `你是 KubePilot AI Agent，只能通过【原生工�
 6. propose_mutation 仅预览；需要用户确认时必须 stage_mutation。
 7. 用户指定命名空间时，工具参数必须带上该 namespace。
 8. Secret 值不可读取明文。
-9. 用中文回答；最终回复只总结工具结果，并标明依据。
+9. 用中文回答；最终回复只总结工具结果，并标明依据。数字字段（尤其 nodePort/port/replicas）必须原样引用工具输出，禁止臆造，禁止与 KubePilot 平台端口（如 30080）混淆。
+10. 网络/端口不通是通用排查，不要假设具体应用名。流程：用户给端口 → diagnose_service(node_port=…) 或先 list services；用户给 Service 名 → diagnose_service(namespace,name)。必须依据工具输出核对：①精确 nodePort；②Endpoints 是否为空；③selector 与 Pod/Deployment labels（看 selector_near_miss / likely_fix）。Endpoints 为空时优先标签不匹配，不要先猜防火墙。
+11. 用户只是「查原因/诊断/为什么不通」时：只输出结论与修复建议，禁止 stage_mutation / delete。只有用户明确说「帮我改/修好/删掉重建」时才暂存写操作。
+12. 列出资源时必须完整写出工具返回的名称（Pod/Service/Deployment 等），禁止截断或缩写。若 meta.truncated=false，必须列全，禁止说「列表被截断」。
+13. 用户要求「外部端口/NodePort/某端口可访问」时：create_service 必须同时传 service_type=NodePort、port/target_port、以及精确的 node_port（如 30089）。禁止省略 node_port 指望自动分配。selector 必须与 Deployment/Pod 标签一致。
 
 ## 工具
 - 查询：list_resources / get_resource / get_events / get_pod_logs / describe_resource
+- 诊断：diagnose_workload（Pod/Deployment）/ diagnose_service（任意 Service 连通性；支持 node_port 定位）
 - 预览：propose_mutation
-- 暂存待确认：stage_mutation（UI 确认后才会真正执行）
+- 暂存待确认：stage_mutation / stage_mutations / delete_by_prefix（UI 确认后才会真正执行）
 `
 
 // AgentChat Agent对话（原生 Tool Calling 循环）
@@ -1394,118 +1399,13 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 		return nil, fmt.Errorf("LLM service not configured")
 	}
 
-	clusterContext, _ := s.getClusterContext(clusterID)
-
-	historyMessages := s.getConversationHistory(conversationID, 10)
-	for i := range historyMessages {
-		// Drop legacy fake-action fences so the model is not reinforced by old turns.
-		historyMessages[i].Content = truncateRunes(sanitizeAgentHistory(historyMessages[i].Content), 2000)
-	}
-	// Avoid duplicating the user message already persisted by the frontend.
-	if len(historyMessages) > 0 {
-		last := historyMessages[len(historyMessages)-1]
-		if last.Role == "user" && strings.TrimSpace(last.Content) == strings.TrimSpace(message) {
-			historyMessages = historyMessages[:len(historyMessages)-1]
-		}
+	res, err := s.runAgentToolLoop(ctx, userID, clusterID, conversationID, message, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	system := agentSystemPrompt
-	if strings.TrimSpace(clusterContext) != "" {
-		system += "\n\n当前集群摘要（仅供参考，详情仍须用工具查询）：\n" + truncateRunes(clusterContext, 1500)
-	}
-
-	messages := []llm.Message{{Role: "system", Content: system}}
-	messages = append(messages, historyMessages...)
-	messages = append(messages, llm.Message{Role: "user", Content: message})
-
-	tools := agentToolDefinitions()
-	var trace []ToolTraceItem
-	var pending []PendingActionInfo
-
-	chatCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
-	var finalContent string
-	nudgeUsed := false
-	for round := 0; round < agentMaxToolRounds; round++ {
-		resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
-			Messages:  messages,
-			Tools:     tools,
-			MaxTokens: 2048,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("LLM chat failed: %w", err)
-		}
-
-		if len(resp.ToolCalls) == 0 {
-			finalContent = resp.Content
-			// Recover from models that dump fake action JSON instead of calling tools.
-			if !nudgeUsed && len(pending) == 0 && looksLikeFakeAgentActions(finalContent) {
-				nudgeUsed = true
-				messages = append(messages,
-					llm.Message{Role: "assistant", Content: finalContent},
-					llm.Message{Role: "user", Content: "禁止输出 action JSON 或伪协议。请立即用工具：先 list_resources/get_resource 核对名称，再对每个目标调用 stage_mutation。不要只列名单。"},
-				)
-				finalContent = ""
-				continue
-			}
-			break
-		}
-
-		// Append assistant turn with tool_calls
-		messages = append(messages, llm.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-
-		for _, tc := range resp.ToolCalls {
-			name := tc.Function.Name
-			args := tc.Function.Arguments
-			exec := s.executeAgentTool(chatCtx, userID, clusterID, conversationID, name, args)
-			trace = append(trace, ToolTraceItem{
-				Name:    name,
-				Args:    truncateRunes(args, 500),
-				Result:  truncateRunes(exec.Content, 1500),
-				IsError: exec.IsError,
-			})
-			if exec.Pending != nil {
-				pending = append(pending, *exec.Pending)
-			}
-			messages = append(messages, llm.Message{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Name:       name,
-				Content:    exec.Content,
-			})
-		}
-
-		if round == agentMaxToolRounds-1 && finalContent == "" {
-			finalContent = resp.Content
-			if finalContent == "" {
-				if len(pending) > 0 {
-					finalContent = "已暂存变更，请在界面确认后执行。"
-				} else {
-					finalContent = "已达到工具调用轮次上限，请根据已查询结果继续提问或缩小范围。"
-				}
-			}
-		}
-	}
-
-	if finalContent == "" {
-		if len(pending) > 0 {
-			finalContent = "已暂存变更，请在界面确认后执行。"
-		} else {
-			finalContent = "（模型未返回文本；请查看工具轨迹或重试。）"
-		}
-	}
-	// Strip leftover fake action fences from the visible reply when we already staged.
-	if len(pending) > 0 {
-		finalContent = stripFakeAgentActionBlocks(finalContent)
-	}
-
-	actions := make([]AgentActionInfo, 0, len(pending))
-	for _, p := range pending {
+	actions := make([]AgentActionInfo, 0, len(res.Pending))
+	for _, p := range res.Pending {
 		actions = append(actions, AgentActionInfo{
 			ID:           p.ID,
 			ActionType:   p.Action,
@@ -1518,11 +1418,13 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 		})
 	}
 
+	s.persistAgentToolTrace(userID, clusterID, conversationID, message, res.Trace, res.Pending)
+
 	return &AgentChatResponse{
-		Content:        finalContent,
+		Content:        res.Content,
 		Actions:        actions,
-		PendingActions: pending,
-		ToolTrace:      trace,
+		PendingActions: res.Pending,
+		ToolTrace:      res.Trace,
 	}, nil
 }
 
@@ -2211,24 +2113,24 @@ func (s *Service) parseAgentActions(content string, clusterID uint) []AgentActio
 
 	// 检测资源类型
 	resourceKeywords := map[string]string{
-		"Deployment":  "deployments",
-		"deployment":  "deployments",
-		"Pod":         "pods",
-		"pod":         "pods",
-		"Service":     "services",
-		"service":     "services",
-		"ConfigMap":   "configmaps",
-		"configmap":   "configmaps",
-		"Secret":      "secrets",
-		"secret":      "secrets",
-		"Ingress":     "ingresses",
-		"ingress":     "ingresses",
-		"Namespace":   "namespaces",
-		"namespace":   "namespaces",
-		"Node":        "nodes",
-		"node":        "nodes",
-		"PV":          "pvs",
-		"PVC":         "pvcs",
+		"Deployment": "deployments",
+		"deployment": "deployments",
+		"Pod":        "pods",
+		"pod":        "pods",
+		"Service":    "services",
+		"service":    "services",
+		"ConfigMap":  "configmaps",
+		"configmap":  "configmaps",
+		"Secret":     "secrets",
+		"secret":     "secrets",
+		"Ingress":    "ingresses",
+		"ingress":    "ingresses",
+		"Namespace":  "namespaces",
+		"namespace":  "namespaces",
+		"Node":       "nodes",
+		"node":       "nodes",
+		"PV":         "pvs",
+		"PVC":        "pvcs",
 	}
 
 	actionType := "execute"

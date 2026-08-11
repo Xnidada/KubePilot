@@ -94,10 +94,27 @@ func main() {
 		}
 	}()
 
-	// Setup router
-	modReg := module.NewRegistry(nil, nil)
+	// Setup router + feature-module migrations
+	modReg := module.NewRegistry(nil, logger.GetLogger())
 	modules.RegisterAll(modReg)
+	if err := modReg.Migrate(model.DB); err != nil {
+		logger.Fatal("failed to migrate module tables", zap.Error(err))
+	}
+	logger.Info("module tables migrated")
 	r := router.Setup(cfg, cacheInstance, modReg)
+
+	host := &module.Host{
+		DB:         model.DB,
+		Config:     cfg,
+		Cache:      cacheInstance,
+		EncryptKey: cfg.EncryptKey(),
+		Logger:     logger.GetLogger(),
+	}
+	// Must Start after routes so module handlers exist; wires backup/inspection cron, eventforward watchers, etc.
+	if err := modReg.Start(context.Background(), host); err != nil {
+		logger.Fatal("failed to start modules", zap.Error(err))
+	}
+	logger.Info("feature modules started")
 
 	// Create HTTP server
 	srv := &http.Server{
@@ -127,6 +144,10 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Fatal("server forced to shutdown", zap.Error(err))
+	}
+
+	if err := modReg.Stop(ctx); err != nil {
+		logger.Error("failed to stop modules", zap.Error(err))
 	}
 
 	// Close database
