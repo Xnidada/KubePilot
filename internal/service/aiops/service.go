@@ -1387,12 +1387,16 @@ const agentSystemPrompt = `你是 KubePilot AI Agent，只能通过【原生工�
 13. 用户要求「外部端口/NodePort/某端口可访问」时：create_service 必须同时传 service_type=NodePort、port/target_port、以及精确的 node_port（如 30089）。禁止省略 node_port 指望自动分配。selector 必须与 Deployment/Pod 标签一致。
 14. 删除 Deployment 托管的 Pod（ownerReferences 含 ReplicaSet/Deployment）时：若用户意图是「去掉这个工作负载/nginx」，应 stage_mutation action=delete_deployment（Deployment 名，不是 Pod 名）；仅当用户明确只要删掉当前这一实例（允许被重建）时才用 delete_pod，并在回复中醒目提示「删除后会被控制器重建」。
 15. 用户要求「挂载/hostPath/本地目录/网页主目录/日志目录」时：create_deployment 必须传 host_path_mounts（host_path + mount_path 均为绝对路径）。示例：host_path=/opt/nginx/html → mount_path=/usr/share/nginx/html；host_path=/opt/nginx/log → mount_path=/var/log/nginx。禁止只口头承诺挂载却省略该字段；dry-run 必须出现 hostPath.path。nginx/nginx:latest 可写，平台会规范为 nginx:1.25.4。
+16. 复杂需求（如同时创建 Deployment+Service+ConfigMap+Ingress）时，请分解为多步工具调用，每步完成后再继续下一步。工具调用轮次上限为 15，足够完成复杂操作。
+17. 当 stage_mutation 的参数化 action 无法覆盖用户需求（如自定义 CRD、多端口 Service、带 initContainer 的 Pod、StatefulSet 等）时，使用 action=apply_yaml 并传 yaml 字段。apply_yaml 支持任意 Kubernetes YAML，同样需要用户确认后才会执行。
 
 ## 工具
 - 查询：list_resources / get_resource / get_events / get_pod_logs / describe_resource
 - 诊断：diagnose_workload（Pod/Deployment）/ diagnose_service（任意 Service 连通性；支持 node_port 定位）
 - 预览：propose_mutation
 - 暂存待确认：stage_mutation / stage_mutations / delete_by_prefix（UI 确认后才会真正执行）
+- stage_mutation 支持的 action：create_deployment | create_service | delete_deployment | delete_service | delete_pod | scale_deployment | create_configmap | create_secret | update_deployment | create_namespace | create_ingress | create_hpa | create_pvc | apply_yaml
+- apply_yaml：当参数化 action 无法覆盖时，传 yaml 字段包含完整 Kubernetes YAML（--- 分隔多资源）
 `
 
 // AgentChat Agent对话（原生 Tool Calling 循环）
@@ -1466,7 +1470,7 @@ func sanitizeAgentHistory(content string) string {
 	return out
 }
 
-const agentResourceListLimit = 40
+const agentResourceListLimit = 80
 
 var (
 	nsKeywordPattern = regexp.MustCompile(`(?i)(?:命名空间|namespace|ns)[:：\s/-]*([a-z0-9]([-a-z0-9]*[a-z0-9])?)`)
@@ -1939,7 +1943,7 @@ func (s *Service) queryRealData(ctx context.Context, clusterID uint, message str
 		}
 		result += s.collectPodDiagnostics(ctx, clusterID, ns, podName)
 		// 已拿到诊断上下文时，不必再塞全量列表，避免冲淡关键证据
-		return truncateAgentText(result, 22000)
+		return truncateAgentText(result, 32000)
 	}
 
 	wantSvc := strings.Contains(lower, "svc") || strings.Contains(lower, "service") || strings.Contains(message, "服务")
@@ -2047,7 +2051,7 @@ func (s *Service) queryRealData(ctx context.Context, clusterID uint, message str
 		}
 	}
 
-	return truncateAgentText(result, 12000)
+	return truncateAgentText(result, 20000)
 }
 
 // getConversationHistory 获取对话历史

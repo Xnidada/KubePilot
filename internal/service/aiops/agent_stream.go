@@ -113,7 +113,7 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 		{Role: "assistant", Content: toolDigest.String()},
 		{Role: "user", Content: "请仅基于以上工具结果用中文给出最终回答。规则：1) 资源名必须原样完整写出，禁止缩写/截断（如不要把 nginx-deployment-xxx 写成 ngi，不要把 kubernetes 写成 kube）；2) 若工具 meta 为 truncated=false 或 showing=total，必须列出全部名称，禁止说「列表被截断」；3) 不要编造未出现的资源；4) 不要再调用工具。"},
 	}
-	ch, err := s.llmClient.ChatStream(ctx, &llm.ChatRequest{Messages: messages, MaxTokens: 2048})
+	ch, err := s.llmClient.ChatStream(ctx, &llm.ChatRequest{Messages: messages, MaxTokens: 4096})
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +268,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
 			Messages:  messages,
 			Tools:     tools,
-			MaxTokens: 2048,
+			MaxTokens: 4096,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("LLM chat failed: %w", err)

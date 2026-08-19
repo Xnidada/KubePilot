@@ -39,6 +39,23 @@ type StagedActionParams struct {
 	NodePort       int32             `json:"node_port,omitempty"`
 	Selector       map[string]string `json:"selector,omitempty"`
 	HostPathMounts []HostPathMount   `json:"host_path_mounts,omitempty"`
+	// Extended action fields
+	Data           map[string]string `json:"data,omitempty"`            // ConfigMap/Secret data
+	SecretType     string            `json:"secret_type,omitempty"`     // Secret type (Opaque/TLS/...)
+	NewImage       string            `json:"new_image,omitempty"`       // update_deployment: new image
+	EnvVars        map[string]string `json:"env_vars,omitempty"`        // update_deployment: env overrides
+	ResourceLimits map[string]string `json:"resource_limits,omitempty"` // update_deployment: resource limits
+	Host           string            `json:"host,omitempty"`            // Ingress host
+	Path           string            `json:"path,omitempty"`            // Ingress path
+	BackendService string            `json:"backend_service,omitempty"` // Ingress backend service name
+	BackendPort    int32             `json:"backend_port,omitempty"`    // Ingress backend port
+	MinReplicas    int32             `json:"min_replicas,omitempty"`    // HPA minReplicas
+	MaxReplicas    int32             `json:"max_replicas,omitempty"`    // HPA maxReplicas
+	TargetCPU      int32             `json:"target_cpu,omitempty"`      // HPA target CPU utilization percentage
+	StorageClass   string            `json:"storage_class,omitempty"`   // PVC storageClassName
+	AccessModes    []string          `json:"access_modes,omitempty"`    // PVC accessModes
+	StorageSize    string            `json:"storage_size,omitempty"`    // PVC size (e.g. "10Gi")
+	YAML           string            `json:"yaml,omitempty"`            // apply_yaml raw YAML
 }
 
 // DryRunStagedAction returns a field-level impact preview.
@@ -234,7 +251,93 @@ status_snapshot:
 			params.Namespace, params.Name, current, params.Replicas, sign, delta,
 			deploy.Status.ReadyReplicas, deploy.Status.AvailableReplicas, deploy.Status.UpdatedReplicas, deploy.Status.UnavailableReplicas), nil
 
-	default:
+	case "create_configmap":
+		if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
+			return "", fmt.Errorf("configmap %s/%s already exists", params.Namespace, params.Name)
+		}
+		keys := make([]string, 0, len(params.Data))
+		for k := range params.Data {
+			keys = append(keys, k)
+		}
+		return fmt.Sprintf("[dry-run] CREATE ConfigMap %s/%s\n  data keys: %v\nserver_dry_run: ok", params.Namespace, params.Name, keys), nil
+
+	case "create_secret":
+		if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
+			return "", fmt.Errorf("secret %s/%s already exists", params.Namespace, params.Name)
+		}
+		st := params.SecretType
+		if st == "" {
+			st = "Opaque"
+		}
+		keys := make([]string, 0, len(params.Data))
+		for k := range params.Data {
+			keys = append(keys, k)
+		}
+		return fmt.Sprintf("[dry-run] CREATE Secret %s/%s\n  type: %s\n  data keys: %v (values will be base64-encoded)\nserver_dry_run: ok", params.Namespace, params.Name, st, keys), nil
+
+	case "update_deployment":
+		deploy, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
+		}
+		var diffLines []string
+		if params.NewImage != "" && len(deploy.Spec.Template.Spec.Containers) > 0 {
+			diffLines = append(diffLines, fmt.Sprintf("  - containers[0].image: %s", deploy.Spec.Template.Spec.Containers[0].Image))
+			diffLines = append(diffLines, fmt.Sprintf("  + containers[0].image: %s", params.NewImage))
+		}
+		if len(params.EnvVars) > 0 {
+			diffLines = append(diffLines, fmt.Sprintf("  + env overrides: %v", params.EnvVars))
+		}
+		if len(params.ResourceLimits) > 0 {
+			diffLines = append(diffLines, fmt.Sprintf("  + resource limits: %v", params.ResourceLimits))
+		}
+		return fmt.Sprintf("[dry-run] UPDATE Deployment %s/%s\ndiff:\n%s", params.Namespace, params.Name, strings.Join(diffLines, "\n")), nil
+
+	case "create_namespace":
+		if _, err := client.Clientset.CoreV1().Namespaces().Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
+			return "", fmt.Errorf("namespace %s already exists", params.Name)
+		}
+		return fmt.Sprintf("[dry-run] CREATE Namespace %s\nserver_dry_run: ok", params.Name), nil
+
+	case "create_ingress":
+		if _, err := client.Clientset.CoreV1().Services(params.Namespace).Get(ctx, params.BackendService, metav1.GetOptions{}); err != nil {
+			return "", fmt.Errorf("backend service %s/%s not found", params.Namespace, params.BackendService)
+		}
+		ingPath := params.Path
+		if ingPath == "" {
+			ingPath = "/"
+		}
+		bPort := params.BackendPort
+		if bPort <= 0 {
+			bPort = 80
+		}
+		return fmt.Sprintf("[dry-run] CREATE Ingress %s/%s\n  host: %s\n  path: %s\n  backend: %s:%d\nserver_dry_run: ok", params.Namespace, params.Name, params.Host, ingPath, params.BackendService, bPort), nil
+
+	case "create_hpa":
+		if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err != nil {
+			return "", fmt.Errorf("deployment %s/%s not found for HPA target", params.Namespace, params.Name)
+		}
+		minR := params.MinReplicas
+		if minR <= 0 {
+			minR = 1
+		}
+		return fmt.Sprintf("[dry-run] CREATE HPA for Deployment %s/%s\n  minReplicas: %d\n  maxReplicas: %d\n  targetCPU: %d%%\nserver_dry_run: ok", params.Namespace, params.Name, minR, params.MaxReplicas, params.TargetCPU), nil
+
+	case "create_pvc":
+		sc := params.StorageClass
+		if sc == "" {
+			sc = "(default)"
+		}
+		am := params.AccessModes
+		if len(am) == 0 {
+			am = []string{"ReadWriteOnce"}
+		}
+		return fmt.Sprintf("[dry-run] CREATE PVC %s/%s\n  storageClassName: %s\n  accessModes: %v\n  resources.requests.storage: %s\nserver_dry_run: ok", params.Namespace, params.Name, sc, am, params.StorageSize), nil
+
+	case "apply_yaml":
+		return s.dryRunApplyYAML(ctx, clusterID, params)
+
+		default:
 		return "", fmt.Errorf("unsupported action: %s", params.Action)
 	}
 }
@@ -346,7 +449,24 @@ func (s *Service) ExecuteStagedAction(ctx context.Context, action *model.AgentAc
 		return s.ExecuteDeletePod(ctx, action.ClusterID, params.Namespace, params.Name)
 	case "scale_deployment":
 		return s.ExecuteScaleDeployment(ctx, action.ClusterID, params.Namespace, params.Name, params.Replicas)
-	default:
+	case "create_configmap":
+		return s.ExecuteCreateConfigMap(ctx, action.ClusterID, params)
+	case "create_secret":
+		return s.ExecuteCreateSecret(ctx, action.ClusterID, params)
+	case "update_deployment":
+		return s.ExecuteUpdateDeployment(ctx, action.ClusterID, params)
+	case "create_namespace":
+		return s.ExecuteCreateNamespace(ctx, action.ClusterID, params.Name)
+	case "create_ingress":
+		return s.ExecuteCreateIngress(ctx, action.ClusterID, params)
+	case "create_hpa":
+		return s.ExecuteCreateHPA(ctx, action.ClusterID, params)
+	case "create_pvc":
+		return s.ExecuteCreatePVC(ctx, action.ClusterID, params)
+	case "apply_yaml":
+		return s.ExecuteApplyYAML(ctx, action.ClusterID, params)
+
+		default:
 		return nil, fmt.Errorf("unsupported action: %s", params.Action)
 	}
 }

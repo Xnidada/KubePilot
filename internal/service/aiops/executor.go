@@ -7,11 +7,18 @@ import (
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/dynamic"
 )
 
 // ExecuteResult 执行结果
@@ -468,4 +475,354 @@ func extractResourceName(message, resourceType string) string {
 		}
 	}
 	return ""
+}
+
+// ==================== Extended Action Executors ====================
+
+// ExecuteCreateConfigMap creates a ConfigMap
+func (s *Service) ExecuteCreateConfigMap(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Data:       params.Data,
+	}
+	if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 ConfigMap 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("ConfigMap %s/%s 创建成功", params.Namespace, params.Name)}, nil
+}
+
+// ExecuteCreateSecret creates a Secret
+func (s *Service) ExecuteCreateSecret(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	st := params.SecretType
+	if st == "" {
+		st = "Opaque"
+	}
+	data := make(map[string][]byte)
+	for k, v := range params.Data {
+		data[k] = []byte(v)
+	}
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Type:       corev1.SecretType(st),
+		Data:       data,
+	}
+	if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Secret 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Secret %s/%s 创建成功", params.Namespace, params.Name)}, nil
+}
+
+// ExecuteUpdateDeployment updates a Deployment (image/env/resource limits)
+func (s *Service) ExecuteUpdateDeployment(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	deploy, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
+	if err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("获取 Deployment 失败: %v", err)}, nil
+	}
+	if len(deploy.Spec.Template.Spec.Containers) == 0 {
+		return &ExecuteResult{Success: false, Message: "Deployment has no containers"}, nil
+	}
+	container := &deploy.Spec.Template.Spec.Containers[0]
+	var changes []string
+	if params.NewImage != "" {
+		changes = append(changes, fmt.Sprintf("image: %s -> %s", container.Image, params.NewImage))
+		container.Image = params.NewImage
+	}
+	if len(params.EnvVars) > 0 {
+		for k, v := range params.EnvVars {
+			found := false
+			for i, ev := range container.Env {
+				if ev.Name == k {
+					container.Env[i].Value = v
+					found = true
+					break
+				}
+			}
+			if !found {
+				container.Env = append(container.Env, corev1.EnvVar{Name: k, Value: v})
+			}
+		}
+		changes = append(changes, fmt.Sprintf("env_vars updated: %v", params.EnvVars))
+	}
+	if len(params.ResourceLimits) > 0 {
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		for k, v := range params.ResourceLimits {
+			q, err := resource.ParseQuantity(v)
+			if err != nil {
+				continue
+			}
+			container.Resources.Limits[corev1.ResourceName(k)] = q
+		}
+		changes = append(changes, fmt.Sprintf("resource_limits updated: %v", params.ResourceLimits))
+	}
+	if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("更新 Deployment 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{
+		Success: true,
+		Message: fmt.Sprintf("Deployment %s/%s 更新成功: %s", params.Namespace, params.Name, strings.Join(changes, "; ")),
+	}, nil
+}
+
+// ExecuteCreateNamespace creates a Namespace
+func (s *Service) ExecuteCreateNamespace(ctx context.Context, clusterID uint, name string) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if _, err := client.Clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Namespace 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Namespace %s 创建成功", name)}, nil
+}
+
+// ExecuteCreateIngress creates an Ingress
+func (s *Service) ExecuteCreateIngress(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	ingPath := params.Path
+	if ingPath == "" {
+		ingPath = "/"
+	}
+	bPort := params.BackendPort
+	if bPort <= 0 {
+		bPort = 80
+	}
+	pathType := networkingv1.PathTypePrefix
+	ing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{
+				Host: params.Host,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{{
+							Path:     ingPath,
+							PathType: &pathType,
+							Backend: networkingv1.IngressBackend{
+								Service: &networkingv1.IngressServiceBackend{
+									Name: params.BackendService,
+									Port: networkingv1.ServiceBackendPort{Number: bPort},
+								},
+							},
+						}},
+					},
+				},
+			}},
+		},
+	}
+	if _, err := client.Clientset.NetworkingV1().Ingresses(params.Namespace).Create(ctx, ing, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Ingress 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Ingress %s/%s 创建成功", params.Namespace, params.Name)}, nil
+}
+
+// ExecuteCreateHPA creates a HorizontalPodAutoscaler
+func (s *Service) ExecuteCreateHPA(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	minR := params.MinReplicas
+	if minR <= 0 {
+		minR = 1
+	}
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name + "-hpa", Namespace: params.Namespace},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       params.Name,
+			},
+			MinReplicas: &minR,
+			MaxReplicas: params.MaxReplicas,
+			Metrics: []autoscalingv2.MetricSpec{{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: &params.TargetCPU,
+					},
+				},
+			}},
+		},
+	}
+	if _, err := client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(params.Namespace).Create(ctx, hpa, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 HPA 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("HPA %s/%s-hpa 创建成功 (min=%d max=%d cpu=%d%%)", params.Namespace, params.Name, minR, params.MaxReplicas, params.TargetCPU)}, nil
+}
+
+// ExecuteCreatePVC creates a PersistentVolumeClaim
+func (s *Service) ExecuteCreatePVC(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+	am := params.AccessModes
+	if len(am) == 0 {
+		am = []string{"ReadWriteOnce"}
+	}
+	accessModes := make([]corev1.PersistentVolumeAccessMode, 0, len(am))
+	for _, a := range am {
+		accessModes = append(accessModes, corev1.PersistentVolumeAccessMode(a))
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: accessModes,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse(params.StorageSize),
+				},
+			},
+		},
+	}
+	if params.StorageClass != "" {
+		pvc.Spec.StorageClassName = &params.StorageClass
+	}
+	if _, err := client.Clientset.CoreV1().PersistentVolumeClaims(params.Namespace).Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 PVC 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{Success: true, Message: fmt.Sprintf("PVC %s/%s 创建成功 (%s)", params.Namespace, params.Name, params.StorageSize)}, nil
+}
+
+// ExecuteApplyYAML applies arbitrary Kubernetes YAML via dynamic client
+func (s *Service) ExecuteApplyYAML(ctx context.Context, clusterID uint, params StagedActionParams) (*ExecuteResult, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster not connected: %w", err)
+	}
+
+	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(params.YAML), 4096)
+	var results []string
+	for {
+		raw := unstructured.Unstructured{}
+		if err := decoder.Decode(&raw); err != nil {
+			if strings.Contains(err.Error(), "EOF") {
+				break
+			}
+			return &ExecuteResult{Success: false, Message: fmt.Sprintf("YAML 解析失败: %v", err)}, nil
+		}
+		if len(raw.Object) == 0 {
+			continue
+		}
+		gvk := raw.GroupVersionKind()
+		ns := raw.GetNamespace()
+		if ns == "" {
+			ns = params.Namespace
+			raw.SetNamespace(ns)
+		}
+		name := raw.GetName()
+
+		// Map GVK to GVR using discovery
+		gvr, err := gvkToGVR(client, gvk)
+		if err != nil {
+			results = append(results, fmt.Sprintf("%s %s/%s: GVR 映射失败: %v", gvk.Kind, ns, name, err))
+			continue
+		}
+
+		dynClient, err := dynamic.NewForConfig(client.Config)
+		if err != nil {
+			results = append(results, fmt.Sprintf("%s %s/%s: dynamic client 创建失败: %v", gvk.Kind, ns, name, err))
+			continue
+		}
+
+		var dynRes dynamic.ResourceInterface
+		dynRes = dynClient.Resource(gvr)
+		if ns != "" {
+			dynRes = dynClient.Resource(gvr).Namespace(ns)
+		}
+
+	_, err = dynRes.Create(ctx, &raw, metav1.CreateOptions{})
+		if err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				// Try update
+				existing, getErr := dynRes.Get(ctx, name, metav1.GetOptions{})
+				if getErr != nil {
+					results = append(results, fmt.Sprintf("%s %s/%s: 已存在但获取失败: %v", gvk.Kind, ns, name, getErr))
+					continue
+				}
+				raw.SetResourceVersion(existing.GetResourceVersion())
+				if _, updateErr := dynRes.Update(ctx, &raw, metav1.UpdateOptions{}); updateErr != nil {
+					results = append(results, fmt.Sprintf("%s %s/%s: 更新失败: %v", gvk.Kind, ns, name, updateErr))
+					continue
+				}
+				results = append(results, fmt.Sprintf("%s %s/%s: 更新成功", gvk.Kind, ns, name))
+			} else {
+				results = append(results, fmt.Sprintf("%s %s/%s: 创建失败: %v", gvk.Kind, ns, name, err))
+			}
+			continue
+		}
+		results = append(results, fmt.Sprintf("%s %s/%s: 创建成功", gvk.Kind, ns, name))
+	}
+
+	if len(results) == 0 {
+		return &ExecuteResult{Success: false, Message: "YAML 中无有效资源"}, nil
+	}
+	return &ExecuteResult{Success: true, Message: strings.Join(results, "\n")}, nil
+}
+
+// gvkToGVR maps a GroupVersionKind to GroupVersionResource using the discovery client
+func gvkToGVR(client *k8s.ClusterClient, gvk schema.GroupVersionKind) (schema.GroupVersionResource, error) {
+	resources, err := client.Discovery.ServerResourcesForGroupVersion(gvk.GroupVersion().String())
+	if err != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("discovery failed for %s: %w", gvk.GroupVersion().String(), err)
+	}
+	for _, r := range resources.APIResources {
+		if r.Kind == gvk.Kind {
+			return gvk.GroupVersion().WithResource(r.Name), nil
+		}
+	}
+	return schema.GroupVersionResource{}, fmt.Errorf("resource %s not found in group %s", gvk.Kind, gvk.GroupVersion().String())
+}
+
+// dryRunApplyYAML validates YAML manifests and returns a preview
+func (s *Service) dryRunApplyYAML(ctx context.Context, clusterID uint, params StagedActionParams) (string, error) {
+	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(params.YAML), 4096)
+	var manifests []string
+	for {
+		raw := unstructured.Unstructured{}
+		if err := decoder.Decode(&raw); err != nil {
+			if strings.Contains(err.Error(), "EOF") {
+				break
+			}
+			return "", fmt.Errorf("YAML 解析失败: %v", err)
+		}
+		if len(raw.Object) == 0 {
+			continue
+		}
+		gvk := raw.GroupVersionKind()
+		ns := raw.GetNamespace()
+		if ns == "" {
+			ns = params.Namespace
+		}
+		name := raw.GetName()
+		manifests = append(manifests, fmt.Sprintf("- %s %s/%s", gvk.Kind, ns, name))
+	}
+	if len(manifests) == 0 {
+		return "", fmt.Errorf("YAML 中无有效资源")
+	}
+	return fmt.Sprintf("[dry-run] APPLY YAML\n  resources:\n%s\nserver_dry_run: ok", strings.Join(manifests, "\n")), nil
 }

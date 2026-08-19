@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	agentMemoryFetchLimit   = 20
-	agentMemoryRecentTurns  = 3 // user+assistant pairs roughly
-	agentMemoryUserMaxRunes = 400
-	agentMemoryAsstMaxRunes = 600
-	agentMemoryBulletMax    = 8
-	agentMemoryBulletRunes  = 180
+	agentMemoryFetchLimit   = 30
+	agentMemoryRecentTurns  = 6 // user+assistant pairs roughly
+	agentMemoryUserMaxRunes = 1200
+	agentMemoryAsstMaxRunes = 1500
+	agentMemoryBulletMax    = 12
+	agentMemoryBulletRunes  = 300
 )
 
 // buildAgentMemoryMessages builds layered context for the tool-calling agent:

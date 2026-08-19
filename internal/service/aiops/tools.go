@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	toolResultMaxChars = 8000
-	agentMaxToolRounds = 8
+	toolResultMaxChars = 16000
+	agentMaxToolRounds = 15
 )
 
 // ToolTraceItem is one tool invocation exposed to the UI.
@@ -70,8 +70,8 @@ func agentToolDefinitions() []llm.ToolDefinition {
 			"Dry-run preview of a mutating action WITHOUT staging. action: create_deployment|create_service|delete_deployment|delete_service|delete_pod|scale_deployment. For host mounts on create_deployment use host_path_mounts.",
 			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}}},"required":["action","namespace","name"]}`),
 		llm.NewFunctionTool("stage_mutation",
-			"Stage one mutating action for user confirmation (does NOT apply yet). For external access: action=create_service, service_type=NodePort, and REQUIRED node_port (30000-32767). For hostPath mounts on create_deployment: REQUIRED host_path_mounts=[{host_path,mount_path}] when user asks to mount local dirs (e.g. /opt/nginx/html -> /usr/share/nginx/html).",
-			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}`),
+			"Stage one mutating action for user confirmation (does NOT apply yet). Actions: create_deployment|create_service|delete_deployment|delete_service|delete_pod|scale_deployment|create_configmap|create_secret|update_deployment|create_namespace|create_ingress|create_hpa|create_pvc|apply_yaml. For external access: action=create_service, service_type=NodePort, and REQUIRED node_port (30000-32767). For hostPath mounts on create_deployment: REQUIRED host_path_mounts=[{host_path,mount_path}]. For apply_yaml: pass yaml field with raw Kubernetes YAML.",
+			`{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"data":{"type":"object","additionalProperties":{"type":"string"},"description":"ConfigMap/Secret key-value data"},"secret_type":{"type":"string","description":"Secret type: Opaque(default), tls.io/IngressTLS, etc."},"new_image":{"type":"string","description":"update_deployment: new container image"},"env_vars":{"type":"object","additionalProperties":{"type":"string"},"description":"update_deployment: environment variable overrides"},"resource_limits":{"type":"object","additionalProperties":{"type":"string"},"description":"update_deployment: resource limits (cpu, memory)"},"host":{"type":"string","description":"Ingress host"},"path":{"type":"string","description":"Ingress path"},"backend_service":{"type":"string","description":"Ingress backend service name"},"backend_port":{"type":"integer","description":"Ingress backend service port"},"min_replicas":{"type":"integer","description":"HPA minReplicas"},"max_replicas":{"type":"integer","description":"HPA maxReplicas"},"target_cpu":{"type":"integer","description":"HPA target CPU utilization percentage"},"storage_class":{"type":"string","description":"PVC storageClassName"},"access_modes":{"type":"array","items":{"type":"string"},"description":"PVC accessModes e.g. ReadWriteOnce"},"storage_size":{"type":"string","description":"PVC size e.g. 10Gi"},"yaml":{"type":"string","description":"apply_yaml: raw Kubernetes YAML manifest(s)"},"description":{"type":"string"}},"required":["action","namespace","name"]}`),
 		llm.NewFunctionTool("stage_mutations",
 			"Stage multiple mutating actions in one call (batch). Each item same schema as stage_mutation.",
 			`{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"namespace":{"type":"string"},"name":{"type":"string"},"image":{"type":"string"},"replicas":{"type":"integer"},"ports":{"type":"array","items":{"type":"integer"}},"host_path_mounts":{"type":"array","items":{"type":"object","properties":{"host_path":{"type":"string"},"mount_path":{"type":"string"},"read_only":{"type":"boolean"},"name":{"type":"string"},"type":{"type":"string"}},"required":["host_path","mount_path"]}},"service_type":{"type":"string"},"port":{"type":"integer"},"target_port":{"type":"integer"},"node_port":{"type":"integer"},"selector":{"type":"object","additionalProperties":{"type":"string"}},"description":{"type":"string"}},"required":["action","namespace","name"]}}},"required":["items"]}`),
@@ -514,6 +514,8 @@ func parseMutationParams(argsJSON string) (StagedActionParams, error) {
 	switch params.Action {
 	case "delete_deployment", "delete_service", "delete_pod", "scale_deployment":
 		// keep empty — validated below
+	case "create_namespace":
+		// namespace creation does not need a namespace field
 	default:
 		if params.Namespace == "" {
 			params.Namespace = "default"
@@ -835,6 +837,62 @@ func validateMutationParams(params StagedActionParams) error {
 	case "delete_deployment", "delete_service", "delete_pod":
 		if strings.TrimSpace(params.Namespace) == "" {
 			return fmt.Errorf("%s requires namespace (refuse delete without ns)", params.Action)
+		}
+	case "create_configmap":
+		if strings.TrimSpace(params.Name) == "" {
+			return fmt.Errorf("create_configmap requires name")
+		}
+		if len(params.Data) == 0 {
+			return fmt.Errorf("create_configmap requires data (key-value pairs)")
+		}
+	case "create_secret":
+		if strings.TrimSpace(params.Name) == "" {
+			return fmt.Errorf("create_secret requires name")
+		}
+		if len(params.Data) == 0 {
+			return fmt.Errorf("create_secret requires data (key-value pairs)")
+		}
+	case "update_deployment":
+		if strings.TrimSpace(params.Namespace) == "" {
+			return fmt.Errorf("update_deployment requires namespace")
+		}
+		if strings.TrimSpace(params.NewImage) == "" && len(params.EnvVars) == 0 && len(params.ResourceLimits) == 0 {
+			return fmt.Errorf("update_deployment requires at least one of: new_image, env_vars, resource_limits")
+		}
+	case "create_namespace":
+		if strings.TrimSpace(params.Name) == "" {
+			return fmt.Errorf("create_namespace requires name")
+		}
+	case "create_ingress":
+		if strings.TrimSpace(params.Namespace) == "" {
+			return fmt.Errorf("create_ingress requires namespace")
+		}
+		if strings.TrimSpace(params.Host) == "" {
+			return fmt.Errorf("create_ingress requires host")
+		}
+		if strings.TrimSpace(params.BackendService) == "" {
+			return fmt.Errorf("create_ingress requires backend_service")
+		}
+	case "create_hpa":
+		if strings.TrimSpace(params.Namespace) == "" {
+			return fmt.Errorf("create_hpa requires namespace")
+		}
+		if params.MaxReplicas <= 0 {
+			return fmt.Errorf("create_hpa requires max_replicas > 0")
+		}
+		if params.TargetCPU <= 0 {
+			return fmt.Errorf("create_hpa requires target_cpu > 0")
+		}
+	case "create_pvc":
+		if strings.TrimSpace(params.Namespace) == "" {
+			return fmt.Errorf("create_pvc requires namespace")
+		}
+		if strings.TrimSpace(params.StorageSize) == "" {
+			return fmt.Errorf("create_pvc requires storage_size (e.g. 10Gi)")
+		}
+	case "apply_yaml":
+		if strings.TrimSpace(params.YAML) == "" {
+			return fmt.Errorf("apply_yaml requires yaml content")
 		}
 	default:
 		return fmt.Errorf("unsupported action: %s", params.Action)
