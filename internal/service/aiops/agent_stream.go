@@ -10,6 +10,7 @@ import (
 
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"golang.org/x/sync/errgroup"
 )
 
 // AgentStreamEvent is one SSE payload for /aiops/agent/stream.
@@ -249,6 +250,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	var finalContent string
 	nudgeUsed := false
 	mountNudgeCount := 0
+	consecutiveNoToolRounds := 0 // 动态轮次：连续无工具调用轮次计数
 	for round := 0; round < agentMaxToolRounds; round++ {
 		if err := chatCtx.Err(); err != nil {
 			if finalContent == "" && len(pending) > 0 {
@@ -262,6 +264,19 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			}
 			return nil, err
 		}
+
+		// 动态轮次提示：剩余轮次 ≤ 3 时追加提示
+		remaining := agentMaxToolRounds - round
+		if remaining <= 3 && remaining > 0 {
+			hint := fmt.Sprintf("\n\n⚠️ 剩余工具调用轮次有限（%d/%d），请优先完成最关键的写操作。", remaining, agentMaxToolRounds)
+			if messages[0].Role == "system" && !strings.Contains(messages[0].Content, "剩余工具调用轮次有限") {
+				messages[0].Content += hint
+			}
+		}
+
+		// 智能上下文压缩：预估 token 数，超限时压缩较早的 tool_result
+		messages = compressToolResults(messages, 100000) // 100K token 阈值（约 80% of 128K context）
+
 		if emit != nil {
 			emit(AgentStreamEvent{Type: "status", Status: "thinking"})
 		}
@@ -295,8 +310,16 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				finalContent = ""
 				continue
 			}
+			// 动态轮次：非 nudge 轮且无工具调用 → 递增计数器
+			consecutiveNoToolRounds++
+			if consecutiveNoToolRounds >= 2 {
+				break // 连续 2 轮无工具调用，提前退出
+			}
 			break
 		}
+
+		// 有工具调用，重置计数器
+		consecutiveNoToolRounds = 0
 
 		messages = append(messages, llm.Message{
 			Role:      "assistant",
@@ -304,13 +327,79 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			ToolCalls: resp.ToolCalls,
 		})
 
-		for _, tc := range resp.ToolCalls {
+		// 并发执行 tool_calls：读操作并发，写操作串行
+		type toolExecRecord struct {
+			Index    int
+			Exec     *toolExecResult
+			Item     ToolTraceItem
+			ToolCall llm.ToolCall
+		}
+		results := make([]toolExecRecord, len(resp.ToolCalls))
+
+		// 分离读操作和写操作的索引
+		var readIdx, writeIdx []int
+		for i, tc := range resp.ToolCalls {
+			if isReadOnlyTool(tc.Function.Name) {
+				readIdx = append(readIdx, i)
+			} else {
+				writeIdx = append(writeIdx, i)
+			}
+		}
+
+		// 并发执行读操作
+		if len(readIdx) > 0 {
+			g, gCtx := errgroup.WithContext(chatCtx)
+			g.SetLimit(4)
+			for _, idx := range readIdx {
+				idx := idx
+				g.Go(func() error {
+					if err := gCtx.Err(); err != nil {
+						return err
+					}
+					tc := resp.ToolCalls[idx]
+					name := tc.Function.Name
+					args := tc.Function.Arguments
+					if name == "propose_mutation" {
+						args = enrichMutationArgsWithUserHints(message, args)
+					}
+					if emit != nil {
+						emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
+					}
+					started := time.Now()
+					exec := s.executeAgentTool(gCtx, userID, clusterID, conversationID, name, args)
+					item := ToolTraceItem{
+						Name:       name,
+						Args:       truncateRunes(args, 500),
+						Result:     truncateRunes(exec.Content, toolResultMaxChars),
+						IsError:    exec.IsError,
+						DurationMs: time.Since(started).Milliseconds(),
+					}
+					results[idx] = toolExecRecord{Index: idx, Exec: &exec, Item: item, ToolCall: tc}
+					if emit != nil {
+						emit(AgentStreamEvent{
+							Type:       "tool_result",
+							Name:       name,
+							Result:     item.Result,
+							IsError:    exec.IsError,
+							Pending:    exec.Pending,
+							DurationMs: item.DurationMs,
+						})
+					}
+					return nil
+				})
+			}
+			_ = g.Wait() // errors handled per-tool; we proceed with whatever completed
+		}
+
+		// 串行执行写操作
+		for _, idx := range writeIdx {
 			if err := chatCtx.Err(); err != nil {
 				if finalContent == "" {
 					finalContent = "请求已取消；已保留此前工具结果。"
 				}
 				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace}, nil
 			}
+			tc := resp.ToolCalls[idx]
 			name := tc.Function.Name
 			args := tc.Function.Arguments
 			if name == "stage_mutation" || name == "stage_mutations" || name == "propose_mutation" {
@@ -328,28 +417,35 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				IsError:    exec.IsError,
 				DurationMs: time.Since(started).Milliseconds(),
 			}
-			trace = append(trace, item)
-			if len(exec.PendingList) > 0 {
-				pending = mergePendingActions(pending, exec.PendingList)
-			} else if exec.Pending != nil {
-				pending = mergePendingActions(pending, []PendingActionInfo{*exec.Pending})
-			}
+			results[idx] = toolExecRecord{Index: idx, Exec: &exec, Item: item, ToolCall: tc}
 			if emit != nil {
-				ev := AgentStreamEvent{
+				emit(AgentStreamEvent{
 					Type:       "tool_result",
 					Name:       name,
 					Result:     item.Result,
 					IsError:    exec.IsError,
 					Pending:    exec.Pending,
 					DurationMs: item.DurationMs,
-				}
-				emit(ev)
+				})
+			}
+		}
+
+		// 按原始顺序追加 trace、pending、messages
+		for _, r := range results {
+			if r.Exec == nil {
+				continue
+			}
+			trace = append(trace, r.Item)
+			if len(r.Exec.PendingList) > 0 {
+				pending = mergePendingActions(pending, r.Exec.PendingList)
+			} else if r.Exec.Pending != nil {
+				pending = mergePendingActions(pending, []PendingActionInfo{*r.Exec.Pending})
 			}
 			messages = append(messages, llm.Message{
 				Role:       "tool",
-				ToolCallID: tc.ID,
-				Name:       name,
-				Content:    exec.Content,
+				ToolCallID: r.ToolCall.ID,
+				Name:       r.ToolCall.Function.Name,
+				Content:    r.Exec.Content,
 			})
 		}
 
@@ -612,4 +708,114 @@ func looksLikeClusterStateClaim(content string) bool {
 		}
 	}
 	return hits >= 1 && utf8.RuneCountInString(content) > 20
+}
+
+// isReadOnlyTool returns true for tools that only read cluster state (safe to run concurrently).
+func isReadOnlyTool(name string) bool {
+	switch name {
+	case "list_resources", "get_resource", "get_events", "get_pod_logs",
+		"describe_resource", "diagnose_workload", "diagnose_service", "propose_mutation":
+		return true
+	}
+	return false
+}
+
+// estimateMessageTokens provides a rough token estimate for a slice of messages.
+// Uses heuristic: ~2 bytes per token for mixed CJK/ASCII content.
+func estimateMessageTokens(msgs []llm.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content) / 2
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Function.Arguments) / 2
+		}
+	}
+	return total
+}
+
+// compressToolResults compresses older tool_result messages when estimated tokens exceed the limit.
+// It replaces the content of the earliest tool results with a summary to free up context space.
+func compressToolResults(msgs []llm.Message, tokenLimit int) []llm.Message {
+	estimated := estimateMessageTokens(msgs)
+	if estimated <= tokenLimit {
+		return msgs
+	}
+
+	// Find tool_result messages and compress from oldest
+	compressed := 0
+	for i := range msgs {
+		if estimated <= tokenLimit {
+			break
+		}
+		if msgs[i].Role == "tool" && len(msgs[i].Content) > 500 {
+			original := msgs[i].Content
+			msgs[i].Content = summarizeToolResult(original)
+			estimated -= (len(original) - len(msgs[i].Content)) / 2
+			compressed++
+		}
+	}
+	if compressed > 0 {
+		_ = compressed // suppress unused warning; compression happened
+	}
+	return msgs
+}
+
+// summarizeToolResult creates a compact summary of a tool result for context compression.
+func summarizeToolResult(content string) string {
+	// Extract key lines: resource names, meta line, status summary
+	lines := strings.Split(content, "\n")
+	var summary strings.Builder
+	nameCount := 0
+	maxNames := 10
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Keep meta line
+		if strings.HasPrefix(trimmed, "meta:") {
+			summary.WriteString(trimmed)
+			summary.WriteString("\n")
+			continue
+		}
+		// Keep lines that look like resource names (indented, short, no special chars)
+		if trimmed != "" && nameCount < maxNames {
+			// Heuristic: resource names are short lines with alphanumeric/dashes/dots
+			if isResourceNameLine(trimmed) {
+				summary.WriteString(trimmed)
+				summary.WriteString("\n")
+				nameCount++
+			}
+		}
+	}
+
+	// If we found useful content, return it; otherwise return first 200 chars
+	result := strings.TrimSpace(summary.String())
+	if result == "" {
+		result = truncateRunes(content, 200)
+	}
+	if len(content) > len(result) {
+		result += fmt.Sprintf("\n...(compressed, original %d chars)", len(content))
+	}
+	return result
+}
+
+// isResourceNameLine heuristically identifies lines that contain Kubernetes resource names.
+func isResourceNameLine(line string) bool {
+	// Skip lines that are clearly not resource names
+	if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
+		return false
+	}
+	if strings.Contains(line, "```") || strings.Contains(line, "error") {
+		return false
+	}
+	// Resource name lines are typically short (< 80 chars) and contain alphanumeric/dash/dot/slash
+	if len(line) > 80 {
+		return false
+	}
+	for _, r := range line {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '.' || r == '/' || r == '_' || r == ' ' || r == ':') {
+			return false
+		}
+	}
+	return true
 }
