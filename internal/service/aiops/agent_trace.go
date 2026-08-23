@@ -127,8 +127,34 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 	}
 	base.Select("COALESCE(SUM(total_tokens),0) as total_tokens, COALESCE(SUM(prompt_tokens),0) as prompt_tokens, COALESCE(SUM(completion_tokens),0) as completion_tokens").Scan(&totals)
 
-	// Cost estimate: GPT-4o pricing $2.5/1M input, $10/1M output (rough average)
-	costEstimate := float64(totals.PromptTokens)*2.5/1_000_000 + float64(totals.CompletionTokens)*10.0/1_000_000
+	// Cost estimate: use per-model pricing from llm_configs
+	var llmConfigs []model.LLMConfig
+	s.db.Find(&llmConfigs)
+	priceMap := make(map[uint]model.LLMConfig) // id → config
+	for _, c := range llmConfigs {
+		priceMap[c.ID] = c
+	}
+	// Calculate cost per LLM config
+	type perConfigTokens struct {
+		LLMConfigID      uint
+		PromptTokens     int
+		CompletionTokens int
+	}
+	var perConfig []perConfigTokens
+	s.db.Model(&model.TokenUsageLog{}).
+		Select("llm_config_id, SUM(prompt_tokens) as prompt_tokens, SUM(completion_tokens) as completion_tokens").
+		Where("created_at >= ?", since).
+		Group("llm_config_id").Find(&perConfig)
+	costEstimate := 0.0
+	for _, pc := range perConfig {
+		cfg, ok := priceMap[pc.LLMConfigID]
+		if !ok {
+			// Fallback to GPT-4o pricing
+			costEstimate += float64(pc.PromptTokens)*2.5/1_000_000 + float64(pc.CompletionTokens)*10.0/1_000_000
+			continue
+		}
+		costEstimate += float64(pc.PromptTokens)*cfg.InputPricePerM/1_000_000 + float64(pc.CompletionTokens)*cfg.OutputPricePerM/1_000_000
+	}
 
 	// By day
 	var byDay []TokenUsageByDay

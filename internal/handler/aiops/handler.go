@@ -318,6 +318,8 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 		Temperature float64 `json:"temperature"`
 		MaxTokens   int     `json:"max_tokens"`
 		Timeout     int     `json:"timeout"`
+			InputPricePerM  float64 `json:"input_price_per_m"`
+			OutputPricePerM float64 `json:"output_price_per_m"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -385,6 +387,8 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 		MaxTokens:   req.MaxTokens,
 		Timeout:     req.Timeout,
 		IsActive:    true,
+			InputPricePerM:  req.InputPricePerM,
+			OutputPricePerM: req.OutputPricePerM,
 	}
 
 	if err := h.db.Create(&config).Error; err != nil {
@@ -429,6 +433,8 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 		Temperature float64 `json:"temperature"`
 		MaxTokens   int     `json:"max_tokens"`
 		Timeout     int     `json:"timeout"`
+			InputPricePerM  float64 `json:"input_price_per_m"`
+			OutputPricePerM float64 `json:"output_price_per_m"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -454,6 +460,12 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	}
 	if req.Timeout > 0 {
 		config.Timeout = req.Timeout
+		if req.InputPricePerM > 0 {
+			config.InputPricePerM = req.InputPricePerM
+		}
+		if req.OutputPricePerM > 0 {
+			config.OutputPricePerM = req.OutputPricePerM
+		}
 	}
 
 	if err := h.db.Save(&config).Error; err != nil {

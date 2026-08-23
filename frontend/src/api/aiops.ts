@@ -40,6 +40,8 @@ export interface LLMConfig {
   max_tokens: number
   timeout: number
   is_active: boolean
+  input_price_per_m: number
+  output_price_per_m: number
   created_at: string
 }
 
@@ -137,6 +139,8 @@ export const saveLLMConfig = (data: {
   temperature?: number
   max_tokens?: number
   timeout?: number
+  input_price_per_m?: number
+  output_price_per_m?: number
 }) => {
   return post<{ code: number; data: any }>('/aiops/configs', data)
 }
@@ -149,6 +153,8 @@ export const updateLLMConfig = (id: number, data: {
   temperature?: number
   max_tokens?: number
   timeout?: number
+  input_price_per_m?: number
+  output_price_per_m?: number
 }) => {
   return put<{ code: number; data: any }>(`/aiops/configs/${id}`, data)
 }

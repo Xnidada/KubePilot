@@ -145,6 +145,8 @@ const AISettings: React.FC = () => {
       temperature: 0.7,
       max_tokens: 2048,
       timeout: 120,
+      input_price_per_m: 2.5,
+      output_price_per_m: 10.0,
     })
     setModalVisible(true)
   }
@@ -160,6 +162,8 @@ const AISettings: React.FC = () => {
       temperature: record.temperature,
       max_tokens: record.max_tokens,
       timeout: record.timeout,
+      input_price_per_m: record.input_price_per_m,
+      output_price_per_m: record.output_price_per_m,
     })
     setModalVisible(true)
   }
@@ -174,6 +178,8 @@ const AISettings: React.FC = () => {
         if (values.temperature) updateData.temperature = values.temperature
         if (values.max_tokens) updateData.max_tokens = values.max_tokens
         if (values.timeout) updateData.timeout = values.timeout
+        if (values.input_price_per_m) updateData.input_price_per_m = values.input_price_per_m
+        if (values.output_price_per_m) updateData.output_price_per_m = values.output_price_per_m
 
         await updateLLMConfig(selectedConfig.id, updateData)
         message.success('配置更新成功')
@@ -186,6 +192,8 @@ const AISettings: React.FC = () => {
           temperature: values.temperature,
           max_tokens: values.max_tokens,
           timeout: values.timeout,
+          input_price_per_m: values.input_price_per_m,
+          output_price_per_m: values.output_price_per_m,
         })
         message.success('配置创建成功')
       }
@@ -280,6 +288,23 @@ const AISettings: React.FC = () => {
       dataIndex: 'base_url',
       key: 'base_url',
       render: (url) => url || '-',
+    },
+    {
+      title: 'Temperature',
+      dataIndex: 'temperature',
+      key: 'temperature',
+    },
+    {
+      title: '输入单价 ($/1M)',
+      dataIndex: 'input_price_per_m',
+      key: 'input_price_per_m',
+      render: (v) => v != null ? `$${v}` : '-',
+    },
+    {
+      title: '输出单价 ($/1M)',
+      dataIndex: 'output_price_per_m',
+      key: 'output_price_per_m',
+      render: (v) => v != null ? `$${v}` : '-',
     },
     {
       title: 'Temperature',
@@ -615,6 +640,13 @@ const AISettings: React.FC = () => {
             <InputNumber min={100} max={100000} step={100} style={{ width: '100%' }} />
           </Form.Item>
 
+          <Form.Item name="input_price_per_m" label="输入单价 ($/1M tokens)">
+            <InputNumber min={0} max={1000} step={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item name="output_price_per_m" label="输出单价 ($/1M tokens)">
+            <InputNumber min={0} max={1000} step={0.1} style={{ width: '100%' }} />
+          </Form.Item>
           <Form.Item name="timeout" label="Timeout (秒)">
             <InputNumber min={10} max={600} step={10} style={{ width: '100%' }} />
           </Form.Item>

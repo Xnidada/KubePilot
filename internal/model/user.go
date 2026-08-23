@@ -157,6 +157,8 @@ type LLMConfig struct {
 	MaxTokens   int       `json:"max_tokens" gorm:"default:2048"`
 	Timeout     int       `json:"timeout" gorm:"default:120"`
 	IsActive    bool      `json:"is_active" gorm:"default:true"`
+	InputPricePerM  float64   `json:"input_price_per_m" gorm:"default:2.5"`   // 输入单价 $/1M tokens
+	OutputPricePerM float64   `json:"output_price_per_m" gorm:"default:10.0"` // 输出单价 $/1M tokens
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
