@@ -460,12 +460,12 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	}
 	if req.Timeout > 0 {
 		config.Timeout = req.Timeout
-		if req.InputPricePerM > 0 {
-			config.InputPricePerM = req.InputPricePerM
-		}
-		if req.OutputPricePerM > 0 {
-			config.OutputPricePerM = req.OutputPricePerM
-		}
+	}
+	if req.InputPricePerM > 0 {
+		config.InputPricePerM = req.InputPricePerM
+	}
+	if req.OutputPricePerM > 0 {
+		config.OutputPricePerM = req.OutputPricePerM
 	}
 
 	if err := h.db.Save(&config).Error; err != nil {
