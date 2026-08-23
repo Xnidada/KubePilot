@@ -1221,3 +1221,33 @@ func (h *Handler) AnalyzeLogs(c *gin.Context) {
 
 	response.Success(c, result)
 }
+
+// GetTokenUsageStats returns aggregated token usage statistics.
+func (h *Handler) GetTokenUsageStats(c *gin.Context) {
+	daysStr := c.DefaultQuery("days", "30")
+	days, _ := strconv.Atoi(daysStr)
+	if days <= 0 {
+		days = 30
+	}
+	stats, err := h.service.GetTokenUsageStats(days)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, stats)
+}
+
+// GetTokenUsageRecent returns recent token usage log entries.
+func (h *Handler) GetTokenUsageRecent(c *gin.Context) {
+	limitStr := c.DefaultQuery("limit", "50")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 {
+		limit = 50
+	}
+	logs, err := h.service.GetTokenUsageRecent(limit)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, logs)
+}

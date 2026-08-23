@@ -292,3 +292,51 @@ export const analyzeLogs = (data: {
 }) => {
   return post<{ code: number; data: AnalyzeLogsResponse }>('/aiops/analyze-logs', data)
 }
+
+// ==================== Token Usage ====================
+
+export interface TokenUsageStats {
+  total_tokens: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_cost_estimate: number
+  by_day: Array<{
+    date: string
+    total_tokens: number
+    prompt_tokens: number
+    completion_tokens: number
+  }>
+  by_model: Array<{
+    model: string
+    total_tokens: number
+  }>
+  by_user: Array<{
+    user_id: number
+    username: string
+    total_tokens: number
+  }>
+  by_type: Array<{
+    chat_type: string
+    total_tokens: number
+  }>
+}
+
+export interface TokenUsageLog {
+  id: number
+  user_id: number
+  conversation_id: number
+  llm_config_id: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  chat_type: string
+  created_at: string
+}
+
+export const getTokenUsageStats = (days?: number) => {
+  return get<{ code: number; data: TokenUsageStats }>(`/aiops/token-usage/stats?days=${days || 30}`)
+}
+
+export const getTokenUsageRecent = (limit?: number) => {
+  return get<{ code: number; data: TokenUsageLog[] }>(`/aiops/token-usage/recent?limit=${limit || 50}`)
+}

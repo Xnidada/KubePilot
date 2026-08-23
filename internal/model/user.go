@@ -129,6 +129,23 @@ func (AgentToolTrace) TableName() string {
 	return "agent_tool_traces"
 }
 
+// TokenUsageLog records token consumption per AI interaction.
+type TokenUsageLog struct {
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	UserID           uint      `json:"user_id" gorm:"index"`
+	ConversationID   uint      `json:"conversation_id" gorm:"index"`
+	LLMConfigID      uint      `json:"llm_config_id" gorm:"index"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	ChatType         string    `json:"chat_type" gorm:"size:20"` // "agent" | "chat" | "explain" | "diagnose"
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+func (TokenUsageLog) TableName() string {
+	return "token_usage_logs"
+}
+
 // LLMConfig LLM配置
 type LLMConfig struct {
 	ID          uint      `json:"id" gorm:"primaryKey"`

@@ -41,6 +41,7 @@ type agentLoopResult struct {
 	Content string
 	Pending []PendingActionInfo
 	Trace   []ToolTraceItem
+	Usage   llm.Usage
 }
 
 type agentEmitFunc func(AgentStreamEvent)
@@ -248,6 +249,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	defer cancel()
 
 	var finalContent string
+	var totalUsage llm.Usage
 	nudgeUsed := false
 	mountNudgeCount := 0
 	consecutiveNoToolRounds := 0 // 动态轮次：连续无工具调用轮次计数
@@ -260,7 +262,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				finalContent = "请求已取消；已保留此前工具结果。"
 			}
 			if finalContent != "" || len(trace) > 0 || len(pending) > 0 {
-				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace}, nil
+				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
 			}
 			return nil, err
 		}
@@ -288,6 +290,9 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		if err != nil {
 			return nil, fmt.Errorf("LLM chat failed: %w", err)
 		}
+			totalUsage.PromptTokens += resp.Usage.PromptTokens
+			totalUsage.CompletionTokens += resp.Usage.CompletionTokens
+			totalUsage.TotalTokens += resp.Usage.TotalTokens
 
 		if len(resp.ToolCalls) == 0 {
 			finalContent = resp.Content
@@ -397,7 +402,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				if finalContent == "" {
 					finalContent = "请求已取消；已保留此前工具结果。"
 				}
-				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace}, nil
+				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
 			}
 			tc := resp.ToolCalls[idx]
 			name := tc.Function.Name
@@ -472,8 +477,9 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		finalContent = stripFakeAgentActionBlocks(finalContent)
 	}
 	pending = s.dropIncompleteMountDeployments(message, pending)
+	s.persistTokenUsage(userID, conversationID, totalUsage, "agent")
 
-	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace}, nil
+	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
 }
 
 func mergePendingActions(existing []PendingActionInfo, incoming []PendingActionInfo) []PendingActionInfo {

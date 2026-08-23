@@ -39,6 +39,7 @@ func (m *Module) Migrations() []any {
 		&model.AgentAction{},
 		&model.AgentToolTrace{},
 		&model.LLMConfig{},
+		&model.TokenUsageLog{},
 	}
 }
 
@@ -94,6 +95,8 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("POST", "/api/v1/aiops/agent/execute", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/kubectl", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/aiops/kubectl/:id/query", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopeHandler})
+	reg.MustRegister("GET", "/api/v1/aiops/token-usage/stats", authz.Policy{Resource: "aiops_config", Action: "view", Scope: authz.ScopePlatform})
+	reg.MustRegister("GET", "/api/v1/aiops/token-usage/recent", authz.Policy{Resource: "aiops_config", Action: "view", Scope: authz.ScopePlatform})
 }
 
 func (m *Module) Start(ctx context.Context, host *module.Host) error {
@@ -193,5 +196,8 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.POST("/agent/execute", m.handler.AgentExecute)
 		g.POST("/kubectl", m.handler.KubectlExecute)
 		g.GET("/kubectl/:id/query", m.handler.KubectlQuery)
+
+			g.GET("/token-usage/stats", m.handler.GetTokenUsageStats)
+			g.GET("/token-usage/recent", m.handler.GetTokenUsageRecent)
 	}
 }

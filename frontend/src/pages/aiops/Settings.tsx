@@ -16,6 +16,11 @@ import {
   Table,
   Modal,
   Popconfirm,
+  Statistic,
+  Row,
+  Col,
+  Tabs,
+  Spin,
 } from 'antd'
 import {
   PlusOutlined,
@@ -25,6 +30,8 @@ import {
   EditOutlined,
   StarOutlined,
   StarFilled,
+  DollarOutlined,
+  RiseOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -34,7 +41,9 @@ import {
   deleteLLMConfig,
   setDefaultLLMConfig,
   testLLMConfig,
+  getTokenUsageStats,
   LLMConfig,
+  TokenUsageStats,
 } from '../../api/aiops'
 import { AIReadOnlyBanner } from '../../components/AIReadOnlyBanner'
 import { useAuthStore } from '../../stores/auth'
@@ -62,6 +71,12 @@ const modelOptions = [
   { label: 'Gemini Pro', value: 'gemini-pro' },
 ]
 
+const formatTokens = (n: number): string => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return n.toString()
+}
+
 const AISettings: React.FC = () => {
   const { hasPermission } = useAuthStore()
   const canCreate = hasPermission('aiops_config', 'create')
@@ -78,8 +93,14 @@ const AISettings: React.FC = () => {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 
+  // Token usage stats
+  const [tokenStats, setTokenStats] = useState<TokenUsageStats | null>(null)
+  const [tokenLoading, setTokenLoading] = useState(false)
+  const [tokenDays, setTokenDays] = useState(30)
+
   useEffect(() => {
     fetchConfigs()
+    fetchTokenStats()
   }, [])
 
   const fetchConfigs = async () => {
@@ -95,6 +116,24 @@ const AISettings: React.FC = () => {
       setLoading(false)
     }
   }
+
+  const fetchTokenStats = async () => {
+    setTokenLoading(true)
+    try {
+      const res = await getTokenUsageStats(tokenDays)
+      if (res.code === 0) {
+        setTokenStats(res.data || null)
+      }
+    } catch (error) {
+      console.error('Failed to fetch token stats:', error)
+    } finally {
+      setTokenLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchTokenStats()
+  }, [tokenDays])
 
   const handleCreate = () => {
     setEditMode(false)
@@ -300,11 +339,189 @@ const AISettings: React.FC = () => {
     },
   ]
 
+  // Token usage trend bar chart (CSS-based)
+  const renderTrendChart = () => {
+    if (!tokenStats?.by_day?.length) {
+      return <Text type="secondary">暂无数据</Text>
+    }
+    const maxTokens = Math.max(...tokenStats.by_day.map(d => d.total_tokens), 1)
+    return (
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 120, padding: '8px 0' }}>
+        {tokenStats.by_day.map((d, i) => (
+          <div
+            key={i}
+            title={`${d.date}: ${formatTokens(d.total_tokens)} tokens`}
+            style={{
+              flex: 1,
+              minWidth: 4,
+              height: `${Math.max((d.total_tokens / maxTokens) * 100, 2)}%`,
+              background: 'linear-gradient(180deg, #1677ff 0%, #69b1ff 100%)',
+              borderRadius: '2px 2px 0 0',
+              transition: 'height 0.3s',
+            }}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  // Token usage detail tables
+  const modelColumns: ColumnsType<{ model: string; total_tokens: number }> = [
+    { title: '模型', dataIndex: 'model', key: 'model', render: (v) => v || 'unknown' },
+    { title: 'Token 用量', dataIndex: 'total_tokens', key: 'total_tokens', render: (v) => formatTokens(v) },
+    { title: '占比', key: 'pct', render: (_, r) => tokenStats ? `${((r.total_tokens / (tokenStats.total_tokens || 1)) * 100).toFixed(1)}%` : '-' },
+  ]
+
+  const userColumns: ColumnsType<{ user_id: number; username: string; total_tokens: number }> = [
+    { title: '用户', dataIndex: 'username', key: 'username', render: (v) => v || 'unknown' },
+    { title: 'Token 用量', dataIndex: 'total_tokens', key: 'total_tokens', render: (v) => formatTokens(v) },
+    { title: '占比', key: 'pct', render: (_, r) => tokenStats ? `${((r.total_tokens / (tokenStats.total_tokens || 1)) * 100).toFixed(1)}%` : '-' },
+  ]
+
+  const typeColumns: ColumnsType<{ chat_type: string; total_tokens: number }> = [
+    { title: '类型', dataIndex: 'chat_type', key: 'chat_type', render: (v) => {
+      const map: Record<string, string> = { agent: 'AI Agent', chat: '对话', explain: '划词解释', diagnose: '诊断' }
+      return map[v] || v
+    }},
+    { title: 'Token 用量', dataIndex: 'total_tokens', key: 'total_tokens', render: (v) => formatTokens(v) },
+    { title: '占比', key: 'pct', render: (_, r) => tokenStats ? `${((r.total_tokens / (tokenStats.total_tokens || 1)) * 100).toFixed(1)}%` : '-' },
+  ]
+
   return (
     <div>
       <Title level={4}>🤖 AI 设置</Title>
       <AIReadOnlyBanner resource="aiops_config" action="edit" />
 
+      {/* Token Usage Statistics */}
+      <Card
+        title="📊 Token 用量统计"
+        style={{ marginBottom: 16 }}
+        extra={
+          <Space>
+            <Select
+              value={tokenDays}
+              onChange={setTokenDays}
+              size="small"
+              style={{ width: 100 }}
+              options={[
+                { label: '近 7 天', value: 7 },
+                { label: '近 30 天', value: 30 },
+                { label: '近 90 天', value: 90 },
+                { label: '全部', value: 3650 },
+              ]}
+            />
+            <Button size="small" icon={<ReloadOutlined />} onClick={fetchTokenStats} loading={tokenLoading}>刷新</Button>
+          </Space>
+        }
+      >
+        <Spin spinning={tokenLoading}>
+          <Row gutter={16}>
+            {/* Overview Card */}
+            <Col span={8}>
+              <Row gutter={[0, 16]}>
+                <Col span={24}>
+                  <Statistic
+                    title="总 Token 用量"
+                    value={tokenStats?.total_tokens || 0}
+                    formatter={(v) => formatTokens(v as number)}
+                    prefix={<RiseOutlined />}
+                    valueStyle={{ color: '#1677ff' }}
+                  />
+                </Col>
+                <Col span={12}>
+                  <Statistic
+                    title="Prompt Tokens"
+                    value={tokenStats?.total_prompt_tokens || 0}
+                    formatter={(v) => formatTokens(v as number)}
+                    valueStyle={{ fontSize: 16 }}
+                  />
+                </Col>
+                <Col span={12}>
+                  <Statistic
+                    title="Completion Tokens"
+                    value={tokenStats?.total_completion_tokens || 0}
+                    formatter={(v) => formatTokens(v as number)}
+                    valueStyle={{ fontSize: 16 }}
+                  />
+                </Col>
+                <Col span={24}>
+                  <Statistic
+                    title="估算费用 (GPT-4o 定价)"
+                    value={tokenStats?.total_cost_estimate || 0}
+                    precision={4}
+                    prefix={<DollarOutlined />}
+                    suffix="USD"
+                    valueStyle={{ color: '#faad14' }}
+                  />
+                </Col>
+              </Row>
+            </Col>
+
+            {/* Trend Chart */}
+            <Col span={16}>
+              <div style={{ marginBottom: 4 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>每日用量趋势</Text>
+              </div>
+              {renderTrendChart()}
+              {tokenStats?.by_day?.length ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#999', marginTop: 4 }}>
+                  <span>{tokenStats.by_day[0]?.date}</span>
+                  <span>{tokenStats.by_day[tokenStats.by_day.length - 1]?.date}</span>
+                </div>
+              ) : null}
+            </Col>
+          </Row>
+
+          {/* Detail Tables */}
+          <Divider style={{ margin: '12px 0' }} />
+          <Tabs
+            size="small"
+            items={[
+              {
+                key: 'model',
+                label: '按模型',
+                children: (
+                  <Table
+                    columns={modelColumns}
+                    dataSource={tokenStats?.by_model || []}
+                    rowKey="model"
+                    size="small"
+                    pagination={false}
+                  />
+                ),
+              },
+              {
+                key: 'user',
+                label: '按用户',
+                children: (
+                  <Table
+                    columns={userColumns}
+                    dataSource={tokenStats?.by_user || []}
+                    rowKey="user_id"
+                    size="small"
+                    pagination={false}
+                  />
+                ),
+              },
+              {
+                key: 'type',
+                label: '按类型',
+                children: (
+                  <Table
+                    columns={typeColumns}
+                    dataSource={tokenStats?.by_type || []}
+                    rowKey="chat_type"
+                    size="small"
+                    pagination={false}
+                  />
+                ),
+              },
+            ]}
+          />
+        </Spin>
+      </Card>
+
+      {/* LLM Config Table */}
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
           <Paragraph>
