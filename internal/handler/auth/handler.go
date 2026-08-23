@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/service/auth"
@@ -40,9 +41,14 @@ func (h *Handler) Login(c *gin.Context) {
 
 	user, err := h.service.Authenticate(req.Username, req.Password)
 	if err != nil {
+		// 记录登录失败
+		h.recordLoginLog(0, req.Username, c.ClientIP(), c.Request.UserAgent(), false)
 		response.Unauthorized(c, err.Error())
 		return
 	}
+
+	// 记录登录成功
+	h.recordLoginLog(user.ID, user.Username, c.ClientIP(), c.Request.UserAgent(), true)
 
 	// 检查是否需要两步验证（验证通过后再发 JWT）
 	if CheckTwoFactorRequired(h.db, user.ID) {
@@ -65,6 +71,24 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 	response.Success(c, result)
+}
+
+// recordLoginLog 异步写入登入日志
+func (h *Handler) recordLoginLog(userID uint, username, ip, userAgent string, success bool) {
+	if h.db == nil {
+		return
+	}
+	log := model.LoginLog{
+		UserID:    userID,
+		Username:  username,
+		IP:        ip,
+		UserAgent: userAgent,
+		Success:   success,
+		CreatedAt: time.Now(),
+	}
+	go func() {
+		_ = h.db.Create(&log).Error
+	}()
 }
 
 func (h *Handler) issueTwoFAPending(ctx context.Context, userID uint) (string, error) {

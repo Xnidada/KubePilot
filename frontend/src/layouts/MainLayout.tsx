@@ -300,6 +300,10 @@ const menuItems: MenuProps['items'] = [
         key: '/system/modules',
         label: '功能模块',
       },
+      {
+        key: '/system/login-logs',
+        label: '登入日志',
+      },
     ],
   },
 ]
@@ -311,6 +315,7 @@ const menuPermissionMap: Record<string, { resource: string; action: string }> = 
   '/system/backup': { resource: 'backups', action: 'view' },
   '/system/webhooks': { resource: 'webhooks', action: 'view' },
   '/system/sso': { resource: 'users', action: 'admin' },
+  '/system/login-logs': { resource: 'login_logs', action: 'view' },
   // 浏览 AI 页面只需 view；实际对话/诊断等 API 仍校验 execute
   '/aiops/agent': { resource: 'aiops', action: 'view' },
   '/aiops/diagnosis': { resource: 'aiops', action: 'view' },

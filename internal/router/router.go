@@ -184,6 +184,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 				// Audit logs
 				systemGroup.GET("/audit-logs", systemHandler.GetAuditLogs)
+
+				// Login logs
+				systemGroup.GET("/login-logs", systemHandler.GetLoginLogs)
 			}
 
 			// Alert management

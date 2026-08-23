@@ -82,6 +82,8 @@ func AutoMigrateCore() error {
 		&Tenant{},
 		&TenantNamespace{},
 		&TenantMember{},
+		// 登入日志
+		&LoginLog{},
 	); err != nil {
 		return err
 	}

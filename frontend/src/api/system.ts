@@ -274,6 +274,26 @@ export const getAuditLogs = (params?: {
   return get<{ code: number; data: AuditLog[]; total: number }>('/system/audit-logs', { params })
 }
 
+// Login Logs
+export interface LoginLog {
+  id: number
+  user_id: number
+  username: string
+  ip: string
+  user_agent: string
+  success: boolean
+  created_at: string
+}
+
+export const getLoginLogs = (params?: {
+  page?: number
+  size?: number
+  username?: string
+  ip?: string
+}) => {
+  return get<{ code: number; data: LoginLog[]; total: number }>('/system/login-logs', { params })
+}
+
 // ==================== 两步验证 ====================
 
 export const get2FAStatus = () => {

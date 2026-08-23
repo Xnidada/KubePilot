@@ -555,6 +555,41 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	response.PageSuccess(c, logs, total, page, size)
 }
 
+// GetLoginLogs 获取登入日志
+func (h *Handler) GetLoginLogs(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	username := c.Query("username")
+	ip := c.Query("ip")
+
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+
+	query := h.db.Model(&model.LoginLog{})
+	if username != "" {
+		query = query.Where("username LIKE ?", "%"+username+"%")
+	}
+	if ip != "" {
+		query = query.Where("ip LIKE ?", "%"+ip+"%")
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var logs []model.LoginLog
+	err := query.Offset((page - 1) * size).Limit(size).Order("id desc").Find(&logs).Error
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.PageSuccess(c, logs, total, page, size)
+}
+
 
 // generateRandomPassword 生成随机密码
 func generateRandomPassword(length int) string {

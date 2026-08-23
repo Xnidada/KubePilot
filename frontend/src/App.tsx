@@ -35,6 +35,7 @@ import TwoFactorAuth from './pages/system/TwoFactorAuth'
 import Backup from './pages/system/Backup'
 import Webhooks from './pages/system/Webhooks'
 import Modules from './pages/system/Modules'
+import LoginLogs from './pages/system/LoginLogs'
 import Profile from './pages/Profile'
 import Inspection from './pages/cluster/Inspection'
 import EventForward from './pages/cluster/EventForward'
@@ -103,6 +104,7 @@ function App() {
         <Route path="system/backup" element={<Backup />} />
         <Route path="system/webhooks" element={<Webhooks />} />
         <Route path="system/modules" element={<Modules />} />
+        <Route path="system/login-logs" element={<LoginLogs />} />
         <Route path="profile" element={<Profile />} />
         <Route path="cluster/inspection" element={<Inspection />} />
         <Route path="cluster/event-forward" element={<EventForward />} />

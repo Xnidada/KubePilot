@@ -166,3 +166,18 @@ type LLMConfig struct {
 func (LLMConfig) TableName() string {
 	return "llm_configs"
 }
+
+// LoginLog 登入日志
+type LoginLog struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	UserID    uint      `json:"user_id" gorm:"index"`
+	Username  string    `json:"username" gorm:"size:64;index"`
+	IP        string    `json:"ip" gorm:"size:45"`
+	UserAgent string    `json:"user_agent" gorm:"size:256"`
+	Success   bool      `json:"success" gorm:"default:true"`
+	CreatedAt time.Time `json:"created_at" gorm:"index"`
+}
+
+func (LoginLog) TableName() string {
+	return "login_logs"
+}

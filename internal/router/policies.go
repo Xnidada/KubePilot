@@ -59,6 +59,7 @@ func registerAPIPolicies(registry *authz.Registry) {
 	registry.MustRegister("GET", "/api/v1/system/actions", authz.Policy{Resource: "roles", Action: "view", Scope: authz.ScopePlatform})
 	registry.MustRegister("GET", "/api/v1/system/role-templates", authz.Policy{Resource: "roles", Action: "view", Scope: authz.ScopePlatform})
 	registry.MustRegister("GET", "/api/v1/system/audit-logs", authz.Policy{Resource: "audit_logs", Action: "view", Scope: authz.ScopePlatform})
+	registry.MustRegister("GET", "/api/v1/system/login-logs", authz.Policy{Resource: "login_logs", Action: "view", Scope: authz.ScopePlatform})
 	registry.MustRegister("GET", "/api/v1/alerts/rules", authz.Policy{Resource: "alerts", Action: "view", Scope: authz.ScopePlatform})
 	registry.MustRegister("POST", "/api/v1/alerts/rules", authz.Policy{Resource: "alerts", Action: "create", Scope: authz.ScopePlatform})
 	registry.MustRegister("PUT", "/api/v1/alerts/rules/:id", authz.Policy{Resource: "alerts", Action: "edit", Scope: authz.ScopePlatform})
