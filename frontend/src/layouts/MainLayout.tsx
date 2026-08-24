@@ -507,7 +507,7 @@ const MainLayout: React.FC = () => {
             borderBottom: '1px solid rgba(255,255,255,0.1)',
           }}
         >
-          {collapsed ? 'KP' : '🚀 KubePilot'}
+          {collapsed ? 'KP' : 'KubePilot'}
         </div>
         <Menu
           theme="dark"

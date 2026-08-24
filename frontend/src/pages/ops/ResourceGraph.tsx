@@ -108,7 +108,7 @@ const ResourceGraphPage: React.FC = () => {
           {/* 资源列表 */}
           <Row gutter={16}>
             <Col span={8}>
-              <Card title="🚀 Deployments" size="small">
+              <Card title="Deployments" size="small">
                 {(groups['Deployment'] || []).map(n => (
                   <div key={n.id} style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
                     <Space>

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
+	"github.com/kubepilot/kubepilot/internal/pkg/netutil"
 	"go.uber.org/zap"
 )
 
@@ -148,7 +149,7 @@ func AuditMiddleware() gin.HandlerFunc {
 			RequestBody:  maskedBody,
 			ResponseCode: c.Writer.Status(),
 			Latency:      latency,
-			IP:           c.ClientIP(),
+			IP:           netutil.RealClientIP(c),
 			UserAgent:    c.Request.UserAgent(),
 			Success:      c.Writer.Status() < 400,
 		}

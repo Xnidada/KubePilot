@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
+	"github.com/kubepilot/kubepilot/internal/pkg/netutil"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/service/auth"
 	"gorm.io/gorm"
@@ -40,15 +41,16 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	user, err := h.service.Authenticate(req.Username, req.Password)
+	clientIP := netutil.RealClientIP(c)
 	if err != nil {
 		// 记录登录失败
-		h.recordLoginLog(0, req.Username, c.ClientIP(), c.Request.UserAgent(), false)
+		h.recordLoginLog(0, req.Username, clientIP, c.Request.UserAgent(), false)
 		response.Unauthorized(c, err.Error())
 		return
 	}
 
 	// 记录登录成功
-	h.recordLoginLog(user.ID, user.Username, c.ClientIP(), c.Request.UserAgent(), true)
+	h.recordLoginLog(user.ID, user.Username, clientIP, c.Request.UserAgent(), true)
 
 	// 检查是否需要两步验证（验证通过后再发 JWT）
 	if CheckTwoFactorRequired(h.db, user.ID) {

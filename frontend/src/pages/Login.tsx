@@ -151,7 +151,7 @@ const Login: React.FC = () => {
       >
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <Title level={2} style={{ marginBottom: 8 }}>
-            🚀 KubePilot
+            KubePilot
           </Title>
           <Text type="secondary">
             {pendingToken ? '两步验证' : 'K8S 智能运维管理平台'}

@@ -32,6 +32,17 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 	r := gin.New()
 
+	// Trust internal network proxies (K8s pod/service/ingress networks)
+	// so ClientIP() correctly extracts the real client IP from X-Forwarded-For
+	_ = r.SetTrustedProxies([]string{
+		"10.0.0.0/8",     // K8s pod network (common)
+		"172.16.0.0/12",  // K8s pod network (common) + Docker default
+		"192.168.0.0/16", // Local network
+		"127.0.0.0/8",    // Loopback
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 private (K8s dual-stack)
+	})
+
 	// Global middleware
 	r.Use(middleware.CORSMiddleware())
 	r.Use(gin.Logger())
