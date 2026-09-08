@@ -165,7 +165,7 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 
 	// By model (join with llm_configs)
 	var byModel []TokenUsageByModel
-	s.db.Model(&model.TokenUsageLog{}).
+	s.db.Table("token_usage_logs AS t").
 		Select("COALESCE(c.model, 'unknown') as model, SUM(t.total_tokens) as total_tokens").
 		Joins("LEFT JOIN llm_configs c ON t.llm_config_id = c.id").
 		Where("t.created_at >= ?", since).
@@ -173,7 +173,7 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 
 	// By user (join with users)
 	var byUser []TokenUsageByUser
-	s.db.Model(&model.TokenUsageLog{}).
+	s.db.Table("token_usage_logs AS t").
 		Select("t.user_id, COALESCE(u.username, 'unknown') as username, SUM(t.total_tokens) as total_tokens").
 		Joins("LEFT JOIN users u ON t.user_id = u.id").
 		Where("t.created_at >= ?", since).

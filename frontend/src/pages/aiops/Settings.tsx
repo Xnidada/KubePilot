@@ -471,11 +471,11 @@ const AISettings: React.FC = () => {
                 </Col>
                 <Col span={24}>
                   <Statistic
-                    title="估算费用 (GPT-4o 定价)"
+                    title="估算费用"
                     value={tokenStats?.total_cost_estimate || 0}
                     precision={4}
                     prefix={<DollarOutlined />}
-                    suffix="USD"
+                    suffix="$"
                     valueStyle={{ color: '#faad14' }}
                   />
                 </Col>
