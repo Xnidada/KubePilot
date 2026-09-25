@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -39,13 +40,13 @@ type anthropicMessage struct {
 
 // AnthropicRequest Anthropic请求格式
 type AnthropicRequest struct {
-	Model       string            `json:"model"`
+	Model       string             `json:"model"`
 	Messages    []anthropicMessage `json:"messages"`
-	MaxTokens   int               `json:"max_tokens"`
-	Temperature float64           `json:"temperature,omitempty"`
-	System      string            `json:"system,omitempty"`
-	Tools       []anthropicTool   `json:"tools,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
+	MaxTokens   int                `json:"max_tokens"`
+	Temperature float64            `json:"temperature,omitempty"`
+	System      string             `json:"system,omitempty"`
+	Tools       []anthropicTool    `json:"tools,omitempty"`
+	Stream      bool               `json:"stream,omitempty"`
 }
 
 // AnthropicResponse Anthropic响应格式
@@ -308,6 +309,11 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
+				if err == io.EOF {
+					ch <- StreamChunk{Error: "LLM stream ended before message_stop"}
+				} else {
+					ch <- StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)}
+				}
 				break
 			}
 

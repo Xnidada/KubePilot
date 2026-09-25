@@ -29,6 +29,7 @@ import {
   ClearOutlined,
   CheckSquareOutlined,
   WarningOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import { getClusterList, Cluster } from '../../api/cluster'
 import {
@@ -38,6 +39,7 @@ import {
   listPendingActions,
   PendingAction,
   ToolTraceItem,
+  retryAgentQuery,
 } from '../../api/agent'
 import { useConversations } from '../../hooks/useConversations'
 import ChatSidebar from '../../components/ChatSidebar'
@@ -72,12 +74,29 @@ function summarizeToolTrace(trace: ToolTraceItem[]): { name: string; count: numb
 function ToolEvidencePanel({
   trace,
   compact,
+  onRetry,
 }: {
   trace: ToolTraceItem[]
   compact?: boolean
+  onRetry?: (item: ToolTraceItem) => Promise<ToolTraceItem>
 }) {
   const [open, setOpen] = useState<string[]>([])
   const [focusIdx, setFocusIdx] = useState<number | null>(null)
+  const [retryingIdx, setRetryingIdx] = useState<number | null>(null)
+  const [retryResults, setRetryResults] = useState<Record<number, ToolTraceItem>>({})
+
+  const retryOne = async (item: ToolTraceItem, index: number) => {
+    if (!onRetry || retryingIdx !== null) return
+    setRetryingIdx(index)
+    try {
+      const result = await onRetry(item)
+      setRetryResults((prev) => ({ ...prev, [index]: result }))
+    } catch (error: any) {
+      message.error(error?.message || '查询重试失败')
+    } finally {
+      setRetryingIdx(null)
+    }
+  }
 
   if (!trace.length) return null
 
@@ -151,6 +170,12 @@ function ToolEvidencePanel({
                         <Text type="secondary" style={{ fontSize: 11 }}>{t.duration_ms}ms</Text>
                       )}
                       {t.is_error && <Text type="danger" style={{ fontSize: 12 }}>失败</Text>}
+                      {t.is_error && onRetry && isRetryableQuery(t.name) && (
+                        <Button size="small" type="link" icon={<ReloadOutlined />}
+                          loading={retryingIdx === i} onClick={() => void retryOne(t, i)}>
+                          重试此查询
+                        </Button>
+                      )}
                     </Space>
                     {t.args && (
                       <div style={{ marginBottom: 6 }}>
@@ -192,6 +217,11 @@ function ToolEvidencePanel({
                         </pre>
                       </div>
                     )}
+                    {retryResults[i] && (
+                      <Alert style={{ marginTop: 8 }} type={retryResults[i].is_error ? 'error' : 'success'}
+                        message={retryResults[i].is_error ? '重试仍失败' : '重试成功'}
+                        description={<pre style={{ whiteSpace: 'pre-wrap', maxHeight: 180, overflow: 'auto' }}>{retryResults[i].result}</pre>} />
+                    )}
                   </div>
                 ))}
               </div>
@@ -201,6 +231,10 @@ function ToolEvidencePanel({
       />
     </div>
   )
+}
+
+function isRetryableQuery(name: string): boolean {
+  return ['list_resources', 'get_resource', 'get_events', 'get_pod_logs', 'describe_resource', 'diagnose_workload', 'diagnose_service'].includes(name)
 }
 
 type MessageExtras = {
@@ -345,12 +379,17 @@ const AIAgent: React.FC = () => {
     status?: string
     toolTrace: ToolTraceItem[]
   } | null>(null)
+  const [failedRound, setFailedRound] = useState<{ conversationId: number; clusterId: number; content: string } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     fetchClusters()
   }, [])
+
+  useEffect(() => {
+    if (activeConversation?.cluster_id) setSelectedCluster(activeConversation.cluster_id)
+  }, [activeConversation?.cluster_id])
 
   useEffect(() => {
     scrollToBottom()
@@ -370,6 +409,7 @@ const AIAgent: React.FC = () => {
     setPendingHostMessageId(null)
     setMessageExtras({})
     setLiveAssistant(null)
+    setFailedRound(null)
     if (!activeId) return
 
     let cancelled = false
@@ -465,7 +505,7 @@ const AIAgent: React.FC = () => {
     }
   }
 
-  const handleSend = async (content?: string) => {
+  const handleSend = async (content?: string, retryExisting = false) => {
     if (!canExecute) {
       message.warning('当前为只读权限，无法发送 AI 对话')
       return
@@ -487,7 +527,10 @@ const AIAgent: React.FC = () => {
       setInputValue('')
     }
 
-    await addMessage(currentId, 'user', sendContent)
+    if (!retryExisting) {
+      await addMessage(currentId, 'user', sendContent)
+    }
+    setFailedRound(null)
 
     setLoading(true)
     setPendingActions([])
@@ -503,6 +546,7 @@ const AIAgent: React.FC = () => {
           message: sendContent,
           cluster_id: selectedCluster,
           conversation_id: currentId,
+          retry: retryExisting,
         },
         (ev) => {
           if (ev.type === 'status') {
@@ -558,6 +602,9 @@ const AIAgent: React.FC = () => {
               status: 'done',
               toolTrace: trace,
             })
+            if (ev.content?.startsWith('模型连接中断') || ev.content?.startsWith('请求已取消')) {
+              setFailedRound({ conversationId: currentId!, clusterId: selectedCluster, content: sendContent })
+            }
           } else if (ev.type === 'error') {
             throw new Error(ev.message || 'Agent 流式错误')
           }
@@ -571,6 +618,7 @@ const AIAgent: React.FC = () => {
     } catch (error: any) {
       if (error.name === 'AbortError') {
         console.log('Request aborted')
+        setFailedRound({ conversationId: currentId!, clusterId: selectedCluster, content: sendContent })
         setLiveAssistant((prev) =>
           prev
             ? {
@@ -589,28 +637,15 @@ const AIAgent: React.FC = () => {
         console.error('Chat error:', error)
         const detail = error?.message || '网络异常或服务超时'
         message.error(detail)
-        let kept = false
+        setFailedRound({ conversationId: currentId!, clusterId: selectedCluster, content: sendContent })
         setLiveAssistant((prev) => {
-          if (prev && (prev.content || prev.toolTrace.length > 0)) {
-            kept = true
-            return {
-              ...prev,
-              streaming: false,
-              status: 'error',
-              content: prev.content
-                ? `${prev.content}\n\n❌ ${detail}`
-                : `❌ AI 请求失败：${detail}`,
-            }
+          return {
+            content: prev?.content ? `${prev.content}\n\n❌ ${detail}` : `❌ AI 请求失败：${detail}`,
+            streaming: false,
+            status: 'error',
+            toolTrace: prev?.toolTrace || [],
           }
-          return null
         })
-        if (!kept) {
-          await addMessage(
-            currentId!,
-            'assistant',
-            `❌ AI 请求失败：${detail}\n\n可检查 **AI 设置** 中的 LLM 配置，或缩短问题后重试。`
-          )
-        }
       }
     } finally {
       setLoading(false)
@@ -625,6 +660,27 @@ const AIAgent: React.FC = () => {
         }
       }
     }
+  }
+
+  const handleRetryQuery = async (item: ToolTraceItem): Promise<ToolTraceItem> => {
+    if (!activeId || !selectedCluster || !canExecute) throw new Error('当前会话无法重试查询')
+    const res = await retryAgentQuery({
+      conversation_id: activeId,
+      cluster_id: selectedCluster,
+      name: item.name,
+      args: item.args,
+    })
+    if (res.code !== 0) throw new Error(res.message || '查询重试失败')
+    return res.data
+  }
+
+  const handleRetryRound = () => {
+    if (!failedRound || loading || activeId !== failedRound.conversationId) return
+    if (selectedCluster !== failedRound.clusterId) {
+      message.warning('请先切回原集群后重试本轮')
+      return
+    }
+    void handleSend(failedRound.content, true)
   }
 
   // 确认执行：直接消费后端 pending_actions（已 dry-run 暂存）
@@ -783,6 +839,9 @@ const AIAgent: React.FC = () => {
     const showDelete = !msgSelectMode && hoveredMsgId === msg.id
     const checked = selectedMsgIds.includes(msg.id)
     const displayContent = isUser ? msg.content : stripLegacyAgentExtras(msg.content || '')
+    const previousUser = index > 0 ? activeConversation?.messages[index - 1] : null
+    const canRetryPersisted = !isUser && canExecute && previousUser?.role === 'user' &&
+      (displayContent.startsWith('模型连接中断') || displayContent.startsWith('请求已取消'))
 
     return (
       <div
@@ -873,7 +932,14 @@ const AIAgent: React.FC = () => {
             )}
 
             {!isUser && !isEmpty && toolTrace.length > 0 && (
-              <ToolEvidencePanel trace={toolTrace} />
+              <ToolEvidencePanel trace={toolTrace} onRetry={canExecute ? handleRetryQuery : undefined} />
+            )}
+
+            {canRetryPersisted && !msgSelectMode && (
+              <Button size="small" icon={<ReloadOutlined />} disabled={loading}
+                onClick={() => void handleSend(previousUser!.content, true)}>
+                重试本轮
+              </Button>
             )}
 
             {needsConfirm && !msgSelectMode && (
@@ -1176,7 +1242,7 @@ const AIAgent: React.FC = () => {
                         </div>
                       )}
                       {liveAssistant.toolTrace.length > 0 && (
-                        <ToolEvidencePanel trace={liveAssistant.toolTrace} compact />
+                        <ToolEvidencePanel trace={liveAssistant.toolTrace} compact onRetry={canExecute ? handleRetryQuery : undefined} />
                       )}
                       {/* 流式中用纯文本，避免半截 Markdown 破坏渲染 */}
                       {liveAssistant.content ? (
@@ -1205,6 +1271,11 @@ const AIAgent: React.FC = () => {
                             onCancel={handleCancel}
                           />
                         )}
+                      {!liveAssistant.streaming && failedRound && activeId === failedRound.conversationId && (
+                        <Button size="small" icon={<ReloadOutlined />} onClick={handleRetryRound} disabled={loading} style={{ marginTop: 10 }}>
+                          重试本轮
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>

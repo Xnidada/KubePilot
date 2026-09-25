@@ -44,6 +44,38 @@ func (h *Handler) loadConversation(c *gin.Context, convID string, forWrite bool)
 	return &conversation, true
 }
 
+// validateAgentConversation makes an Agent run owner-scoped even though
+// aiviewer/admin may browse other users' conversations. Browsing is read-only:
+// no user may run tools with another user's conversation as its memory.
+// A conversation is bound to the first cluster on which it is used, so it
+// cannot later be used to leak context across clusters.
+func (h *Handler) validateAgentConversation(c *gin.Context, conversationID, clusterID uint) bool {
+	if conversationID == 0 {
+		return true
+	}
+
+	conversation, ok := h.loadConversation(c, strconv.FormatUint(uint64(conversationID), 10), true)
+	if !ok {
+		return false
+	}
+
+	if conversation.ClusterID != nil {
+		if *conversation.ClusterID != clusterID {
+			response.BadRequest(c, "conversation belongs to a different cluster")
+			return false
+		}
+		return true
+	}
+
+	// Older conversations were created before a cluster was selected. Bind such
+	// a conversation on its first Agent use, after owner verification above.
+	if err := h.db.Model(conversation).Update("cluster_id", clusterID).Error; err != nil {
+		response.InternalError(c, "failed to bind conversation to cluster")
+		return false
+	}
+	return true
+}
+
 // ListConversations 获取对话列表（所有者自己的；aiviewer/admin 可见全部）
 func (h *Handler) ListConversations(c *gin.Context) {
 	userID, _ := c.Get("user_id")

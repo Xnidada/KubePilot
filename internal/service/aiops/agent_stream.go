@@ -38,23 +38,30 @@ type MessageExtras struct {
 }
 
 type agentLoopResult struct {
-	Content string
-	Pending []PendingActionInfo
-	Trace   []ToolTraceItem
-	Usage   llm.Usage
+	Content    string
+	Pending    []PendingActionInfo
+	Trace      []ToolTraceItem
+	Usage      llm.Usage
+	MemoryHits int
 }
 
 type agentEmitFunc func(AgentStreamEvent)
 
 // AgentChatStream runs the tool loop and emits SSE-friendly events.
 // When conversationID > 0, persists the assistant message with extras before done.
-func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conversationID uint, message string, emit agentEmitFunc) error {
+func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conversationID uint, message string, retry bool, emit agentEmitFunc) error {
+	startedAt := time.Now()
+	if emit == nil {
+		emit = func(AgentStreamEvent) {}
+	}
 	if s.llmClient == nil {
 		emit(AgentStreamEvent{Type: "error", Message: "LLM service not configured"})
 		return fmt.Errorf("LLM service not configured")
 	}
-	if emit == nil {
-		emit = func(AgentStreamEvent) {}
+	if retry && conversationID > 0 {
+		if handled, err := s.resumeAgentTurn(ctx, userID, clusterID, conversationID, message, emit); handled {
+			return err
+		}
 	}
 
 	emit(AgentStreamEvent{Type: "status", Status: "thinking"})
@@ -79,6 +86,8 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 		msgID, _ = s.persistAssistantMessage(conversationID, res.Content, res.Trace, res.Pending)
 	}
 	s.persistAgentToolTrace(userID, clusterID, conversationID, message, res.Trace, res.Pending)
+	s.refreshConversationState(userID, clusterID, conversationID, message, res.Content, res.Trace, res.Pending)
+	s.persistAgentRunMetric(userID, clusterID, conversationID, message, res.Usage, res.Trace, startedAt, res.MemoryHits)
 
 	emit(AgentStreamEvent{
 		Type:           "done",
@@ -88,6 +97,60 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 		MessageID:      msgID,
 	})
 	return nil
+}
+
+// resumeAgentTurn reuses the last persisted user/assistant pair. This avoids
+// re-executing tools after a transport interruption; only an interrupted LLM
+// finalization is re-requested, with its saved tool trace.
+func (s *Service) resumeAgentTurn(ctx context.Context, userID, clusterID, conversationID uint, message string, emit agentEmitFunc) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var messages []model.ChatMessage
+	if err := s.db.Where("conversation_id = ?", conversationID).Order("id DESC").Limit(2).Find(&messages).Error; err != nil || len(messages) != 2 {
+		return false, nil
+	}
+	last, user := messages[0], messages[1]
+	if last.Role != "assistant" || user.Role != "user" || user.Content != message {
+		return false, nil
+	}
+	var extras MessageExtras
+	if last.Extras != "" {
+		_ = json.Unmarshal([]byte(last.Extras), &extras)
+	}
+	pending, _ := s.ListPendingActions(userID, conversationID)
+	if len(extras.PendingActionIDs) > 0 {
+		allowed := make(map[uint]bool, len(extras.PendingActionIDs))
+		for _, id := range extras.PendingActionIDs {
+			allowed[id] = true
+		}
+		filtered := pending[:0]
+		for _, p := range pending {
+			if allowed[p.ID] {
+				filtered = append(filtered, p)
+			}
+		}
+		pending = filtered
+	}
+	content := last.Content
+	interrupted := strings.HasPrefix(content, "模型连接中断") || strings.HasPrefix(content, "请求已取消")
+	if interrupted && len(extras.ToolTrace) > 0 {
+		emit(AgentStreamEvent{Type: "status", Status: "summarizing"})
+		res := &agentLoopResult{Content: content, Pending: pending, Trace: extras.ToolTrace}
+		answer, err := s.streamFinalViaLLM(ctx, userID, clusterID, conversationID, message, res, emit)
+		if err != nil {
+			emit(AgentStreamEvent{Type: "error", Message: err.Error()})
+			return true, err
+		}
+		content = answer
+		_ = s.db.Model(&model.ChatMessage{}).Where("id = ? AND conversation_id = ?", last.ID, conversationID).Update("content", content).Error
+	} else if strings.HasPrefix(content, "❌ AI 请求失败") {
+		return false, nil
+	} else if err := streamContentDeltas(ctx, content, emit); err != nil {
+		return true, err
+	}
+	emit(AgentStreamEvent{Type: "done", Content: content, PendingActions: pending, ToolTrace: extras.ToolTrace, MessageID: last.ID})
+	return true, nil
 }
 
 // streamFinalViaLLM re-asks without tools for a true token stream when tools already ran.
@@ -115,33 +178,58 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 		{Role: "assistant", Content: toolDigest.String()},
 		{Role: "user", Content: "请仅基于以上工具结果用中文给出最终回答。规则：1) 资源名必须原样完整写出，禁止缩写/截断（如不要把 nginx-deployment-xxx 写成 ngi，不要把 kubernetes 写成 kube）；2) 若工具 meta 为 truncated=false 或 showing=total，必须列出全部名称，禁止说「列表被截断」；3) 不要编造未出现的资源；4) 不要再调用工具。"},
 	}
-	ch, err := s.llmClient.ChatStream(ctx, &llm.ChatRequest{Messages: messages, MaxTokens: 4096})
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for chunk := range ch {
-		select {
-		case <-ctx.Done():
-			return b.String(), ctx.Err()
-		default:
+	request := &llm.ChatRequest{Messages: messages, MaxTokens: 4096}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
-		if chunk.Content != "" {
-			b.WriteString(chunk.Content)
-			emit(AgentStreamEvent{Type: "content_delta", Delta: chunk.Content})
+		ch, err := s.llmClient.ChatStream(ctx, request)
+		if err == nil {
+			var b strings.Builder
+			completed := false
+			for chunk := range ch {
+				if chunk.Error != "" {
+					err = fmt.Errorf("%s", chunk.Error)
+					break
+				}
+				b.WriteString(chunk.Content)
+				if chunk.Done {
+					completed = true
+					break
+				}
+			}
+			if err == nil && !completed {
+				err = fmt.Errorf("LLM stream ended before completion")
+			}
+			if err == nil && strings.TrimSpace(b.String()) == "" {
+				err = fmt.Errorf("empty stream")
+			}
+			if err == nil {
+				out := strings.TrimSpace(b.String())
+				if len(res.Pending) > 0 {
+					out = stripFakeAgentActionBlocks(out)
+				}
+				if streamErr := streamContentDeltas(ctx, out, emit); streamErr != nil {
+					return "", streamErr
+				}
+				return out, nil
+			}
 		}
-		if chunk.Done {
+		lastErr = err
+		if attempt == 2 || (!isTransientAgentFailure(err.Error()) && !strings.Contains(err.Error(), "stream ended")) {
 			break
 		}
+		emit(AgentStreamEvent{Type: "status", Status: "retrying_stream"})
+		timer := time.NewTimer(time.Duration(250<<attempt) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
 	}
-	out := strings.TrimSpace(b.String())
-	if out == "" {
-		return "", fmt.Errorf("empty stream")
-	}
-	if len(res.Pending) > 0 {
-		out = stripFakeAgentActionBlocks(out)
-	}
-	return out, nil
+	return "", lastErr
 }
 
 func streamContentDeltas(ctx context.Context, content string, emit agentEmitFunc) error {
@@ -238,7 +326,8 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	}
 
 	messages := []llm.Message{{Role: "system", Content: system}}
-	messages = append(messages, s.buildAgentMemoryMessages(conversationID, message)...)
+	memoryMessages, memoryHits := s.buildStructuredMemoryMessages(userID, clusterID, conversationID, message)
+	messages = append(messages, memoryMessages...)
 	messages = append(messages, llm.Message{Role: "user", Content: message})
 
 	tools := agentToolDefinitions()
@@ -251,6 +340,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	var finalContent string
 	var totalUsage llm.Usage
 	nudgeUsed := false
+	repairCounts := map[string]int{}
 	mountNudgeCount := 0
 	consecutiveNoToolRounds := 0 // 动态轮次：连续无工具调用轮次计数
 	for round := 0; round < agentMaxToolRounds; round++ {
@@ -262,7 +352,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				finalContent = "请求已取消；已保留此前工具结果。"
 			}
 			if finalContent != "" || len(trace) > 0 || len(pending) > 0 {
-				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
+				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage, MemoryHits: memoryHits}, nil
 			}
 			return nil, err
 		}
@@ -288,11 +378,16 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			MaxTokens: 4096,
 		})
 		if err != nil {
+			// Keep already executed tool results available to the user. A retry of
+			// the turn can then use the same conversation without silently losing it.
+			if len(trace) > 0 || len(pending) > 0 {
+				return &agentLoopResult{Content: "模型连接中断；本轮已完成的工具结果已保留，请点击「重试本轮」继续。错误：" + err.Error(), Pending: pending, Trace: trace, Usage: totalUsage, MemoryHits: memoryHits}, nil
+			}
 			return nil, fmt.Errorf("LLM chat failed: %w", err)
 		}
-			totalUsage.PromptTokens += resp.Usage.PromptTokens
-			totalUsage.CompletionTokens += resp.Usage.CompletionTokens
-			totalUsage.TotalTokens += resp.Usage.TotalTokens
+		totalUsage.PromptTokens += resp.Usage.PromptTokens
+		totalUsage.CompletionTokens += resp.Usage.CompletionTokens
+		totalUsage.TotalTokens += resp.Usage.TotalTokens
 
 		if len(resp.ToolCalls) == 0 {
 			finalContent = resp.Content
@@ -371,10 +466,12 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 						emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
 					}
 					started := time.Now()
-					exec := s.executeAgentTool(gCtx, userID, clusterID, conversationID, name, args)
+					exec := retryAgentTool(gCtx, name, func() toolExecResult {
+						return s.executeAgentTool(gCtx, userID, clusterID, conversationID, name, args)
+					})
 					item := ToolTraceItem{
 						Name:       name,
-						Args:       truncateRunes(args, 500),
+						Args:       truncateRunes(args, 8192),
 						Result:     truncateRunes(exec.Content, toolResultMaxChars),
 						IsError:    exec.IsError,
 						DurationMs: time.Since(started).Milliseconds(),
@@ -402,7 +499,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				if finalContent == "" {
 					finalContent = "请求已取消；已保留此前工具结果。"
 				}
-				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
+				return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage, MemoryHits: memoryHits}, nil
 			}
 			tc := resp.ToolCalls[idx]
 			name := tc.Function.Name
@@ -414,7 +511,9 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
 			}
 			started := time.Now()
-			exec := s.executeAgentTool(chatCtx, userID, clusterID, conversationID, name, args)
+			exec := retryAgentTool(chatCtx, name, func() toolExecResult {
+				return s.executeAgentTool(chatCtx, userID, clusterID, conversationID, name, args)
+			})
 			item := ToolTraceItem{
 				Name:       name,
 				Args:       truncateRunes(args, 500),
@@ -439,6 +538,24 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		for _, r := range results {
 			if r.Exec == nil {
 				continue
+			}
+			if r.Exec.IsError && (r.Item.Name == "stage_mutation" || r.Item.Name == "stage_mutations" || r.Item.Name == "propose_mutation") {
+				key := r.Item.Name
+				var identity struct {
+					Action    string `json:"action"`
+					Namespace string `json:"namespace"`
+					Name      string `json:"name"`
+				}
+				if json.Unmarshal([]byte(r.ToolCall.Function.Arguments), &identity) == nil {
+					key = identity.Action + ":" + identity.Namespace + "/" + identity.Name
+				}
+				repairCounts[key]++
+				if repairCounts[key] <= 2 {
+					r.Exec.Content += "\n[修正提示] 集群尚未变更。若是 YAML/参数校验错误，请根据上述原始错误修正并重新预览；不要原样重试。"
+				} else {
+					r.Exec.Content += "\n[修正上限] 该资源已失败三次，请停止尝试，向用户说明原始错误与所需信息。"
+				}
+				r.Item.Result = truncateRunes(r.Exec.Content, toolResultMaxChars)
 			}
 			trace = append(trace, r.Item)
 			if len(r.Exec.PendingList) > 0 {
@@ -479,7 +596,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 	pending = s.dropIncompleteMountDeployments(message, pending)
 	s.persistTokenUsage(userID, conversationID, totalUsage, "agent")
 
-	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage}, nil
+	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage, MemoryHits: memoryHits}, nil
 }
 
 func mergePendingActions(existing []PendingActionInfo, incoming []PendingActionInfo) []PendingActionInfo {

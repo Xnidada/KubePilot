@@ -28,6 +28,7 @@ import AIDiagnosis from './pages/aiops/Diagnosis'
 import AISettings from './pages/aiops/Settings'
 import AIAgent from './pages/aiops/Agent'
 import AITools from './pages/aiops/AITools'
+import MemoryCenter from './pages/aiops/MemoryCenter'
 import SystemUsers from './pages/system/Users'
 import SystemUserGroups from './pages/system/UserGroups'
 import SystemRoles from './pages/system/Roles'
@@ -96,6 +97,7 @@ function App() {
         <Route path="aiops/agent" element={<AIAgent />} />
         <Route path="aiops/diagnosis" element={<AIDiagnosis />} />
         <Route path="aiops/tools" element={<AITools />} />
+        <Route path="aiops/memories" element={<MemoryCenter />} />
         <Route path="aiops/settings" element={<AISettings />} />
         <Route path="system/users" element={<SystemUsers />} />
         <Route path="system/user-groups" element={<SystemUserGroups />} />

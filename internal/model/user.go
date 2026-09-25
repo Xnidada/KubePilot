@@ -91,11 +91,76 @@ func (ChatMessage) TableName() string {
 	return "chat_messages"
 }
 
+// ConversationState is the compact, structured working state for an Agent
+// conversation. State is regenerated from completed turns; it is never a
+// source of truth for live Kubernetes state.
+type ConversationState struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	ConversationID uint      `json:"conversation_id" gorm:"uniqueIndex;not null"`
+	UserID         uint      `json:"user_id" gorm:"index;not null"`
+	ClusterID      uint      `json:"cluster_id" gorm:"index;not null"`
+	Goal           string    `json:"goal" gorm:"type:text"`
+	Entities       string    `json:"entities" gorm:"type:text"` // JSON
+	Facts          string    `json:"facts" gorm:"type:text"`    // JSON: source/confidence/TTL
+	OpenItems      string    `json:"open_items" gorm:"type:text"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (ConversationState) TableName() string { return "conversation_states" }
+
+// AgentMemory holds deliberately retained preferences and tool-verified
+// operational knowledge. It never stores raw logs, secrets, or tool payloads.
+type AgentMemory struct {
+	ID         uint           `json:"id" gorm:"primaryKey"`
+	UserID     uint           `json:"user_id" gorm:"index;not null"`
+	ClusterID  *uint          `json:"cluster_id" gorm:"index"`
+	Type       string         `json:"type" gorm:"size:32;index;not null"` // preference|verified_knowledge
+	Content    string         `json:"content" gorm:"type:text;not null"`
+	Source     string         `json:"source" gorm:"type:text"`
+	Confidence float64        `json:"confidence" gorm:"default:0.8"`
+	ExpiresAt  *time.Time     `json:"expires_at" gorm:"index"`
+	IsPinned   bool           `json:"is_pinned" gorm:"default:false"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+func (AgentMemory) TableName() string { return "agent_memories" }
+
+type AgentMemoryAudit struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	MemoryID  uint      `json:"memory_id" gorm:"index"`
+	ActorID   uint      `json:"actor_id" gorm:"index"`
+	Action    string    `json:"action" gorm:"size:32;not null"` // create|pin|forget
+	Detail    string    `json:"detail" gorm:"type:text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (AgentMemoryAudit) TableName() string { return "agent_memory_audits" }
+
+// AgentRunMetric measures context quality and cost per completed Agent turn.
+type AgentRunMetric struct {
+	ID                uint      `json:"id" gorm:"primaryKey"`
+	UserID            uint      `json:"user_id" gorm:"index"`
+	ConversationID    uint      `json:"conversation_id" gorm:"index"`
+	ClusterID         uint      `json:"cluster_id" gorm:"index"`
+	PromptTokens      int       `json:"prompt_tokens"`
+	ToolCount         int       `json:"tool_count"`
+	RepeatedToolCalls int       `json:"repeated_tool_calls"`
+	MemoryHits        int       `json:"memory_hits"`
+	UserCorrection    bool      `json:"user_correction"`
+	ErrorAssertion    bool      `json:"error_assertion"`
+	LatencyMs         int64     `json:"latency_ms"`
+	CreatedAt         time.Time `json:"created_at" gorm:"index"`
+}
+
+func (AgentRunMetric) TableName() string { return "agent_run_metrics" }
+
 // AgentAction Agent执行的动作
 type AgentAction struct {
 	ID             uint       `json:"id" gorm:"primaryKey"`
 	UserID         uint       `json:"user_id" gorm:"index"`
-	ConversationID *uint      `json:"conversation_id" gorm:"index"` // optional; staged actions may have no chat
+	ConversationID *uint      `json:"conversation_id" gorm:"index"`        // optional; staged actions may have no chat
 	ActionType     string     `json:"action_type" gorm:"size:20;not null"` // query, create, update, delete, scale
 	ResourceType   string     `json:"resource_type" gorm:"size:64;not null"`
 	ResourceName   string     `json:"resource_name" gorm:"size:128"`
@@ -148,19 +213,19 @@ func (TokenUsageLog) TableName() string {
 
 // LLMConfig LLM配置
 type LLMConfig struct {
-	ID          uint      `json:"id" gorm:"primaryKey"`
-	Provider    string    `json:"provider" gorm:"size:20;not null;default:'openai'"` // openai, anthropic
-	APIKey      string    `json:"api_key" gorm:"type:text"`
-	BaseURL     string    `json:"base_url" gorm:"size:256"`
-	Model       string    `json:"model" gorm:"size:64"`
-	Temperature float64   `json:"temperature" gorm:"default:0.7"`
-	MaxTokens   int       `json:"max_tokens" gorm:"default:2048"`
-	Timeout     int       `json:"timeout" gorm:"default:120"`
-	IsActive    bool      `json:"is_active" gorm:"default:true"`
+	ID              uint      `json:"id" gorm:"primaryKey"`
+	Provider        string    `json:"provider" gorm:"size:20;not null;default:'openai'"` // openai, anthropic
+	APIKey          string    `json:"api_key" gorm:"type:text"`
+	BaseURL         string    `json:"base_url" gorm:"size:256"`
+	Model           string    `json:"model" gorm:"size:64"`
+	Temperature     float64   `json:"temperature" gorm:"default:0.7"`
+	MaxTokens       int       `json:"max_tokens" gorm:"default:2048"`
+	Timeout         int       `json:"timeout" gorm:"default:120"`
+	IsActive        bool      `json:"is_active" gorm:"default:true"`
 	InputPricePerM  float64   `json:"input_price_per_m" gorm:"default:2.5"`   // 输入单价 $/1M tokens
 	OutputPricePerM float64   `json:"output_price_per_m" gorm:"default:10.0"` // 输出单价 $/1M tokens
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func (LLMConfig) TableName() string {

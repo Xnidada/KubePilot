@@ -32,6 +32,7 @@ const menuModuleMap: Record<string, string> = {
   '/aiops/agent': 'aiops',
   '/aiops/diagnosis': 'aiops',
   '/aiops/tools': 'aiops',
+  '/aiops/memories': 'aiops',
   '/aiops/settings': 'aiops',
   '/scheduler': 'scheduler',
   '/scheduler/tasks': 'scheduler',
@@ -258,6 +259,10 @@ const menuItems: MenuProps['items'] = [
         label: 'AI 工具箱',
       },
       {
+        key: '/aiops/memories',
+        label: '记忆中心',
+      },
+      {
         key: '/aiops/settings',
         label: 'AI 设置',
       },
@@ -320,6 +325,7 @@ const menuPermissionMap: Record<string, { resource: string; action: string }> = 
   '/aiops/agent': { resource: 'aiops', action: 'view' },
   '/aiops/diagnosis': { resource: 'aiops', action: 'view' },
   '/aiops/tools': { resource: 'aiops', action: 'view' },
+  '/aiops/memories': { resource: 'aiops', action: 'view' },
   '/aiops/settings': { resource: 'aiops_config', action: 'view' },
   '/scheduler': { resource: 'scheduler', action: 'view' },
   '/cluster/inspection': { resource: 'inspection', action: 'view' },

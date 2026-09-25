@@ -178,8 +178,8 @@ const AISettings: React.FC = () => {
         if (values.temperature) updateData.temperature = values.temperature
         if (values.max_tokens) updateData.max_tokens = values.max_tokens
         if (values.timeout) updateData.timeout = values.timeout
-        if (values.input_price_per_m) updateData.input_price_per_m = values.input_price_per_m
-        if (values.output_price_per_m) updateData.output_price_per_m = values.output_price_per_m
+        if (values.input_price_per_m !== undefined) updateData.input_price_per_m = values.input_price_per_m
+        if (values.output_price_per_m !== undefined) updateData.output_price_per_m = values.output_price_per_m
 
         await updateLLMConfig(selectedConfig.id, updateData)
         message.success('配置更新成功')
@@ -346,9 +346,10 @@ const AISettings: React.FC = () => {
               编辑
             </Button>
           )}
-          {canDelete && !record.is_active && (
+          {canDelete && (
             <Popconfirm
-              title="确定删除此配置？"
+              title={record.is_active ? '确定删除默认配置？系统将自动启用另一条配置。' : '确定删除此配置？'}
+              description={record.is_active ? '若这是唯一配置，则无法删除。' : undefined}
               onConfirm={() => handleDelete(record.id)}
             >
               <Button type="link" danger icon={<DeleteOutlined />}>

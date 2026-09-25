@@ -4,6 +4,7 @@ export interface AgentChatRequest {
   cluster_id: number
   conversation_id?: number
   message: string
+  retry?: boolean
   context?: any
 }
 
@@ -118,6 +119,13 @@ export const cancelPendingActions = (conversationId: number, actionIds?: number[
   })
 }
 
+export const retryAgentQuery = (data: {
+  cluster_id: number
+  conversation_id: number
+  name: string
+  args: string
+}) => post<ApiResult<ToolTraceItem>>('/aiops/agent/retry-read-tool', data)
+
 function getAuthToken(): string {
   const raw = localStorage.getItem('auth-storage')
   if (!raw) return ''
@@ -162,6 +170,7 @@ export async function agentChatStream(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  let completed = false
 
   while (true) {
     const { done, value } = await reader.read()
@@ -177,12 +186,16 @@ export async function agentChatStream(
       if (!line) continue
       const raw = line.replace(/^data:\s*/, '')
       if (!raw || raw === '[DONE]') continue
+      let ev: AgentStreamEvent
       try {
-        const ev = JSON.parse(raw) as AgentStreamEvent
-        onEvent(ev)
+        ev = JSON.parse(raw) as AgentStreamEvent
       } catch {
         /* skip malformed */
+        continue
       }
+      onEvent(ev)
+      if (ev.type === 'done') completed = true
     }
   }
+  if (!completed) throw new Error('Agent 响应流中断，未收到完成标记')
 }

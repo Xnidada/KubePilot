@@ -1389,6 +1389,8 @@ const agentSystemPrompt = `你是 KubePilot AI Agent，只能通过【原生工�
 15. 用户要求「挂载/hostPath/本地目录/网页主目录/日志目录」时：create_deployment 必须传 host_path_mounts（host_path + mount_path 均为绝对路径）。示例：host_path=/opt/nginx/html → mount_path=/usr/share/nginx/html；host_path=/opt/nginx/log → mount_path=/var/log/nginx。禁止只口头承诺挂载却省略该字段；dry-run 必须出现 hostPath.path。nginx/nginx:latest 可写，平台会规范为 nginx:1.25.4。
 16. 复杂需求（如同时创建 Deployment+Service+ConfigMap+Ingress）时，请分解为多步工具调用，每步完成后再继续下一步。工具调用轮次上限为 15，足够完成复杂操作。
 17. 当 stage_mutation 的参数化 action 无法覆盖用户需求（如自定义 CRD、多端口 Service、带 initContainer 的 Pod、StatefulSet 等）时，使用 action=apply_yaml 并传 yaml 字段。apply_yaml 支持任意 Kubernetes YAML，同样需要用户确认后才会执行。
+18. stage_mutation/propose_mutation 的 dry-run 错误表示集群尚未变更。若是 YAML 语法、字段、类型或缺少必填项，结合 API 返回的精确错误修正 YAML 后重新调用工具，最多修正两次；仍失败就引用原始错误并说明需要用户补充什么，禁止谎称成功。权限不足、冲突或用户意图不明确时不要擅自更改资源目标。
+19. 确认执行后的失败不能自动修改用户已批准的 YAML；必须重新预览修正版本并再次让用户确认。
 
 ## 工具
 - 查询：list_resources / get_resource / get_events / get_pod_logs / describe_resource

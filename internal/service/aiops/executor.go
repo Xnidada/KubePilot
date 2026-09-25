@@ -2,7 +2,9 @@ package aiops
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -140,11 +142,10 @@ func (s *Service) ExecuteDeleteDeployment(ctx context.Context, clusterID uint, n
 	// 先检查是否存在
 	_, err = client.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		// 不存在则返回成功
-		return &ExecuteResult{
-			Success: true,
-			Message: fmt.Sprintf("Deployment %s 不存在或已被删除", name),
-		}, nil
+		if apierrors.IsNotFound(err) {
+			return &ExecuteResult{Success: true, Message: fmt.Sprintf("Deployment %s 不存在或已被删除", name)}, nil
+		}
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("获取 Deployment 失败: %v", err)}, nil
 	}
 
 	err = client.Clientset.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{})
@@ -171,11 +172,10 @@ func (s *Service) ExecuteDeleteService(ctx context.Context, clusterID uint, name
 	// 先检查是否存在
 	_, err = client.Clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		// 不存在则返回成功
-		return &ExecuteResult{
-			Success: true,
-			Message: fmt.Sprintf("Service %s 不存在或已被删除", name),
-		}, nil
+		if apierrors.IsNotFound(err) {
+			return &ExecuteResult{Success: true, Message: fmt.Sprintf("Service %s 不存在或已被删除", name)}, nil
+		}
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("获取 Service 失败: %v", err)}, nil
 	}
 
 	err = client.Clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{})
@@ -714,115 +714,154 @@ func (s *Service) ExecuteApplyYAML(ctx context.Context, clusterID uint, params S
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-
-	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(params.YAML), 4096)
+	resources, err := parseYAMLResources(client, params)
+	if err != nil {
+		return &ExecuteResult{Success: false, Message: err.Error()}, nil
+	}
+	dynClient, err := dynamic.NewForConfig(client.Config)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic client 创建失败: %w", err)
+	}
 	var results []string
-	for {
-		raw := unstructured.Unstructured{}
-		if err := decoder.Decode(&raw); err != nil {
-			if strings.Contains(err.Error(), "EOF") {
-				break
-			}
-			return &ExecuteResult{Success: false, Message: fmt.Sprintf("YAML 解析失败: %v", err)}, nil
-		}
-		if len(raw.Object) == 0 {
-			continue
-		}
-		gvk := raw.GroupVersionKind()
-		ns := raw.GetNamespace()
-		if ns == "" {
-			ns = params.Namespace
-			raw.SetNamespace(ns)
-		}
+	allSucceeded := true
+	for _, resource := range resources {
+		dynRes := resource.client(dynClient)
+		raw := resource.Object.DeepCopy()
 		name := raw.GetName()
-
-		// Map GVK to GVR using discovery
-		gvr, err := gvkToGVR(client, gvk)
-		if err != nil {
-			results = append(results, fmt.Sprintf("%s %s/%s: GVR 映射失败: %v", gvk.Kind, ns, name, err))
-			continue
-		}
-
-		dynClient, err := dynamic.NewForConfig(client.Config)
-		if err != nil {
-			results = append(results, fmt.Sprintf("%s %s/%s: dynamic client 创建失败: %v", gvk.Kind, ns, name, err))
-			continue
-		}
-
-		var dynRes dynamic.ResourceInterface
-		dynRes = dynClient.Resource(gvr)
-		if ns != "" {
-			dynRes = dynClient.Resource(gvr).Namespace(ns)
-		}
-
-	_, err = dynRes.Create(ctx, &raw, metav1.CreateOptions{})
+		label := fmt.Sprintf("%s %s/%s", raw.GetKind(), raw.GetNamespace(), name)
+		_, err = dynRes.Create(ctx, raw, metav1.CreateOptions{FieldValidation: "Strict"})
 		if err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				// Try update
 				existing, getErr := dynRes.Get(ctx, name, metav1.GetOptions{})
 				if getErr != nil {
-					results = append(results, fmt.Sprintf("%s %s/%s: 已存在但获取失败: %v", gvk.Kind, ns, name, getErr))
+					results = append(results, fmt.Sprintf("%s: 已存在但获取失败: %v", label, getErr))
+					allSucceeded = false
 					continue
 				}
 				raw.SetResourceVersion(existing.GetResourceVersion())
-				if _, updateErr := dynRes.Update(ctx, &raw, metav1.UpdateOptions{}); updateErr != nil {
-					results = append(results, fmt.Sprintf("%s %s/%s: 更新失败: %v", gvk.Kind, ns, name, updateErr))
+				if _, updateErr := dynRes.Update(ctx, raw, metav1.UpdateOptions{FieldValidation: "Strict"}); updateErr != nil {
+					results = append(results, fmt.Sprintf("%s: 更新失败: %v", label, updateErr))
+					allSucceeded = false
 					continue
 				}
-				results = append(results, fmt.Sprintf("%s %s/%s: 更新成功", gvk.Kind, ns, name))
+				results = append(results, label+": 更新成功")
 			} else {
-				results = append(results, fmt.Sprintf("%s %s/%s: 创建失败: %v", gvk.Kind, ns, name, err))
+				results = append(results, fmt.Sprintf("%s: 创建失败: %v", label, err))
+				allSucceeded = false
 			}
 			continue
 		}
-		results = append(results, fmt.Sprintf("%s %s/%s: 创建成功", gvk.Kind, ns, name))
+		results = append(results, label+": 创建成功")
 	}
-
-	if len(results) == 0 {
-		return &ExecuteResult{Success: false, Message: "YAML 中无有效资源"}, nil
-	}
-	return &ExecuteResult{Success: true, Message: strings.Join(results, "\n")}, nil
+	return &ExecuteResult{Success: allSucceeded, Message: strings.Join(results, "\n")}, nil
 }
 
-// gvkToGVR maps a GroupVersionKind to GroupVersionResource using the discovery client
-func gvkToGVR(client *k8s.ClusterClient, gvk schema.GroupVersionKind) (schema.GroupVersionResource, error) {
+type yamlResource struct {
+	Object     *unstructured.Unstructured
+	GVR        schema.GroupVersionResource
+	Namespaced bool
+}
+
+func (r yamlResource) client(dynClient dynamic.Interface) dynamic.ResourceInterface {
+	if r.Namespaced {
+		return dynClient.Resource(r.GVR).Namespace(r.Object.GetNamespace())
+	}
+	return dynClient.Resource(r.GVR)
+}
+
+// gvkToGVR maps a GVK and its namespace scope using discovery.
+func gvkToGVR(client *k8s.ClusterClient, gvk schema.GroupVersionKind) (schema.GroupVersionResource, bool, error) {
 	resources, err := client.Discovery.ServerResourcesForGroupVersion(gvk.GroupVersion().String())
 	if err != nil {
-		return schema.GroupVersionResource{}, fmt.Errorf("discovery failed for %s: %w", gvk.GroupVersion().String(), err)
+		return schema.GroupVersionResource{}, false, fmt.Errorf("discovery failed for %s: %w", gvk.GroupVersion().String(), err)
 	}
 	for _, r := range resources.APIResources {
-		if r.Kind == gvk.Kind {
-			return gvk.GroupVersion().WithResource(r.Name), nil
+		if r.Kind == gvk.Kind && !strings.Contains(r.Name, "/") {
+			return gvk.GroupVersion().WithResource(r.Name), r.Namespaced, nil
 		}
 	}
-	return schema.GroupVersionResource{}, fmt.Errorf("resource %s not found in group %s", gvk.Kind, gvk.GroupVersion().String())
+	return schema.GroupVersionResource{}, false, fmt.Errorf("resource %s not found in group %s", gvk.Kind, gvk.GroupVersion().String())
 }
 
-// dryRunApplyYAML validates YAML manifests and returns a preview
-func (s *Service) dryRunApplyYAML(ctx context.Context, clusterID uint, params StagedActionParams) (string, error) {
+func parseYAMLResources(client *k8s.ClusterClient, params StagedActionParams) ([]yamlResource, error) {
 	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(params.YAML), 4096)
-	var manifests []string
+	var resources []yamlResource
 	for {
 		raw := unstructured.Unstructured{}
 		if err := decoder.Decode(&raw); err != nil {
-			if strings.Contains(err.Error(), "EOF") {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			return "", fmt.Errorf("YAML 解析失败: %v", err)
+			return nil, fmt.Errorf("YAML 解析失败（请检查 apiVersion、kind、metadata.name 和缩进）: %w", err)
 		}
 		if len(raw.Object) == 0 {
 			continue
 		}
 		gvk := raw.GroupVersionKind()
-		ns := raw.GetNamespace()
-		if ns == "" {
-			ns = params.Namespace
+		if gvk.Version == "" || gvk.Kind == "" || raw.GetName() == "" {
+			return nil, fmt.Errorf("YAML 第 %d 个资源缺少 apiVersion、kind 或 metadata.name", len(resources)+1)
 		}
-		name := raw.GetName()
-		manifests = append(manifests, fmt.Sprintf("- %s %s/%s", gvk.Kind, ns, name))
+		gvr, namespaced, err := gvkToGVR(client, gvk)
+		if err != nil {
+			return nil, fmt.Errorf("YAML %s/%s: %w", gvk.Kind, raw.GetName(), err)
+		}
+		if namespaced {
+			ns := raw.GetNamespace()
+			if ns == "" {
+				ns = params.Namespace
+			}
+			if ns == "" || ns == "*" || ns != params.Namespace {
+				return nil, fmt.Errorf("YAML %s/%s 命名空间 %q 与已授权的 %q 不一致", gvk.Kind, raw.GetName(), ns, params.Namespace)
+			}
+			raw.SetNamespace(ns)
+		} else if params.Namespace != "*" {
+			return nil, fmt.Errorf("YAML %s/%s 是集群级资源，需要集群级授权（namespace=*）", gvk.Kind, raw.GetName())
+		} else {
+			raw.SetNamespace("")
+		}
+		resources = append(resources, yamlResource{Object: &raw, GVR: gvr, Namespaced: namespaced})
 	}
-	if len(manifests) == 0 {
-		return "", fmt.Errorf("YAML 中无有效资源")
+	if len(resources) == 0 {
+		return nil, fmt.Errorf("YAML 中无有效资源")
+	}
+	return resources, nil
+}
+
+// dryRunApplyYAML uses the API server to validate every manifest before staging.
+func (s *Service) dryRunApplyYAML(ctx context.Context, clusterID uint, params StagedActionParams) (string, error) {
+	client, err := k8s.Manager.GetClient(clusterID)
+	if err != nil {
+		return "", fmt.Errorf("cluster not connected: %w", err)
+	}
+	resources, err := parseYAMLResources(client, params)
+	if err != nil {
+		return "", err
+	}
+	dynClient, err := dynamic.NewForConfig(client.Config)
+	if err != nil {
+		return "", fmt.Errorf("dynamic client 创建失败: %w", err)
+	}
+	var manifests []string
+	for _, resource := range resources {
+		raw := resource.Object.DeepCopy()
+		label := fmt.Sprintf("%s %s/%s", raw.GetKind(), raw.GetNamespace(), raw.GetName())
+		dynRes := resource.client(dynClient)
+		_, err := dynRes.Create(ctx, raw, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"})
+		operation := "CREATE"
+		if apierrors.IsAlreadyExists(err) {
+			existing, getErr := dynRes.Get(ctx, raw.GetName(), metav1.GetOptions{})
+			if getErr != nil {
+				return "", fmt.Errorf("%s 已存在，但无法读取以校验更新: %w", label, getErr)
+			}
+			raw.SetResourceVersion(existing.GetResourceVersion())
+			_, err = dynRes.Update(ctx, raw, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"})
+			operation = "UPDATE"
+		}
+		if err != nil {
+			return "", fmt.Errorf("%s 服务端 dry-run %s 失败: %w", label, operation, err)
+		}
+		manifests = append(manifests, fmt.Sprintf("- %s %s", operation, label))
 	}
 	return fmt.Sprintf("[dry-run] APPLY YAML\n  resources:\n%s\nserver_dry_run: ok", strings.Join(manifests, "\n")), nil
 }

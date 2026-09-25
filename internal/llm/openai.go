@@ -194,8 +194,10 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				if err != io.EOF {
-					ch <- StreamChunk{Content: "", Done: true}
+				if err == io.EOF {
+					ch <- StreamChunk{Error: "LLM stream ended before [DONE]"}
+				} else {
+					ch <- StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)}
 				}
 				break
 			}

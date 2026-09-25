@@ -239,16 +239,18 @@ func (h *Handler) ListLLMConfigs(c *gin.Context) {
 	result := make([]gin.H, 0, len(configs))
 	for _, cfg := range configs {
 		result = append(result, gin.H{
-			"id":          cfg.ID,
-			"provider":    cfg.Provider,
-			"api_key":     maskAPIKey(cfg.APIKey),
-			"base_url":    cfg.BaseURL,
-			"model":       cfg.Model,
-			"temperature": cfg.Temperature,
-			"max_tokens":  cfg.MaxTokens,
-			"timeout":     cfg.Timeout,
-			"is_active":   cfg.IsActive,
-			"created_at":  cfg.CreatedAt,
+			"id":                 cfg.ID,
+			"provider":           cfg.Provider,
+			"api_key":            maskAPIKey(cfg.APIKey),
+			"base_url":           cfg.BaseURL,
+			"model":              cfg.Model,
+			"temperature":        cfg.Temperature,
+			"max_tokens":         cfg.MaxTokens,
+			"timeout":            cfg.Timeout,
+			"input_price_per_m":  cfg.InputPricePerM,
+			"output_price_per_m": cfg.OutputPricePerM,
+			"is_active":          cfg.IsActive,
+			"created_at":         cfg.CreatedAt,
 		})
 	}
 
@@ -273,15 +275,17 @@ func (h *Handler) GetLLMConfig(c *gin.Context) {
 	maskedKey := maskAPIKey(config.APIKey)
 
 	response.Success(c, gin.H{
-		"configured":  true,
-		"id":          config.ID,
-		"provider":    config.Provider,
-		"api_key":     maskedKey,
-		"base_url":    config.BaseURL,
-		"model":       config.Model,
-		"temperature": config.Temperature,
-		"max_tokens":  config.MaxTokens,
-		"timeout":     config.Timeout,
+		"configured":         true,
+		"id":                 config.ID,
+		"provider":           config.Provider,
+		"api_key":            maskedKey,
+		"base_url":           config.BaseURL,
+		"model":              config.Model,
+		"temperature":        config.Temperature,
+		"max_tokens":         config.MaxTokens,
+		"timeout":            config.Timeout,
+		"input_price_per_m":  config.InputPricePerM,
+		"output_price_per_m": config.OutputPricePerM,
 	})
 }
 
@@ -296,30 +300,32 @@ func (h *Handler) GetLLMConfigByID(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"id":          config.ID,
-		"provider":    config.Provider,
-		"api_key":     maskAPIKey(config.APIKey),
-		"base_url":    config.BaseURL,
-		"model":       config.Model,
-		"temperature": config.Temperature,
-		"max_tokens":  config.MaxTokens,
-		"timeout":     config.Timeout,
-		"is_active":   config.IsActive,
+		"id":                 config.ID,
+		"provider":           config.Provider,
+		"api_key":            maskAPIKey(config.APIKey),
+		"base_url":           config.BaseURL,
+		"model":              config.Model,
+		"temperature":        config.Temperature,
+		"max_tokens":         config.MaxTokens,
+		"timeout":            config.Timeout,
+		"is_active":          config.IsActive,
+		"input_price_per_m":  config.InputPricePerM,
+		"output_price_per_m": config.OutputPricePerM,
 	})
 }
 
 // SaveLLMConfig 保存LLM配置
 func (h *Handler) SaveLLMConfig(c *gin.Context) {
 	var req struct {
-		Provider    string  `json:"provider" binding:"required"`
-		APIKey      string  `json:"api_key" binding:"required"`
-		BaseURL     string  `json:"base_url"`
-		Model       string  `json:"model" binding:"required"`
-		Temperature float64 `json:"temperature"`
-		MaxTokens   int     `json:"max_tokens"`
-		Timeout     int     `json:"timeout"`
-			InputPricePerM  float64 `json:"input_price_per_m"`
-			OutputPricePerM float64 `json:"output_price_per_m"`
+		Provider        string  `json:"provider" binding:"required"`
+		APIKey          string  `json:"api_key" binding:"required"`
+		BaseURL         string  `json:"base_url"`
+		Model           string  `json:"model" binding:"required"`
+		Temperature     float64 `json:"temperature"`
+		MaxTokens       int     `json:"max_tokens"`
+		Timeout         int     `json:"timeout"`
+		InputPricePerM  float64 `json:"input_price_per_m"`
+		OutputPricePerM float64 `json:"output_price_per_m"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -379,16 +385,16 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 
 	// 创建新配置
 	config := model.LLMConfig{
-		Provider:    req.Provider,
-		APIKey:      req.APIKey,
-		BaseURL:     req.BaseURL,
-		Model:       req.Model,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Timeout:     req.Timeout,
-		IsActive:    true,
-			InputPricePerM:  req.InputPricePerM,
-			OutputPricePerM: req.OutputPricePerM,
+		Provider:        req.Provider,
+		APIKey:          req.APIKey,
+		BaseURL:         req.BaseURL,
+		Model:           req.Model,
+		Temperature:     req.Temperature,
+		MaxTokens:       req.MaxTokens,
+		Timeout:         req.Timeout,
+		IsActive:        true,
+		InputPricePerM:  req.InputPricePerM,
+		OutputPricePerM: req.OutputPricePerM,
 	}
 
 	if err := h.db.Create(&config).Error; err != nil {
@@ -427,14 +433,14 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	}
 
 	var req struct {
-		APIKey      string  `json:"api_key"`
-		BaseURL     string  `json:"base_url"`
-		Model       string  `json:"model"`
-		Temperature float64 `json:"temperature"`
-		MaxTokens   int     `json:"max_tokens"`
-		Timeout     int     `json:"timeout"`
-			InputPricePerM  float64 `json:"input_price_per_m"`
-			OutputPricePerM float64 `json:"output_price_per_m"`
+		APIKey          string   `json:"api_key"`
+		BaseURL         string   `json:"base_url"`
+		Model           string   `json:"model"`
+		Temperature     float64  `json:"temperature"`
+		MaxTokens       int      `json:"max_tokens"`
+		Timeout         int      `json:"timeout"`
+		InputPricePerM  *float64 `json:"input_price_per_m"`
+		OutputPricePerM *float64 `json:"output_price_per_m"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -461,11 +467,11 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	if req.Timeout > 0 {
 		config.Timeout = req.Timeout
 	}
-	if req.InputPricePerM > 0 {
-		config.InputPricePerM = req.InputPricePerM
+	if req.InputPricePerM != nil {
+		config.InputPricePerM = *req.InputPricePerM
 	}
-	if req.OutputPricePerM > 0 {
-		config.OutputPricePerM = req.OutputPricePerM
+	if req.OutputPricePerM != nil {
+		config.OutputPricePerM = *req.OutputPricePerM
 	}
 
 	if err := h.db.Save(&config).Error; err != nil {
@@ -499,14 +505,48 @@ func (h *Handler) DeleteLLMConfig(c *gin.Context) {
 		return
 	}
 
+	var replacement model.LLMConfig
 	if config.IsActive {
-		response.BadRequest(c, "cannot delete active config. Set another config as default first")
+		// Keep an active runtime configuration at all times. The replacement is
+		// selected before deleting, then promoted atomically with the deletion.
+		if err := h.db.Where("id <> ?", config.ID).Order("id DESC").First(&replacement).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				response.BadRequest(c, "cannot delete the only LLM config; create another config first")
+				return
+			}
+			response.InternalError(c, "failed to select replacement config")
+			return
+		}
+	}
+
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if config.IsActive {
+			if err := tx.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&replacement).Update("is_active", true).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Delete(&config).Error
+	}); err != nil {
+		response.InternalError(c, "failed to delete config")
 		return
 	}
 
-	if err := h.db.Delete(&config).Error; err != nil {
-		response.InternalError(c, "failed to delete config")
-		return
+	if config.IsActive && h.service != nil {
+		if err := h.service.UpdateConfig(&llm.LLMConfig{
+			Provider:    llm.LLMProvider(replacement.Provider),
+			APIKey:      replacement.APIKey,
+			BaseURL:     replacement.BaseURL,
+			Model:       replacement.Model,
+			Temperature: replacement.Temperature,
+			MaxTokens:   replacement.MaxTokens,
+			Timeout:     replacement.Timeout,
+		}); err != nil {
+			response.InternalError(c, "config deleted but failed to activate replacement: "+err.Error())
+			return
+		}
 	}
 
 	response.SuccessWithMessage(c, "config deleted", nil)
@@ -653,6 +693,9 @@ func (h *Handler) AgentChat(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
 		return
 	}
+	if !h.validateAgentConversation(c, req.ConversationID, req.ClusterID) {
+		return
+	}
 
 	result, err := h.service.AgentChat(c.Request.Context(), userID.(uint), req.ClusterID, req.Message, req.ConversationID)
 	if err != nil {
@@ -676,12 +719,16 @@ func (h *Handler) AgentChatStream(c *gin.Context) {
 		Message        string `json:"message" binding:"required"`
 		ClusterID      uint   `json:"cluster_id" binding:"required"`
 		ConversationID uint   `json:"conversation_id"`
+		Retry          bool   `json:"retry"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
+	if !h.validateAgentConversation(c, req.ConversationID, req.ClusterID) {
 		return
 	}
 
@@ -691,11 +738,39 @@ func (h *Handler) AgentChatStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	_ = h.service.AgentChatStream(c.Request.Context(), userID.(uint), req.ClusterID, req.ConversationID, req.Message, func(ev aiops.AgentStreamEvent) {
+	_ = h.service.AgentChatStream(c.Request.Context(), userID.(uint), req.ClusterID, req.ConversationID, req.Message, req.Retry, func(ev aiops.AgentStreamEvent) {
 		data, _ := json.Marshal(ev)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 		c.Writer.Flush()
 	})
+}
+
+// AgentRetryReadTool repeats one failed query without running an Agent turn.
+func (h *Handler) AgentRetryReadTool(c *gin.Context) {
+	if h.service == nil {
+		response.InternalError(c, "AI service not configured")
+		return
+	}
+	var req struct {
+		ClusterID      uint   `json:"cluster_id" binding:"required"`
+		ConversationID uint   `json:"conversation_id" binding:"required"`
+		Name           string `json:"name" binding:"required"`
+		Args           string `json:"args" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") || !h.validateAgentConversation(c, req.ConversationID, req.ClusterID) {
+		return
+	}
+	userID, _ := c.Get("user_id")
+	item, err := h.service.RetryAgentQuery(c.Request.Context(), userID.(uint), req.ClusterID, req.ConversationID, req.Name, req.Args)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, item)
 }
 
 // AgentListPending 列出会话下待确认写操作
@@ -776,7 +851,7 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.ExecuteStagedAction(c.Request.Context(), &action)
+	result, err := h.service.ExecuteStagedActionWithRetry(c.Request.Context(), &action)
 	if err != nil {
 		action.Status = "failed"
 		action.Result = err.Error()
@@ -820,20 +895,20 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	}
 
 	var req struct {
-		ClusterID      uint                   `json:"cluster_id" binding:"required"`
-		Action         string                 `json:"action" binding:"required"`
-		Namespace      string                 `json:"namespace"`
-		Name           string                 `json:"name"`
-		Image          string                 `json:"image"`
-		Replicas       int32                  `json:"replicas"`
-		Ports          []int32                `json:"ports"`
-		ServiceType    string                 `json:"service_type"`
-		Port           int32                  `json:"port"`
-		TargetPort     int32                  `json:"target_port"`
-		NodePort       int32                  `json:"node_port"`
-		Selector       map[string]string      `json:"selector"`
-		HostPathMounts []aiops.HostPathMount  `json:"host_path_mounts"`
-		ConversationID uint                   `json:"conversation_id"`
+		ClusterID      uint                  `json:"cluster_id" binding:"required"`
+		Action         string                `json:"action" binding:"required"`
+		Namespace      string                `json:"namespace"`
+		Name           string                `json:"name"`
+		Image          string                `json:"image"`
+		Replicas       int32                 `json:"replicas"`
+		Ports          []int32               `json:"ports"`
+		ServiceType    string                `json:"service_type"`
+		Port           int32                 `json:"port"`
+		TargetPort     int32                 `json:"target_port"`
+		NodePort       int32                 `json:"node_port"`
+		Selector       map[string]string     `json:"selector"`
+		HostPathMounts []aiops.HostPathMount `json:"host_path_mounts"`
+		ConversationID uint                  `json:"conversation_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())

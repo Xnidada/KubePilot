@@ -3,6 +3,7 @@ package aiops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"gorm.io/gorm"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -942,6 +944,20 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	if err != nil {
 		return nil, "", err
 	}
+	paramBytes, _ := json.Marshal(params)
+	if conversationID > 0 {
+		var existing model.AgentAction
+		err := s.db.Where("conversation_id = ? AND user_id = ? AND cluster_id = ? AND status = ? AND parameters = ?",
+			conversationID, userID, clusterID, "pending", string(paramBytes)).Order("id DESC").First(&existing).Error
+		if err == nil {
+			return &PendingActionInfo{ID: existing.ID, ActionID: existing.ID, Action: params.Action,
+				Name: params.Name, Namespace: params.Namespace, Description: existing.Description,
+				DryRun: existing.DryRunResult, NeedConfirm: true}, existing.DryRunResult, nil
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", fmt.Errorf("failed to check staged action: %w", err)
+		}
+	}
 	// Supersede earlier pending create for the same resource in this conversation.
 	if conversationID > 0 && (params.Action == "create_deployment" || params.Action == "create_service") {
 		_ = s.db.Model(&model.AgentAction{}).
@@ -949,7 +965,6 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 				conversationID, "pending", params.Action, params.Name, params.Namespace).
 			Update("status", "cancelled").Error
 	}
-	paramBytes, _ := json.Marshal(params)
 	desc := strings.TrimSpace(description)
 	if desc == "" {
 		desc = fmt.Sprintf("%s %s/%s", params.Action, params.Namespace, params.Name)
@@ -1032,7 +1047,7 @@ func (s *Service) toolStageMutations(ctx context.Context, userID, clusterID, con
 	}
 	b.WriteString(fmt.Sprintf("staged_ok=%d total=%d; confirm in UI\n", okCount, len(args.Items)))
 	res := toolExecResult{Content: truncateRunes(b.String(), toolResultMaxChars), PendingList: pendings}
-	if okCount == 0 {
+	if okCount < len(args.Items) {
 		res.IsError = true
 	} else if len(pendings) > 0 {
 		p := pendings[len(pendings)-1]
@@ -1077,6 +1092,7 @@ func (s *Service) toolDeleteByPrefix(ctx context.Context, userID, clusterID, con
 	var b strings.Builder
 	var pendings []PendingActionInfo
 	n := 0
+	hadError := false
 	for _, p := range pods.Items {
 		if !strings.HasPrefix(p.Name, prefix) {
 			continue
@@ -1088,6 +1104,7 @@ func (s *Service) toolDeleteByPrefix(ctx context.Context, userID, clusterID, con
 		params := StagedActionParams{Action: "delete_pod", Namespace: ns, Name: p.Name}
 		pending, dry, err := s.stageOneMutation(ctx, userID, clusterID, conversationID, params, "delete_by_prefix "+prefix)
 		if err != nil {
+			hadError = true
 			b.WriteString(fmt.Sprintf("skip %s: %s\n", p.Name, err.Error()))
 			continue
 		}
@@ -1099,7 +1116,7 @@ func (s *Service) toolDeleteByPrefix(ctx context.Context, userID, clusterID, con
 		return toolExecResult{Content: fmt.Sprintf("no pods matched prefix %q in ns %q\n%s", prefix, ns, listed.Content), IsError: true}
 	}
 	b.WriteString(fmt.Sprintf("staged_delete_count=%d prefix=%q ns=%q; confirm in UI\n", n, prefix, ns))
-	res := toolExecResult{Content: truncateRunes(b.String(), toolResultMaxChars), PendingList: pendings}
+	res := toolExecResult{Content: truncateRunes(b.String(), toolResultMaxChars), PendingList: pendings, IsError: hadError}
 	if len(pendings) > 0 {
 		p := pendings[len(pendings)-1]
 		res.Pending = &p

@@ -164,6 +164,17 @@ export const deleteLLMConfig = (id: number) => {
   return del(`/aiops/configs/${id}`)
 }
 
+export interface AgentMemory {
+  id: number; user_id: number; cluster_id?: number; type: 'preference' | 'verified_knowledge'
+  content: string; source: string; confidence: number; expires_at?: string; is_pinned: boolean; created_at: string
+}
+export interface MemoryMetrics { runs: number; avg_prompt_tokens: number; repeated_tool_call_rate: number; context_hit_rate: number; error_assertion_rate: number; user_correction_rate: number; avg_latency_ms: number }
+export const listAgentMemories = () => get<{ code: number; data: AgentMemory[] }>('/aiops/memories')
+export const createAgentMemory = (data: Partial<AgentMemory>) => post<{ code: number; data: AgentMemory }>('/aiops/memories', data)
+export const pinAgentMemory = (id: number) => post<{ code: number; data: AgentMemory }>(`/aiops/memories/${id}/pin`)
+export const forgetAgentMemory = (id: number) => del(`/aiops/memories/${id}`)
+export const getMemoryMetrics = () => get<{ code: number; data: MemoryMetrics }>('/aiops/memory-metrics')
+
 // Set default LLM config
 export const setDefaultLLMConfig = (id: number) => {
   return post(`/aiops/configs/${id}/set-default`)
