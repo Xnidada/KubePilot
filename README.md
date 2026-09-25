@@ -18,9 +18,9 @@
 
 ## 📖 简介
 
-KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统一管理、工作负载全生命周期、进程内可启停功能模块、AI Agent（原生 Tool Calling + 写操作确认）、备份/SSO/巡检/Event 转发等能力，帮助团队在同一套界面完成日常运维。
+KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统一管理、工作负载全生命周期、进程内可启停功能模块、AI Agent（原生 Tool Calling、结构化上下文记忆与写操作确认）、备份/SSO/巡检/Event 转发等能力，帮助团队在同一套界面完成日常运维。
 
-默认演示账号（首次登录后请改密）：
+全新数据库的默认演示账号（首次登录后请改密；已有部署的实际密码可能不同）：
 
 | 账号 | 密码 | 角色 |
 |------|------|------|
@@ -129,14 +129,21 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
 ### 🤖 AI 智能运维
 - **AI Agent**（原生 Tool Calling）
   - 读操作：list/get/describe/events/logs、Service/工作负载诊断
-  - 写操作：`stage_mutation` 暂存 → UI 确认后执行（支持 NodePort、hostPath 挂载等）
-  - `aiviewer` 可浏览全部用户 Agent 对话（只读）
+  - 写操作：`stage_mutation` 暂存 → 预览/校验 → UI 确认后执行（支持 NodePort、hostPath 挂载等）；YAML 校验失败会返回具体错误，修正后须重新预览
+  - 会话按所有者和集群隔离；`admin` / `aiviewer` 可只读浏览其他用户（包括 admin）的对话，但不能用别人的 `conversation_id` 继续执行 Agent 或修改对话
+  - 短暂故障的只读工具最多补试 2 次（指数退避）；确认后的写操作重试前核验集群实际状态，无法确认未变更时停止，避免重复写入
+  - 模型/流式中断保留已完成的工具结果；失败轨迹支持「重试此查询」（仅只读工具），整轮失败支持「重试本轮」
+- **上下文与长期记忆** - `conversation_states` 保存目标、对象、待办和带来源/置信度/有效期的事实，结合最近消息构造上下文；`agent_memories` 仅检索用户偏好和工具佐证的运维知识，按用户/集群与 TTL 过滤。历史记忆不是实时集群状态，使用前仍需调用工具核实
+- **记忆中心**（`/aiops/memories`）- 查看来源、置信度、有效期，手动新增、固定/取消固定、单条或批量遗忘本人未固定的记忆；创建/固定/遗忘写入审计记录。页面显示 Prompt Token、重复工具调用、上下文命中、用户纠正和延迟等指标
+- **AI 设置** - 管理 LLM 配置及默认模型；删除当前默认配置时会切换到其他配置，唯一的默认配置不可删除。输入/输出单价按美元／百万 Token 展示，并用于按当前单价回算 Token 费用；估算值不是实际账单
 - **智能诊断** - 问题诊断（自动获取 describe）、日志分析、资源状态建议
 - **AI 工具箱**：
   - 划词解释 - 解释 K8S 概念、命令、配置、错误信息
   - 资源指南 - 分析资源状态，给出健康评分和优化建议
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
+
+> 当前限制：记忆创建/固定/遗忘已有后端审计记录，但记忆中心尚无独立审计列表；「错误陈述率」已有展示字段，尚未接入自动判定，显示为 0% 不代表没有错误。用户纠正率目前按消息关键词粗略识别。
 
 ### 🔒 安全特性
 - JWT 认证 + 平台 RBAC 与集群/命名空间授权 fail-closed（角色决定「能做什么」，集群授权决定「在哪做」）
@@ -155,12 +162,15 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
 - **任务调度 / AIOps / AppStore** - 对应功能模块
 - **环境克隆 / GPU 调度 / 资源依赖图 / 闲置资源清理**
 
+**历史记录清理**：登入日志、备份记录、恢复记录、巡检报告、Webhook 调用日志、Event 转发日志和告警历史支持单条或勾选批量删除；每次仅处理明确选中的 ID（最多 100 条），并受相应 RBAC/集群权限约束。备份/恢复删除只清理平台记录，不删除 Velero 备份或撤销已恢复资源；进行中的备份/恢复/巡检、被恢复记录引用的备份，以及近 24 小时的 Webhook 日志有删除保护。
+
 ### 📊 监控告警
 - 集群资源概览仪表盘
 - 节点压力可视化（CPU/内存/Pod）
 - 资源成本分析（支持自定义单价）
 - 事件时间线（按时间聚合）
 - 告警规则管理（含评估失败可见）
+- 告警历史查看及单条/批量删除
 - 通知渠道配置
 
 ### 🖥️ 终端功能
@@ -184,7 +194,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
 ### 前置条件
 
 - Go 1.26+
-- Node.js 18+
+- Node.js 20.19.x 或 22.12+（前端 Vite 8 要求）
 - PostgreSQL 15+
 - Redis 7+ (可选，支持内存缓存)
 
@@ -240,12 +250,11 @@ cp configs/config.example.yaml configs/config.yaml
 vim configs/config.yaml
 
 # 编译后端
-go mod tidy
 go build -o kubepilot ./cmd/server/
 
 # 编译前端
 cd frontend
-npm install
+npm ci
 npm run build
 cd ..
 
@@ -392,8 +401,16 @@ POST   /api/v1/scheduler/tasks/:id/retry   # 重试任务
 ### AI 运维
 ```
 POST   /api/v1/aiops/agent                 # AI Agent（流式见 /agent/stream）
-POST   /api/v1/aiops/agent/confirm/:id     # 确认暂存写操作
+POST   /api/v1/aiops/agent/confirm/:actionId # 确认暂存写操作
+POST   /api/v1/aiops/agent/retry-read-tool # 重试失败的只读查询
 GET    /api/v1/aiops/conversations         # 对话列表（aiviewer 可见全部）
+GET    /api/v1/aiops/memories              # 长期记忆列表
+POST   /api/v1/aiops/memories              # 新增记忆
+POST   /api/v1/aiops/memories/:id/pin      # 固定/取消固定
+DELETE /api/v1/aiops/memories/:id          # 遗忘单条记忆
+POST   /api/v1/aiops/memories/batch-forget # 批量遗忘，body: {"ids":[1,2]}
+GET    /api/v1/aiops/memory-metrics        # 上下文质量指标
+DELETE /api/v1/aiops/configs/:id          # 删除 LLM 配置
 POST   /api/v1/aiops/diagnose              # 智能诊断
 POST   /api/v1/aiops/explain               # 划词解释
 POST   /api/v1/aiops/resource-guide        # 资源指南
@@ -417,6 +434,20 @@ GET    /api/v1/inspection/rules     # 巡检规则
 POST   /api/v1/inspection/rules/:id/run  # 执行巡检
 GET    /api/v1/event-forward/rules  # 转发规则
 POST   /api/v1/event-forward/rules/:id/test # 测试转发
+```
+
+### 历史记录删除
+
+以下资源均提供 `DELETE .../:id` 单条删除和 `POST .../batch-delete` 批量删除（请求体 `{"ids":[1,2]}`）：
+
+```text
+/api/v1/system/login-logs
+/api/v1/backups
+/api/v1/backups/restores
+/api/v1/inspection/reports
+/api/v1/webhooks/logs
+/api/v1/event-forward/logs
+/api/v1/alerts/history
 ```
 
 ## 🔐 权限说明
