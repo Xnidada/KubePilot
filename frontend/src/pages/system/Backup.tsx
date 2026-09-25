@@ -20,6 +20,8 @@ import {
   clearBackupCron,
   listBackupRecords,
   createBackupRecord,
+  deleteBackupRecord,
+  batchDeleteBackupRecords,
   listRestoreRecords,
   createRestore,
   BackupScheduleItem,
@@ -29,11 +31,15 @@ import {
 import { useQueryTab } from '../../hooks/useQueryTab'
 import { useInterval } from '../../hooks/useInterval'
 import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
 const BACKUP_TABS = ['schedules', 'backups', 'restores'] as const
 const REFRESH_MS = 10000
+
+const backupRecordActive = (record: BackupRecordItem) =>
+  record.status === 'pending' || record.status === 'in_progress'
 
 function parseJSONArray(raw?: string): string {
   if (!raw) return ''
@@ -51,6 +57,9 @@ const Backup: React.FC = () => {
   const [schedules, setSchedules] = useState<BackupScheduleItem[]>([])
   const [restores, setRestores] = useState<RestoreRecordItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [deletingBackup, setDeletingBackup] = useState(false)
+  const [selectedBackupKeys, setSelectedBackupKeys] = useState<React.Key[]>([])
+  const canDeleteBackups = useAuthStore((state) => state.hasPermission('backups', 'delete'))
   const [backupModalVisible, setBackupModalVisible] = useState(false)
   const [scheduleModalVisible, setScheduleModalVisible] = useState(false)
   const [restoreModalVisible, setRestoreModalVisible] = useState(false)
@@ -73,7 +82,10 @@ const Backup: React.FC = () => {
     setLoading(true)
     try {
       const res = await listBackupRecords()
-      setBackups(res.data || [])
+      const records = res.data || []
+      setBackups(records)
+      const selectableIDs = new Set(records.filter((record) => !backupRecordActive(record)).map((record) => record.id))
+      setSelectedBackupKeys((keys) => keys.filter((key) => selectableIDs.has(Number(key))))
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }, [])
@@ -98,7 +110,7 @@ const Backup: React.FC = () => {
 
   useInterval(() => {
     if (activeTab === 'schedules') fetchSchedules()
-    else if (activeTab === 'backups') fetchBackups()
+    else if (activeTab === 'backups' && !deletingBackup) fetchBackups()
     else fetchRestores()
   }, REFRESH_MS, autoRefresh)
 
@@ -137,6 +149,21 @@ const Backup: React.FC = () => {
       fetchBackups()
       setActiveTab('backups')
     } catch (e) { message.error('创建失败') }
+  }
+
+  const handleDeleteBackups = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingBackup(true)
+    try {
+      const res = ids.length === 1 ? await deleteBackupRecord(ids[0]) : await batchDeleteBackupRecords(ids)
+      message.success(`已删除 ${res.data.deleted} 条备份记录`)
+      setSelectedBackupKeys([])
+      await fetchBackups()
+    } catch (e) {
+      console.error('Failed to delete backup records:', e)
+    } finally {
+      setDeletingBackup(false)
+    }
   }
 
   const handleSaveSchedule = async (values: any) => {
@@ -222,16 +249,34 @@ const Backup: React.FC = () => {
       render: (t) => t ? new Date(t).toLocaleString() : '-'
     },
     {
-      title: '操作', key: 'action', width: 100,
+      title: '操作', key: 'action', width: 150,
       render: (_, record) => (
-        <Tooltip title={record.status === 'completed' ? '从此备份恢复' : '仅完成状态可恢复'}>
-          <Button
-            type="link"
-            icon={<RollbackOutlined />}
-            disabled={record.status !== 'completed'}
-            onClick={() => openRestore(record)}
-          />
-        </Tooltip>
+        <Space size={0}>
+          <Tooltip title={record.status === 'completed' ? '从此备份恢复' : '仅完成状态可恢复'}>
+            <Button
+              type="link"
+              icon={<RollbackOutlined />}
+              disabled={record.status !== 'completed'}
+              onClick={() => openRestore(record)}
+            />
+          </Tooltip>
+          {canDeleteBackups && (
+            <Tooltip title={backupRecordActive(record) ? '进行中的备份不能删除' : '删除备份记录'}>
+              <span>
+                <Popconfirm
+                  title={`确定删除备份记录「${record.backup_name}」？`}
+                  description="仅删除平台记录，不删除外部备份数据；已有恢复记录的备份不能删除。"
+                  okText="删除"
+                  okButtonProps={{ danger: true, loading: deletingBackup }}
+                  cancelText="取消"
+                  onConfirm={() => handleDeleteBackups([record.id])}
+                >
+                  <Button type="link" danger icon={<DeleteOutlined />} disabled={backupRecordActive(record) || deletingBackup} />
+                </Popconfirm>
+              </span>
+            </Tooltip>
+          )}
+        </Space>
       ),
     },
   ]
@@ -371,12 +416,39 @@ const Backup: React.FC = () => {
             children: (
               <Card
                 extra={
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setBackupModalVisible(true) }}>
-                    创建备份
-                  </Button>
+                  <Space>
+                    {canDeleteBackups && (
+                      <Popconfirm
+                        title={`确定删除选中的 ${selectedBackupKeys.length} 条备份记录？`}
+                        description="仅删除平台记录，不删除外部备份数据；进行中或已有恢复记录的备份不能删除。"
+                        okText="删除"
+                        okButtonProps={{ danger: true, loading: deletingBackup }}
+                        cancelText="取消"
+                        onConfirm={() => handleDeleteBackups(selectedBackupKeys.map(Number))}
+                      >
+                        <Button danger icon={<DeleteOutlined />} disabled={selectedBackupKeys.length === 0 || deletingBackup}>
+                          删除所选{selectedBackupKeys.length > 0 ? ` (${selectedBackupKeys.length})` : ''}
+                        </Button>
+                      </Popconfirm>
+                    )}
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setBackupModalVisible(true) }}>
+                      创建备份
+                    </Button>
+                  </Space>
                 }
               >
-                <Table columns={backupColumns} dataSource={backups} rowKey="id" loading={loading} />
+                <Table
+                  columns={backupColumns}
+                  dataSource={backups}
+                  rowKey="id"
+                  loading={loading}
+                  rowSelection={canDeleteBackups ? {
+                    selectedRowKeys: selectedBackupKeys,
+                    preserveSelectedRowKeys: true,
+                    onChange: setSelectedBackupKeys,
+                    getCheckboxProps: (record) => ({ disabled: backupRecordActive(record) }),
+                  } : undefined}
+                />
               </Card>
             ),
           },

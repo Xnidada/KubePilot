@@ -406,6 +406,12 @@ export const getInspectionResults = (reportId: number) => {
   return get<{ code: number; data: InspectionResult[] }>(`/inspection/reports/${reportId}/results`)
 }
 
+export const deleteInspectionReport = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/inspection/reports/${id}`)
+
+export const batchDeleteInspectionReports = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/inspection/reports/batch-delete', { ids })
+
 // ==================== Event 转发 ====================
 
 export interface EventForwardRule {
@@ -565,6 +571,12 @@ export const createBackupRecord = (data: {
   resources?: string[]
   ttl?: string
 }) => post<{ code: number; data: BackupRecordItem }>('/backups', data)
+
+export const deleteBackupRecord = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/backups/${id}`)
+
+export const batchDeleteBackupRecords = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/backups/batch-delete', { ids })
 
 export const listRestoreRecords = () =>
   get<{ code: number; data: RestoreRecordItem[] }>('/backups/restores')

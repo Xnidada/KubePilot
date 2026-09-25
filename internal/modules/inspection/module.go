@@ -60,6 +60,8 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("POST", "/api/v1/inspection/rules/:id/run", authz.Policy{Resource: "inspection", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/inspection/reports", authz.Policy{Resource: "inspection", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/inspection/reports/:id", authz.Policy{Resource: "inspection", Action: "view", Scope: authz.ScopeHandler})
+	reg.MustRegister("DELETE", "/api/v1/inspection/reports/:id", authz.Policy{Resource: "inspection", Action: "delete", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/inspection/reports/batch-delete", authz.Policy{Resource: "inspection", Action: "delete", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/inspection/reports/:id/results", authz.Policy{Resource: "inspection", Action: "view", Scope: authz.ScopeHandler})
 }
 
@@ -137,6 +139,8 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.POST("/rules/:id/run", h.RunInspection)
 		g.GET("/reports", h.ListReports)
 		g.GET("/reports/:id", h.GetReport)
+		g.DELETE("/reports/:id", h.DeleteReport)
+		g.POST("/reports/batch-delete", h.BatchDeleteReports)
 		g.GET("/reports/:id/results", h.GetReportResults)
 	}
 }

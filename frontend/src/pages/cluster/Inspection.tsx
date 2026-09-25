@@ -15,6 +15,7 @@ import {
   Badge,
   Tooltip,
   Switch,
+  Popconfirm,
 } from 'antd'
 import {
   PlusOutlined,
@@ -38,6 +39,8 @@ import {
   runInspection,
   listInspectionReports,
   getInspectionResults,
+  deleteInspectionReport,
+  batchDeleteInspectionReports,
   InspectionRule,
   InspectionReport,
   InspectionResult,
@@ -45,6 +48,7 @@ import {
 import { useQueryTab } from '../../hooks/useQueryTab'
 import { useInterval } from '../../hooks/useInterval'
 import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
@@ -57,6 +61,9 @@ const Inspection: React.FC = () => {
   const [reports, setReports] = useState<InspectionReport[]>([])
   const [results, setResults] = useState<InspectionResult[]>([])
   const [loading, setLoading] = useState(false)
+  const [deletingReports, setDeletingReports] = useState(false)
+  const [selectedReportKeys, setSelectedReportKeys] = useState<React.Key[]>([])
+  const canDeleteReports = useAuthStore((state) => state.hasPermission('inspection', 'delete'))
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
   const [showRuleModal, setShowRuleModal] = useState(false)
   const [showResultsModal, setShowResultsModal] = useState(false)
@@ -83,7 +90,10 @@ const Inspection: React.FC = () => {
     if (!selectedCluster) return
     try {
       const res = await listInspectionReports(selectedCluster)
-      setReports(res.data || [])
+      const items = res.data || []
+      setReports(items)
+      const selectableIDs = new Set(items.filter((report) => report.status !== 'running').map((report) => report.id))
+      setSelectedReportKeys((keys) => keys.filter((key) => selectableIDs.has(Number(key))))
     } catch (error) {
       console.error('Failed to fetch reports:', error)
     }
@@ -101,7 +111,7 @@ const Inspection: React.FC = () => {
   }, [selectedCluster, fetchRules, fetchReports])
 
   useInterval(() => {
-    if (selectedCluster) fetchReports()
+    if (selectedCluster && !deletingReports) fetchReports()
   }, REFRESH_MS, autoRefresh && !!selectedCluster)
 
   const fetchClusters = async () => {
@@ -187,6 +197,26 @@ const Inspection: React.FC = () => {
       setShowResultsModal(true)
     } catch (error) {
       message.error('获取结果失败')
+    }
+  }
+
+  const handleDeleteReports = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingReports(true)
+    try {
+      const res = ids.length === 1 ? await deleteInspectionReport(ids[0]) : await batchDeleteInspectionReports(ids)
+      message.success(`已删除 ${res.data.deleted} 份巡检报告`)
+      setSelectedReportKeys([])
+      if (selectedReport && ids.includes(selectedReport.id)) {
+        setShowResultsModal(false)
+        setSelectedReport(null)
+        setResults([])
+      }
+      await fetchReports()
+    } catch (error) {
+      console.error('Failed to delete inspection reports:', error)
+    } finally {
+      setDeletingReports(false)
     }
   }
 
@@ -306,13 +336,31 @@ const Inspection: React.FC = () => {
       title: '操作',
       key: 'action',
       render: (_: any, record: InspectionReport) => (
-        <Button
-          type="link"
-          icon={<FileTextOutlined />}
-          onClick={() => handleViewResults(record)}
-        >
-          查看详情
-        </Button>
+        <Space size={0}>
+          <Button
+            type="link"
+            icon={<FileTextOutlined />}
+            onClick={() => handleViewResults(record)}
+          >
+            查看详情
+          </Button>
+          {canDeleteReports && (
+            <Tooltip title={record.status === 'running' ? '运行中的报告不能删除' : '删除报告及巡检结果'}>
+              <span>
+                <Popconfirm
+                  title={`确定删除巡检报告 #${record.id}？`}
+                  description="报告及其巡检结果将一并删除，无法恢复。"
+                  okText="删除"
+                  okButtonProps={{ danger: true, loading: deletingReports }}
+                  cancelText="取消"
+                  onConfirm={() => handleDeleteReports([record.id])}
+                >
+                  <Button type="link" danger icon={<DeleteOutlined />} disabled={record.status === 'running' || deletingReports} />
+                </Popconfirm>
+              </span>
+            </Tooltip>
+          )}
+        </Space>
       ),
     },
   ]
@@ -337,7 +385,7 @@ const Inspection: React.FC = () => {
         <Space>
           <Select
             value={selectedCluster}
-            onChange={setSelectedCluster}
+            onChange={(clusterID) => { setSelectedCluster(clusterID); setSelectedReportKeys([]) }}
             style={{ width: 200 }}
             placeholder="选择集群"
             options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
@@ -393,11 +441,39 @@ const Inspection: React.FC = () => {
               </span>
             ),
             children: (
-              <Card title="巡检报告">
+              <Card
+                title="巡检报告"
+                extra={canDeleteReports && (
+                  <Popconfirm
+                    title={`确定删除选中的 ${selectedReportKeys.length} 份巡检报告？`}
+                    description="报告及其巡检结果将一并删除，无法恢复；运行中的报告不能删除。"
+                    okText="删除"
+                    okButtonProps={{ danger: true, loading: deletingReports }}
+                    cancelText="取消"
+                    onConfirm={() => handleDeleteReports(selectedReportKeys.map(Number))}
+                  >
+                    <Button danger icon={<DeleteOutlined />} disabled={selectedReportKeys.length === 0 || deletingReports}>
+                      删除所选{selectedReportKeys.length > 0 ? ` (${selectedReportKeys.length})` : ''}
+                    </Button>
+                  </Popconfirm>
+                )}
+              >
                 <Table
                   columns={reportColumns}
                   dataSource={reports}
                   rowKey="id"
+                  rowSelection={canDeleteReports ? {
+                    selectedRowKeys: selectedReportKeys,
+                    preserveSelectedRowKeys: true,
+                    onChange: (keys) => {
+                      if (keys.length > 100) {
+                        message.warning('每次最多选择 100 份报告')
+                        return
+                      }
+                      setSelectedReportKeys(keys)
+                    },
+                    getCheckboxProps: (record: InspectionReport) => ({ disabled: record.status === 'running' }),
+                  } : undefined}
                 />
               </Card>
             ),

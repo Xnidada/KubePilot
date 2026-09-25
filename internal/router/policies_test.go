@@ -44,12 +44,36 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/ws/tickets/pod/:id/:ns/:name",
 		"GET /api/v1/inspection/rules/:id",
 		"GET /api/v1/backups/:id",
+		"DELETE /api/v1/backups/:id",
+		"POST /api/v1/backups/batch-delete",
+		"DELETE /api/v1/inspection/reports/:id",
+		"POST /api/v1/inspection/reports/batch-delete",
 		"POST /api/v1/scheduler/tasks",
 	}
 	for _, key := range required {
 		parts := strings.SplitN(key, " ", 2)
 		if !registry.Registered(parts[0], parts[1]) {
 			t.Fatalf("missing policy for %s", key)
+		}
+	}
+	for _, key := range []string{
+		"DELETE /api/v1/inspection/reports/:id",
+		"POST /api/v1/inspection/reports/batch-delete",
+	} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "inspection" || policy.Action != "delete" || policy.Scope != authz.ScopeHandler {
+			t.Fatalf("unsafe inspection report deletion policy for %s: %#v", key, policy)
+		}
+	}
+	for _, key := range []string{
+		"DELETE /api/v1/backups/:id",
+		"POST /api/v1/backups/batch-delete",
+	} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "backups" || policy.Action != "delete" || policy.Scope != authz.ScopeHandler {
+			t.Fatalf("unsafe backup deletion policy for %s: %#v", key, policy)
 		}
 	}
 	for _, key := range []string{

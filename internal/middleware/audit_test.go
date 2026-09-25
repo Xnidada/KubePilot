@@ -55,8 +55,12 @@ func TestMaskSensitiveDataRedactsOAuthClientSecret(t *testing.T) {
 
 func TestExtractResourceTypeForSystemSecurityRoutes(t *testing.T) {
 	for path, want := range map[string]string{
-		"/api/v1/system/login-logs/:id": "login_logs",
-		"/api/v1/system/oauth/configs":  "oauth_configs",
+		"/api/v1/system/login-logs/:id":           "login_logs",
+		"/api/v1/system/oauth/configs":            "oauth_configs",
+		"/api/v1/backups/:id":                     "backup_records",
+		"/api/v1/backups/batch-delete":            "backup_records",
+		"/api/v1/inspection/reports/:id":          "inspection_reports",
+		"/api/v1/inspection/reports/batch-delete": "inspection_reports",
 	} {
 		if got := extractResourceType(path); got != want {
 			t.Errorf("%s: got %q, want %q", path, got, want)
