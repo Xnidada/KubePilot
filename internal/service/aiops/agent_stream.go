@@ -469,9 +469,13 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 					exec := retryAgentTool(gCtx, name, func() toolExecResult {
 						return s.executeAgentTool(gCtx, userID, clusterID, conversationID, name, args)
 					})
+					argsLimit := 500
+					if isRetryableQueryTool(name) {
+						argsLimit = 8192
+					}
 					item := ToolTraceItem{
 						Name:       name,
-						Args:       truncateRunes(args, 8192),
+						Args:       truncateRunes(args, argsLimit),
 						Result:     truncateRunes(exec.Content, toolResultMaxChars),
 						IsError:    exec.IsError,
 						DurationMs: time.Since(started).Milliseconds(),
