@@ -1,55 +1,40 @@
 package middleware
 
 import (
-	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
-func TestMaskSensitiveDataRedactsNestedFields(t *testing.T) {
-	payload := map[string]interface{}{
-		"username": "alice",
-		"password": "secret",
-		"nested": map[string]interface{}{
-			"api_key": "abc",
-			"items": []interface{}{
-				map[string]interface{}{"kubeconfig": "cfg", "name": "demo"},
-			},
-		},
-	}
-	raw, _ := json.Marshal(payload)
-	masked := maskSensitiveData(raw, "/api/v1/clusters")
-	var decoded map[string]interface{}
-	if err := json.Unmarshal([]byte(masked), &decoded); err != nil {
-		t.Fatalf("unmarshal masked body: %v", err)
-	}
-	if decoded["password"] != "******" {
-		t.Fatalf("password not masked: %#v", decoded["password"])
-	}
-	nested := decoded["nested"].(map[string]interface{})
-	if nested["api_key"] != "******" {
-		t.Fatalf("api_key not masked")
-	}
-	items := nested["items"].([]interface{})
-	first := items[0].(map[string]interface{})
-	if first["kubeconfig"] != "******" {
-		t.Fatalf("kubeconfig not masked")
-	}
-	if first["name"] != "demo" {
-		t.Fatalf("non-sensitive field changed")
-	}
-}
-
-func TestMaskSensitiveDataRedactsOAuthClientSecret(t *testing.T) {
-	masked := maskSensitiveData([]byte(`{"provider":"github","client_secret":"do-not-log"}`), "/api/v1/system/oauth/configs")
-	var decoded map[string]interface{}
-	if err := json.Unmarshal([]byte(masked), &decoded); err != nil {
+func TestSafeBatchIDsDoesNotConsumeRequestBody(t *testing.T) {
+	body := `{"ids":[12,34],"note":"private-payload"}`
+	req, err := http.NewRequest(http.MethodPost, "/api/v1/backups/batch-delete", strings.NewReader(body))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded["client_secret"] != "******" || decoded["provider"] != "github" {
-		t.Fatalf("unexpected masked OAuth config: %#v", decoded)
+	if got := safeBatchIDs(req); got != "ids=12,34" {
+		t.Fatalf("batch IDs = %q", got)
 	}
-	if got := maskSensitiveData([]byte(`not-json`), "/api/v1/system/oauth/configs"); got != "[masked]" {
-		t.Fatalf("invalid secret payload must be fully masked, got %q", got)
+	readBack, err := io.ReadAll(req.Body)
+	if err != nil || string(readBack) != body {
+		t.Fatalf("handler body changed: %q, %v", readBack, err)
+	}
+	_ = req.Body.Close()
+}
+
+func TestSafeBatchIDsSkipsOtherAndOversizedBodies(t *testing.T) {
+	for _, path := range []string{"/api/v1/aiops/agent", "/api/v1/backups/batch-delete"} {
+		body := strings.Repeat("x", 5000)
+		req, _ := http.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		if got := safeBatchIDs(req); got != "" {
+			t.Fatalf("captured unapproved payload at %s: %q", path, got)
+		}
+		readBack, _ := io.ReadAll(req.Body)
+		if string(readBack) != body {
+			t.Fatalf("handler body changed for %s", path)
+		}
+		_ = req.Body.Close()
 	}
 }
 

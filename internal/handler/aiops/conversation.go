@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
+	"gorm.io/gorm"
 )
 
 // canBrowseAllConversations allows admins and AI read-only roles (aiviewer) to
@@ -248,11 +249,16 @@ func (h *Handler) DeleteConversation(c *gin.Context) {
 		return
 	}
 
-	// 删除关联的消息
-	h.db.Where("conversation_id = ?", conversation.ID).Delete(&model.ChatMessage{})
-
-	// 删除对话
-	h.db.Delete(conversation)
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := clearConversationContent(tx, conversation.ID); err != nil {
+			return err
+		}
+		return tx.Delete(conversation).Error
+	})
+	if err != nil {
+		response.InternalError(c, "failed to delete conversation")
+		return
+	}
 
 	response.SuccessWithMessage(c, "conversation deleted", nil)
 }
@@ -264,9 +270,29 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 		return
 	}
 
-	h.db.Where("conversation_id = ?", conversation.ID).Delete(&model.ChatMessage{})
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		return clearConversationContent(tx, conversation.ID)
+	}); err != nil {
+		response.InternalError(c, "failed to clear conversation")
+		return
+	}
 
 	response.SuccessWithMessage(c, "conversation cleared", nil)
+}
+
+// Long-term memories and historical usage metrics are managed separately;
+// clearing a conversation removes only replayable context and pending writes.
+func clearConversationContent(tx *gorm.DB, conversationID uint) error {
+	if err := tx.Model(&model.AgentAction{}).Where("conversation_id = ? AND status = ?", conversationID, "pending").Update("status", "cancelled").Error; err != nil {
+		return err
+	}
+	if err := tx.Where("conversation_id = ?", conversationID).Delete(&model.ChatMessage{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("conversation_id = ?", conversationID).Delete(&model.ConversationState{}).Error; err != nil {
+		return err
+	}
+	return tx.Where("conversation_id = ?", conversationID).Delete(&model.AgentToolTrace{}).Error
 }
 
 // ListMessages 获取消息列表

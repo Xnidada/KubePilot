@@ -20,13 +20,7 @@
 
 KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统一管理、工作负载全生命周期、进程内可启停功能模块、AI Agent（原生 Tool Calling、结构化上下文记忆与写操作确认）、备份/SSO/巡检/Event 转发等能力，帮助团队在同一套界面完成日常运维。
 
-全新数据库的默认演示账号（首次登录后请改密；已有部署的实际密码可能不同）：
-
-| 账号 | 密码 | 角色 |
-|------|------|------|
-| `admin` | `admin123` | 管理员 |
-| `aiviewer` | `admin123` | AI 只读（可浏览 AI/他人 Agent 对话，不可执行写操作） |
-| `viewer` | `admin123` | 只读（不含 AI 智能） |
+全新数据库需通过初始化命令显式设置管理员密码。演示账号默认不创建；如需测试，可显式开启，且不会自动获得任何集群授权。已有部署的用户、角色和集群授权不会被初始化命令重置。
 
 ## 📸 功能截图
 
@@ -133,9 +127,9 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - 会话按所有者和集群隔离；`admin` / `aiviewer` 可只读浏览其他用户（包括 admin）的对话，但不能用别人的 `conversation_id` 继续执行 Agent 或修改对话
   - 短暂故障的只读工具最多补试 2 次（指数退避）；确认后的写操作重试前核验集群实际状态，无法确认未变更时停止，避免重复写入
   - 模型/流式中断保留已完成的工具结果；失败轨迹支持「重试此查询」（仅只读工具），整轮失败支持「重试本轮」
-- **上下文与长期记忆** - `conversation_states` 保存目标、对象、待办和带来源/置信度/有效期的事实，结合最近消息构造上下文；`agent_memories` 仅检索用户偏好和工具佐证的运维知识，按用户/集群与 TTL 过滤。历史记忆不是实时集群状态，使用前仍需调用工具核实
-- **记忆中心**（`/aiops/memories`）- 查看来源、置信度、有效期，手动新增、固定/取消固定、单条或批量遗忘本人未固定的记忆；创建/固定/遗忘写入审计记录。页面显示 Prompt Token、重复工具调用、上下文命中、用户纠正和延迟等指标
-- **AI 设置** - 管理 LLM 配置及默认模型；删除当前默认配置时会切换到其他配置，唯一的默认配置不可删除。输入/输出单价按美元／百万 Token 展示，并用于按当前单价回算 Token 费用；估算值不是实际账单
+- **上下文与长期记忆** - `conversation_states` 保存目标、待办与经白名单提取的短期资源状态（带来源/置信度/有效期），结合最近消息构造上下文；清空或删除会话时一并清除状态与工具轨迹，并取消待确认写操作。`agent_memories` 仅检索用户偏好和人工填写核验来源的运维知识，按用户/集群与 TTL 过滤；旧版自动生成的“已验证知识”保留供查看/遗忘，但不再注入提示词。历史记忆不是实时集群状态，使用前仍需调用工具核实
+- **记忆中心**（`/aiops/memories`）- 查看来源、置信度、有效期和最近 100 条操作审计，手动新增、固定/取消固定、单条或批量遗忘本人未固定的记忆。已验证运维知识要求核验来源，默认 30 天有效；页面显示 Prompt Token、同轮重复工具调用、记忆召回、用户纠正估算、端到端延迟和人工审核的错误陈述率
+- **AI 设置** - 管理 LLM 配置及默认模型；删除当前默认配置时会切换到其他配置，唯一的默认配置不可删除。输入/输出单价按美元／百万 Token 展示，并在每次用量写入时快照价格与费用；无快照的历史 Token 单独标为未计价，估算值不是实际账单
 - **智能诊断** - 问题诊断（自动获取 describe）、日志分析、资源状态建议
 - **AI 工具箱**：
   - 划词解释 - 解释 K8S 概念、命令、配置、错误信息
@@ -143,7 +137,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
 
-> 当前限制：记忆创建/固定/遗忘已有后端审计记录，但记忆中心尚无独立审计列表；「错误陈述率」已有展示字段，尚未接入自动判定，显示为 0% 不代表没有错误。用户纠正率目前按消息关键词粗略识别。
+> 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。当前流式最终总结未回传 Token 用量，所以 Prompt Token 与费用只覆盖已上报的调用。敏感内容识别为防护规则，仍需人工核查。
 
 ### 🔒 安全特性
 - JWT 认证 + 平台 RBAC 与集群/命名空间授权 fail-closed（角色决定「能做什么」，集群授权决定「在哪做」）
@@ -216,7 +210,7 @@ docker-compose up -d
 open http://localhost:8080
 ```
 
-**默认管理员账号**：`admin` / `admin123`（首次登录后请立即修改密码）
+**管理员账号**：`admin`。首次初始化时必须通过 `KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD` 提供至少 12 字符的独立密码；已有账号的密码不会改变。
 
 ### 方式二：Kubernetes
 
@@ -258,8 +252,11 @@ npm ci
 npm run build
 cd ..
 
-# 初始化管理员
-go run scripts/init-admin.go
+# 初始化管理员（首次运行前设置强密码）
+KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD='<强随机密码，至少 12 字符>' go run scripts/init-admin.go
+
+# 仅测试环境：可选创建演示用户；不会授予集群访问权限
+KUBEPILOT_SEED_DEMO_USERS=true KUBEPILOT_DEMO_PASSWORD='<另一个强随机密码>' go run scripts/init-admin.go
 
 # 运行
 ./kubepilot
@@ -405,11 +402,14 @@ POST   /api/v1/aiops/agent/confirm/:actionId # 确认暂存写操作
 POST   /api/v1/aiops/agent/retry-read-tool # 重试失败的只读查询
 GET    /api/v1/aiops/conversations         # 对话列表（aiviewer 可见全部）
 GET    /api/v1/aiops/memories              # 长期记忆列表
+GET    /api/v1/aiops/memories/audit        # 最近 100 条记忆操作审计
 POST   /api/v1/aiops/memories              # 新增记忆
 POST   /api/v1/aiops/memories/:id/pin      # 固定/取消固定
 DELETE /api/v1/aiops/memories/:id          # 遗忘单条记忆
 POST   /api/v1/aiops/memories/batch-forget # 批量遗忘，body: {"ids":[1,2]}
 GET    /api/v1/aiops/memory-metrics        # 上下文质量指标
+GET    /api/v1/aiops/memory-metrics/review-samples # 待审核回答（AI 设置编辑权限）
+PUT    /api/v1/aiops/memory-metrics/:id/review # 标注错误陈述（AI 设置编辑权限）
 DELETE /api/v1/aiops/configs/:id          # 删除 LLM 配置
 POST   /api/v1/aiops/diagnose              # 智能诊断
 POST   /api/v1/aiops/explain               # 划词解释

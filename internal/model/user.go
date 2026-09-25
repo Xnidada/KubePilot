@@ -108,8 +108,8 @@ type ConversationState struct {
 
 func (ConversationState) TableName() string { return "conversation_states" }
 
-// AgentMemory holds deliberately retained preferences and tool-verified
-// operational knowledge. It never stores raw logs, secrets, or tool payloads.
+// AgentMemory holds deliberately retained preferences and human-reviewed
+// operational knowledge. It must not store raw logs, secrets, or tool payloads.
 type AgentMemory struct {
 	ID         uint           `json:"id" gorm:"primaryKey"`
 	UserID     uint           `json:"user_id" gorm:"index;not null"`
@@ -140,18 +140,22 @@ func (AgentMemoryAudit) TableName() string { return "agent_memory_audits" }
 
 // AgentRunMetric measures context quality and cost per completed Agent turn.
 type AgentRunMetric struct {
-	ID                uint      `json:"id" gorm:"primaryKey"`
-	UserID            uint      `json:"user_id" gorm:"index"`
-	ConversationID    uint      `json:"conversation_id" gorm:"index"`
-	ClusterID         uint      `json:"cluster_id" gorm:"index"`
-	PromptTokens      int       `json:"prompt_tokens"`
-	ToolCount         int       `json:"tool_count"`
-	RepeatedToolCalls int       `json:"repeated_tool_calls"`
-	MemoryHits        int       `json:"memory_hits"`
-	UserCorrection    bool      `json:"user_correction"`
-	ErrorAssertion    bool      `json:"error_assertion"`
-	LatencyMs         int64     `json:"latency_ms"`
-	CreatedAt         time.Time `json:"created_at" gorm:"index"`
+	ID                     uint       `json:"id" gorm:"primaryKey"`
+	UserID                 uint       `json:"user_id" gorm:"index"`
+	ConversationID         uint       `json:"conversation_id" gorm:"index"`
+	ClusterID              uint       `json:"cluster_id" gorm:"index"`
+	PromptTokens           int        `json:"prompt_tokens"`
+	ToolCount              int        `json:"tool_count"`
+	RepeatedToolCalls      int        `json:"repeated_tool_calls"`
+	MemoryHits             int        `json:"memory_hits"`
+	AssistantMessageID     uint       `json:"assistant_message_id" gorm:"index"`
+	UserCorrection         bool       `json:"user_correction"`
+	ErrorAssertion         bool       `json:"error_assertion"`
+	ErrorAssertionReviewed bool       `json:"error_assertion_reviewed"`
+	ReviewedBy             *uint      `json:"reviewed_by"`
+	ReviewedAt             *time.Time `json:"reviewed_at"`
+	LatencyMs              int64      `json:"latency_ms"`
+	CreatedAt              time.Time  `json:"created_at" gorm:"index"`
 }
 
 func (AgentRunMetric) TableName() string { return "agent_run_metrics" }
@@ -200,6 +204,11 @@ type TokenUsageLog struct {
 	UserID           uint      `json:"user_id" gorm:"index"`
 	ConversationID   uint      `json:"conversation_id" gorm:"index"`
 	LLMConfigID      uint      `json:"llm_config_id" gorm:"index"`
+	Provider         string    `json:"provider" gorm:"size:32"`
+	Model            string    `json:"model" gorm:"size:128"`
+	InputPricePerM   *float64  `json:"input_price_per_m"`
+	OutputPricePerM  *float64  `json:"output_price_per_m"`
+	CostEstimate     *float64  `json:"cost_estimate"`
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens"`

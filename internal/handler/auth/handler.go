@@ -11,9 +11,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
+	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"github.com/kubepilot/kubepilot/internal/pkg/netutil"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/service/auth"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -75,7 +77,8 @@ func (h *Handler) Login(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// recordLoginLog 异步写入登入日志
+// recordLoginLog synchronously records login attempts so they cannot be lost
+// when a process exits immediately after responding.
 func (h *Handler) recordLoginLog(userID uint, username, ip, userAgent string, success bool) {
 	if h.db == nil {
 		return
@@ -88,9 +91,9 @@ func (h *Handler) recordLoginLog(userID uint, username, ip, userAgent string, su
 		Success:   success,
 		CreatedAt: time.Now(),
 	}
-	go func() {
-		_ = h.db.Create(&log).Error
-	}()
+	if err := h.db.Create(&log).Error; err != nil {
+		logger.Error("failed to save login log", zap.Error(err))
+	}
 }
 
 func (h *Handler) issueTwoFAPending(ctx context.Context, userID uint) (string, error) {

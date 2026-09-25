@@ -48,7 +48,7 @@ make docker-build       # Build Docker image
 ```bash
 cp configs/config.example.yaml configs/config.yaml
 # Edit config: set database password, JWT secret, encrypt_key
-go run scripts/init-admin.go   # Seed admin user
+KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD='<strong random password>' go run scripts/init-admin.go   # Seed admin user only if absent
 ```
 
 ## Architecture

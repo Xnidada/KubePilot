@@ -53,14 +53,13 @@ kubectl port-forward -n kubepilot svc/kubepilot 8080:8080
 | KUBEPILOT_CACHE_TYPE | redis | 缓存类型 |
 | KUBEPILOT_CACHE_ADDR | redis:6379 | Redis 地址 |
 | KUBEPILOT_JWT_SECRET | - | JWT 密钥（必须修改） |
+| KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD | - | 首次运行初始化脚本时设置管理员密码（至少 12 字符） |
+| KUBEPILOT_SEED_DEMO_USERS | false | 仅测试环境显式创建演示用户 |
+| KUBEPILOT_DEMO_PASSWORD | - | 开启演示用户时必填；不会自动授权集群 |
 
-### 修改密码
+### 初始化管理员
 
-部署后请立即修改默认密码：
-
-1. 访问 http://localhost:8080
-2. 使用默认账号 admin / admin123 登录
-3. 进入系统管理 → 用户管理 → 修改密码
+连接数据库后执行 `KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD='<强随机密码>' go run scripts/init-admin.go`。脚本只创建缺失账号，不重置已有密码、角色或集群授权。演示用户必须显式启用并由管理员手工分配集群权限。
 
 ## 常用命令
 
@@ -79,7 +78,7 @@ kubectl delete namespace kubepilot      # 删除所有资源
 
 ## 生产环境建议
 
-- 修改默认密码与 JWT Secret
+- 设置强管理员密码与 JWT Secret
 - 使用独立 PostgreSQL / Redis，并做好备份
 - 配置 Ingress TLS
 
@@ -112,7 +111,7 @@ KubePilot 备份模块会在目标集群创建真实的 `velero.io/v1` Backup/Re
 
 说明文档：[`deploy/velero/README.md`](velero/README.md)
 
-1. **修改默认密码**: 立即修改 admin 默认密码
+1. **管理员密码**: 首次初始化使用独立强密码
 2. **修改 JWT 密钥**: 设置强随机密钥
 3. **启用 HTTPS**: 配置 Ingress TLS
 4. **数据备份**: 定期备份 PostgreSQL 数据

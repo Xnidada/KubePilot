@@ -472,13 +472,14 @@ const AISettings: React.FC = () => {
                 </Col>
                 <Col span={24}>
                   <Statistic
-                    title="估算费用"
+                    title="已计价费用"
                     value={tokenStats?.total_cost_estimate || 0}
                     precision={4}
                     prefix={<DollarOutlined />}
                     suffix="$"
                     valueStyle={{ color: '#faad14' }}
                   />
+                  {tokenStats?.unpriced_tokens ? <Text type="warning">另有 {formatTokens(tokenStats.unpriced_tokens)} Token 缺少历史价格快照，未计入费用。</Text> : null}
                 </Col>
               </Row>
             </Col>

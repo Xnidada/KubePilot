@@ -3,7 +3,9 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,112 +16,12 @@ import (
 	"go.uber.org/zap"
 )
 
-type responseBodyWriter struct {
-	gin.ResponseWriter
-	body *bytes.Buffer
-}
-
-func (r *responseBodyWriter) Write(b []byte) (int, error) {
-	r.body.Write(b)
-	return r.ResponseWriter.Write(b)
-}
-
-// sensitivePaths 需要脱敏的路径
-var sensitivePaths = []string{
-	"/auth/login",
-	"/auth/register",
-	"/secrets",
-	"/aiops/configs",
-	"/system/oauth/configs",
-	"/profile/password",
-}
-
-// isSensitivePath 检查是否是敏感路径
-func isSensitivePath(path string) bool {
-	for _, sp := range sensitivePaths {
-		if strings.Contains(path, sp) {
-			return true
-		}
-	}
-	return false
-}
-
-// maskSensitiveData 脱敏请求体
-func maskSensitiveData(data []byte, path string) string {
-	if len(data) == 0 {
-		return ""
-	}
-
-	// 对于 Secret 操作，不记录内容
-	if strings.Contains(path, "/secrets") {
-		return "[secret data masked]"
-	}
-
-	var decoded interface{}
-	if err := json.Unmarshal(data, &decoded); err == nil {
-		masked, err := json.Marshal(redactAuditValue(decoded))
-		if err == nil {
-			if len(masked) > 4096 {
-				return string(masked[:4096]) + "...[truncated]"
-			}
-			return string(masked)
-		}
-	}
-	if isSensitivePath(path) {
-		return "[masked]"
-	}
-
-	// 限制请求体大小
-	if len(data) > 4096 {
-		return string(data[:4096]) + "...[truncated]"
-	}
-
-	return string(data)
-}
-
-func redactAuditValue(value interface{}) interface{} {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		for key, child := range v {
-			switch strings.ToLower(key) {
-			case "password", "api_key", "client_secret", "kubeconfig", "token", "access_token", "refresh_token":
-				v[key] = "******"
-			default:
-				v[key] = redactAuditValue(child)
-			}
-		}
-	case []interface{}:
-		for i, child := range v {
-			v[i] = redactAuditValue(child)
-		}
-	}
-	return value
-}
-
 func AuditMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		startTime := time.Now()
-		path := c.Request.URL.Path
-
-		// 读取请求体
-		var requestBody []byte
-		if c.Request.Body != nil && !isSensitivePath(path) {
-			// 非敏感路径，读取并记录
-			requestBody, _ = io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-		} else if c.Request.Body != nil {
-			// 敏感路径，读取但脱敏
-			requestBody, _ = io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-		}
-
-		// Wrap response writer
-		w := &responseBodyWriter{
-			body:           &bytes.Buffer{},
-			ResponseWriter: c.Writer,
-		}
-		c.Writer = w
-
+		// Audit only metadata: free-form Agent prompts, YAML and tool results may
+		// contain secrets, and reading bodies here can exhaust memory.
+		batchIDs := safeBatchIDs(c.Request)
 		c.Next()
 
 		latency := time.Since(startTime).Milliseconds()
@@ -134,14 +36,14 @@ func AuditMiddleware() gin.HandlerFunc {
 		if resourceName == "" && c.Request.Method == "DELETE" {
 			resourceName = c.Param("id")
 		}
+		if resourceName == "" {
+			resourceName = batchIDs
+		}
 		clusterID := ""
 		if strings.Contains(c.FullPath(), "/clusters/:id") {
 			clusterID = c.Param("id")
 		}
 		namespace := c.Param("ns")
-
-		// Mask request body for sensitive paths
-		maskedBody := maskSensitiveData(requestBody, path)
 
 		// Parse cluster ID
 		var clusterIDUint uint
@@ -158,7 +60,7 @@ func AuditMiddleware() gin.HandlerFunc {
 			ResourceType: resourceType,
 			ResourceName: resourceName,
 			Namespace:    namespace,
-			RequestBody:  maskedBody,
+			RequestBody:  "",
 			ResponseCode: c.Writer.Status(),
 			Latency:      latency,
 			IP:           netutil.RealClientIP(c),
@@ -180,13 +82,60 @@ func AuditMiddleware() gin.HandlerFunc {
 			auditLog.ClusterID = &clusterIDUint
 		}
 
-		// Save audit log asynchronously
-		go func() {
+		persist := func() {
 			if err := model.DB.Create(&auditLog).Error; err != nil {
 				logger.Error("failed to save audit log", zap.Error(err))
 			}
-		}()
+		}
+		// Persist mutations before returning to the client. Reads remain async.
+		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
+			go persist()
+		} else {
+			persist()
+		}
 	}
+}
+
+// safeBatchIDs captures only the integer IDs of known batch-delete requests.
+// Reading is bounded, and the original body stream is restored for handlers.
+func safeBatchIDs(request *http.Request) string {
+	path := request.URL.Path
+	if request.Body == nil || request.Method != http.MethodPost ||
+		(!strings.HasSuffix(path, "/batch-delete") && !strings.HasSuffix(path, "/batch-forget")) {
+		return ""
+	}
+	original := request.Body
+	const maxBody = 4096
+	prefix, err := io.ReadAll(io.LimitReader(original, maxBody+1))
+	request.Body = struct {
+		io.Reader
+		io.Closer
+	}{Reader: io.MultiReader(bytes.NewReader(prefix), original), Closer: original}
+	if err != nil || len(prefix) > maxBody {
+		return ""
+	}
+	var body struct {
+		IDs []uint `json:"ids"`
+	}
+	if json.Unmarshal(prefix, &body) != nil || len(body.IDs) == 0 || len(body.IDs) > 100 {
+		return ""
+	}
+	ids := body.IDs
+	if len(ids) > 8 {
+		ids = ids[:8]
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprint(id))
+	}
+	name := "ids=" + strings.Join(parts, ",")
+	if len(body.IDs) > len(ids) {
+		name += fmt.Sprintf("(+%d)", len(body.IDs)-len(ids))
+	}
+	if len(name) > 128 {
+		return name[:128]
+	}
+	return name
 }
 
 func extractResourceType(path string) string {

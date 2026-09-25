@@ -168,13 +168,18 @@ export interface AgentMemory {
   id: number; user_id: number; cluster_id?: number; type: 'preference' | 'verified_knowledge'
   content: string; source: string; confidence: number; expires_at?: string; is_pinned: boolean; created_at: string
 }
-export interface MemoryMetrics { runs: number; avg_prompt_tokens: number; repeated_tool_call_rate: number; context_hit_rate: number; error_assertion_rate: number; user_correction_rate: number; avg_latency_ms: number }
+export interface AgentMemoryAudit { id: number; memory_id: number; actor_id: number; action: string; detail: string; created_at: string }
+export interface MemoryMetrics { runs: number; avg_prompt_tokens: number; repeated_tool_call_rate: number; context_hit_rate: number; error_assertion_rate: number | null; error_assertion_reviewed: number; user_correction_rate: number; avg_latency_ms: number }
+export interface MetricReviewSample { id: number; conversation_id: number; question: string; answer: string; evidence: string }
 export const listAgentMemories = () => get<{ code: number; data: AgentMemory[] }>('/aiops/memories')
+export const listAgentMemoryAudits = () => get<{ code: number; data: AgentMemoryAudit[] }>('/aiops/memories/audit')
 export const createAgentMemory = (data: Partial<AgentMemory>) => post<{ code: number; data: AgentMemory }>('/aiops/memories', data)
 export const pinAgentMemory = (id: number) => post<{ code: number; data: AgentMemory }>(`/aiops/memories/${id}/pin`)
 export const forgetAgentMemory = (id: number) => del(`/aiops/memories/${id}`)
 export const batchForgetAgentMemories = (ids: number[]) => post<{ code: number; data: { deleted: number } }>('/aiops/memories/batch-forget', { ids })
 export const getMemoryMetrics = () => get<{ code: number; data: MemoryMetrics }>('/aiops/memory-metrics')
+export const getMetricReviewSamples = () => get<{ code: number; data: MetricReviewSample[] }>('/aiops/memory-metrics/review-samples')
+export const reviewMetricAssertion = (id: number, errorAssertion: boolean) => put(`/aiops/memory-metrics/${id}/review`, { error_assertion: errorAssertion })
 
 // Set default LLM config
 export const setDefaultLLMConfig = (id: number) => {
@@ -318,6 +323,7 @@ export interface TokenUsageStats {
   total_prompt_tokens: number
   total_completion_tokens: number
   total_cost_estimate: number
+  unpriced_tokens: number
   by_day: Array<{
     date: string
     total_tokens: number

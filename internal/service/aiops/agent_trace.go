@@ -53,35 +53,46 @@ func (s *Service) persistTokenUsage(userID, conversationID uint, usage llm.Usage
 	if s.db == nil || usage.TotalTokens == 0 {
 		return
 	}
-	// Look up active LLM config ID
-	var llmConfigID uint
+	// Snapshot pricing when usage occurs: later config edits/deletion must not
+	// rewrite historical costs. Rows without a config remain explicitly unpriced.
 	var cfg model.LLMConfig
-	if err := s.db.Where("is_active = ?", true).First(&cfg).Error; err == nil {
-		llmConfigID = cfg.ID
-	}
+	priced := s.db.Where("is_active = ?", true).Order("id DESC").First(&cfg).Error == nil
 	rec := model.TokenUsageLog{
 		UserID:           userID,
 		ConversationID:   conversationID,
-		LLMConfigID:      llmConfigID,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
 		ChatType:         chatType,
 		CreatedAt:        time.Now(),
 	}
+	if priced {
+		cost := usageCostEstimate(usage.PromptTokens, usage.CompletionTokens, cfg.InputPricePerM, cfg.OutputPricePerM)
+		rec.LLMConfigID = cfg.ID
+		rec.Provider = cfg.Provider
+		rec.Model = cfg.Model
+		rec.InputPricePerM = &cfg.InputPricePerM
+		rec.OutputPricePerM = &cfg.OutputPricePerM
+		rec.CostEstimate = &cost
+	}
 	_ = s.db.WithContext(context.Background()).Create(&rec).Error
+}
+
+func usageCostEstimate(prompt, completion int, inputPrice, outputPrice float64) float64 {
+	return (float64(prompt)*inputPrice + float64(completion)*outputPrice) / 1_000_000
 }
 
 // TokenUsageStats is the response for the token usage stats API.
 type TokenUsageStats struct {
-	TotalTokens          int                `json:"total_tokens"`
-	TotalPromptTokens    int                `json:"total_prompt_tokens"`
-	TotalCompletionTokens int               `json:"total_completion_tokens"`
-	TotalCostEstimate    float64            `json:"total_cost_estimate"`
-	ByDay                []TokenUsageByDay  `json:"by_day"`
-	ByModel              []TokenUsageByModel `json:"by_model"`
-	ByUser               []TokenUsageByUser  `json:"by_user"`
-	ByType               []TokenUsageByType  `json:"by_type"`
+	TotalTokens           int                 `json:"total_tokens"`
+	TotalPromptTokens     int                 `json:"total_prompt_tokens"`
+	TotalCompletionTokens int                 `json:"total_completion_tokens"`
+	TotalCostEstimate     float64             `json:"total_cost_estimate"`
+	UnpricedTokens        int                 `json:"unpriced_tokens"`
+	ByDay                 []TokenUsageByDay   `json:"by_day"`
+	ByModel               []TokenUsageByModel `json:"by_model"`
+	ByUser                []TokenUsageByUser  `json:"by_user"`
+	ByType                []TokenUsageByType  `json:"by_type"`
 }
 
 type TokenUsageByDay struct {
@@ -127,33 +138,14 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 	}
 	base.Select("COALESCE(SUM(total_tokens),0) as total_tokens, COALESCE(SUM(prompt_tokens),0) as prompt_tokens, COALESCE(SUM(completion_tokens),0) as completion_tokens").Scan(&totals)
 
-	// Cost estimate: use per-model pricing from llm_configs
-	var llmConfigs []model.LLMConfig
-	s.db.Find(&llmConfigs)
-	priceMap := make(map[uint]model.LLMConfig) // id → config
-	for _, c := range llmConfigs {
-		priceMap[c.ID] = c
+	var pricing struct {
+		Cost           float64
+		UnpricedTokens int
 	}
-	// Calculate cost per LLM config
-	type perConfigTokens struct {
-		LLMConfigID      uint
-		PromptTokens     int
-		CompletionTokens int
-	}
-	var perConfig []perConfigTokens
-	s.db.Model(&model.TokenUsageLog{}).
-		Select("llm_config_id, SUM(prompt_tokens) as prompt_tokens, SUM(completion_tokens) as completion_tokens").
-		Where("created_at >= ?", since).
-		Group("llm_config_id").Find(&perConfig)
-	costEstimate := 0.0
-	for _, pc := range perConfig {
-		cfg, ok := priceMap[pc.LLMConfigID]
-		if !ok {
-			// Fallback to GPT-4o pricing
-			costEstimate += float64(pc.PromptTokens)*2.5/1_000_000 + float64(pc.CompletionTokens)*10.0/1_000_000
-			continue
-		}
-		costEstimate += float64(pc.PromptTokens)*cfg.InputPricePerM/1_000_000 + float64(pc.CompletionTokens)*cfg.OutputPricePerM/1_000_000
+	if err := s.db.Model(&model.TokenUsageLog{}).
+		Select("COALESCE(SUM(cost_estimate),0) AS cost, COALESCE(SUM(CASE WHEN cost_estimate IS NULL THEN total_tokens ELSE 0 END),0) AS unpriced_tokens").
+		Where("created_at >= ?", since).Scan(&pricing).Error; err != nil {
+		return nil, err
 	}
 
 	// By day
@@ -163,13 +155,12 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 		Where("created_at >= ?", since).
 		Group("DATE(created_at)").Order("date ASC").Find(&byDay)
 
-	// By model (join with llm_configs)
+	// Model names are also snapshotted; legacy rows without snapshots are unknown.
 	var byModel []TokenUsageByModel
 	s.db.Table("token_usage_logs AS t").
-		Select("COALESCE(c.model, 'unknown') as model, SUM(t.total_tokens) as total_tokens").
-		Joins("LEFT JOIN llm_configs c ON t.llm_config_id = c.id").
+		Select("COALESCE(NULLIF(t.model, ''), 'unknown') as model, SUM(t.total_tokens) as total_tokens").
 		Where("t.created_at >= ?", since).
-		Group("c.model").Order("total_tokens DESC").Find(&byModel)
+		Group("t.model").Order("total_tokens DESC").Find(&byModel)
 
 	// By user (join with users)
 	var byUser []TokenUsageByUser
@@ -187,14 +178,15 @@ func (s *Service) GetTokenUsageStats(days int) (*TokenUsageStats, error) {
 		Group("chat_type").Order("total_tokens DESC").Find(&byType)
 
 	return &TokenUsageStats{
-		TotalTokens:          totals.TotalTokens,
-		TotalPromptTokens:    totals.PromptTokens,
+		TotalTokens:           totals.TotalTokens,
+		TotalPromptTokens:     totals.PromptTokens,
 		TotalCompletionTokens: totals.CompletionTokens,
-		TotalCostEstimate:    costEstimate,
-		ByDay:                byDay,
-		ByModel:              byModel,
-		ByUser:               byUser,
-		ByType:               byType,
+		TotalCostEstimate:     pricing.Cost,
+		UnpricedTokens:        pricing.UnpricedTokens,
+		ByDay:                 byDay,
+		ByModel:               byModel,
+		ByUser:                byUser,
+		ByType:                byType,
 	}, nil
 }
 

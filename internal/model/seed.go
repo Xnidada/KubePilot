@@ -1,15 +1,39 @@
 package model
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"github.com/kubepilot/kubepilot/internal/pkg/logger"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
-// SeedData 初始化默认数据（角色、权限、用户）
+// SeedData bootstraps missing roles and an admin. Demo users are opt-in and
+// existing users, roles and cluster grants are never rewritten.
 func SeedData() error {
+	var existingAdmin User
+	lookupErr := DB.Where("username = ?", "admin").First(&existingAdmin).Error
+	if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("lookup admin: %w", lookupErr)
+	}
+	adminMissing := errors.Is(lookupErr, gorm.ErrRecordNotFound)
+	adminPassword := os.Getenv("KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD")
+	if adminMissing {
+		if err := validateSeedPassword(adminPassword); err != nil {
+			return fmt.Errorf("KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD: %w", err)
+		}
+	}
+	seedDemo := os.Getenv("KUBEPILOT_SEED_DEMO_USERS") == "true"
+	demoPassword := os.Getenv("KUBEPILOT_DEMO_PASSWORD")
+	if seedDemo {
+		if err := validateSeedPassword(demoPassword); err != nil {
+			return fmt.Errorf("KUBEPILOT_DEMO_PASSWORD: %w", err)
+		}
+	}
 	// 定义默认角色
 	type RoleDef struct {
 		Name        string
@@ -51,12 +75,12 @@ func SeedData() error {
 		},
 	}
 
-	// 创建或更新角色
+	// Create only missing roles; local permission edits must survive re-runs.
 	roleMap := make(map[string]uint)
 	for _, r := range roles {
 		var existingRole Role
 		result := DB.Where("name = ?", r.Name).First(&existingRole)
-		if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			newRole := Role{
 				Name:        r.Name,
 				Description: r.Description,
@@ -64,29 +88,19 @@ func SeedData() error {
 				IsSystem:    r.IsSystem,
 			}
 			if err := DB.Create(&newRole).Error; err != nil {
-				logger.Error("failed to create role", zap.String("role", r.Name), zap.Error(err))
+				return fmt.Errorf("create role %s: %w", r.Name, err)
 			} else {
 				logger.Info("role created", zap.String("role", r.Name))
 				roleMap[r.Name] = newRole.ID
 			}
+		} else if result.Error != nil {
+			return fmt.Errorf("lookup role %s: %w", r.Name, result.Error)
 		} else {
 			roleMap[r.Name] = existingRole.ID
-			// 强制更新权限
-			DB.Model(&existingRole).Update("permissions", r.Permissions)
-			DB.Model(&existingRole).Update("description", r.Description)
-			DB.Model(&existingRole).Update("is_system", r.IsSystem)
-			logger.Info("role updated", zap.String("role", r.Name))
 		}
 	}
 
-	// 默认密码
-	defaultPassword := "admin123"
-	hashedPassword, err := crypto.HashPassword(defaultPassword)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	// 定义默认用户
+	// Create the administrator only when absent. Existing credentials stay put.
 	type UserDef struct {
 		Username string
 		Email    string
@@ -94,15 +108,31 @@ func SeedData() error {
 		RoleName string
 	}
 
+	if adminMissing {
+		password, err := crypto.HashPassword(adminPassword)
+		if err != nil {
+			return fmt.Errorf("hash admin password: %w", err)
+		}
+		admin := User{Username: "admin", Email: "admin@kubepilot.io", Password: password, RealName: "系统管理员", Status: 1, RoleID: roleMap["admin"]}
+		if err := DB.Create(&admin).Error; err != nil {
+			return fmt.Errorf("create admin: %w", err)
+		}
+	}
+	if !seedDemo {
+		return nil
+	}
+	password, err := crypto.HashPassword(demoPassword)
+	if err != nil {
+		return fmt.Errorf("hash demo password: %w", err)
+	}
 	users := []UserDef{
-		{Username: "admin", Email: "admin@kubepilot.io", RealName: "系统管理员", RoleName: "admin"},
 		{Username: "operator", Email: "operator@kubepilot.io", RealName: "运维工程师", RoleName: "operator"},
 		{Username: "developer", Email: "developer@kubepilot.io", RealName: "开发人员", RoleName: "user"},
 		{Username: "viewer", Email: "viewer@kubepilot.io", RealName: "只读用户", RoleName: "viewer"},
 		{Username: "aiviewer", Email: "aiviewer@kubepilot.io", RealName: "AI 只读用户", RoleName: "aiviewer"},
 	}
 
-	// 创建或更新用户
+	// Demo users are never granted cluster access automatically.
 	for _, u := range users {
 		roleID, ok := roleMap[u.RoleName]
 		if !ok {
@@ -111,86 +141,30 @@ func SeedData() error {
 
 		var existingUser User
 		result := DB.Where("username = ?", u.Username).First(&existingUser)
-		if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			newUser := User{
 				Username: u.Username,
 				Email:    u.Email,
-				Password: hashedPassword,
+				Password: password,
 				RealName: u.RealName,
 				Status:   1,
 				RoleID:   roleID,
 			}
 			if err := DB.Create(&newUser).Error; err != nil {
-				logger.Error("failed to create user", zap.String("user", u.Username), zap.Error(err))
+				return fmt.Errorf("create user %s: %w", u.Username, err)
 			} else {
 				logger.Info("user created", zap.String("user", u.Username), zap.String("role", u.RoleName))
 			}
-		} else if existingUser.RoleID != roleID {
-			// Keep demo users aligned with their seeded roles (e.g. aiviewer).
-			if err := DB.Model(&existingUser).Update("role_id", roleID).Error; err != nil {
-				logger.Error("failed to update user role", zap.String("user", u.Username), zap.Error(err))
-			}
+		} else if result.Error != nil {
+			return fmt.Errorf("lookup user %s: %w", u.Username, result.Error)
 		}
 	}
-
-	if err := ensureDemoUserClusterGrants(); err != nil {
-		logger.Error("failed to ensure demo user cluster grants", zap.Error(err))
-	}
-
 	return nil
 }
 
-// ensureDemoUserClusterGrants grants all existing clusters to seeded non-admin demo users.
-// Without UserCluster rows, cluster list APIs filter to empty for these accounts.
-func ensureDemoUserClusterGrants() error {
-	levelByUser := map[string]string{
-		"viewer":    "read",
-		"aiviewer":  "read",
-		"developer": "write",
-		"operator":  "write",
-	}
-
-	var clusters []Cluster
-	if err := DB.Find(&clusters).Error; err != nil {
-		return err
-	}
-	if len(clusters) == 0 {
-		return nil
-	}
-
-	for username, level := range levelByUser {
-		var user User
-		if err := DB.Where("username = ?", username).First(&user).Error; err != nil {
-			continue
-		}
-		for _, cluster := range clusters {
-			var count int64
-			if err := DB.Model(&UserCluster{}).
-				Where("user_id = ? AND cluster_id = ? AND namespace = ?", user.ID, cluster.ID, "*").
-				Count(&count).Error; err != nil {
-				return err
-			}
-			if count > 0 {
-				continue
-			}
-			grant := UserCluster{
-				UserID:          user.ID,
-				ClusterID:       cluster.ID,
-				Namespace:       "*",
-				PermissionLevel: level,
-			}
-			if err := DB.Create(&grant).Error; err != nil {
-				logger.Error("failed to grant cluster access",
-					zap.String("user", username),
-					zap.Uint("cluster_id", cluster.ID),
-					zap.Error(err))
-				continue
-			}
-			logger.Info("demo cluster grant ensured",
-				zap.String("user", username),
-				zap.Uint("cluster_id", cluster.ID),
-				zap.String("level", level))
-		}
+func validateSeedPassword(password string) error {
+	if len([]rune(password)) < 12 || strings.EqualFold(password, "admin123") {
+		return fmt.Errorf("provide a unique password of at least 12 characters")
 	}
 	return nil
 }

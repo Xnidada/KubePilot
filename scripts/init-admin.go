@@ -27,19 +27,17 @@ func main() {
 	if err := model.InitDatabase(cfg.Database.Driver, cfg.Database.DSN(), cfg.Database.MaxIdleConns, cfg.Database.MaxOpenConns); err != nil {
 		logger.Fatal("failed to connect to database", zap.Error(err))
 	}
+	if err := model.AutoMigrateCore(); err != nil {
+		logger.Fatal("failed to migrate core tables", zap.Error(err))
+	}
 
 	if err := model.SeedData(); err != nil {
 		logger.Fatal("failed to seed data", zap.Error(err))
 	}
 
 	fmt.Println("=== Initialization Complete ===")
-	fmt.Println("")
-	fmt.Println("Default users (password: admin123):")
-	fmt.Println("  - admin     : 系统管理员")
-	fmt.Println("  - operator  : 运维工程师")
-	fmt.Println("  - developer : 开发人员")
-	fmt.Println("  - viewer    : 只读用户（不含 AI 智能）")
-	fmt.Println("  - aiviewer  : AI 只读用户（可浏览 AI 智能，不可执行）")
-	fmt.Println("")
-	fmt.Println("⚠️  Please change the default passwords after first login!")
+	fmt.Println("Existing users, roles and cluster grants were preserved.")
+	if os.Getenv("KUBEPILOT_SEED_DEMO_USERS") == "true" {
+		fmt.Println("Demo users were created only if absent; grant cluster access explicitly.")
+	}
 }

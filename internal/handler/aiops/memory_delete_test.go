@@ -33,3 +33,23 @@ func TestForgetMemoryRejectsInvalidSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateVerifiedKnowledgeRequiresSourceBeforeDatabaseWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("user_id", uint(1)); c.Next() })
+	router.POST("/memories", (&Handler{}).CreateMemory)
+	for _, body := range []string{
+		`{"type":"verified_knowledge","content":"resource is healthy"}`,
+		`{"type":"verified_knowledge","content":"resource is healthy","source":"   "}`,
+		`{"type":"verified_knowledge","content":"resource is healthy","source":"API_KEY=dummy"}`,
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/memories", bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("body %s: got %d", body, recorder.Code)
+		}
+	}
+}

@@ -87,7 +87,7 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 	}
 	s.persistAgentToolTrace(userID, clusterID, conversationID, message, res.Trace, res.Pending)
 	s.refreshConversationState(userID, clusterID, conversationID, message, res.Content, res.Trace, res.Pending)
-	s.persistAgentRunMetric(userID, clusterID, conversationID, message, res.Usage, res.Trace, startedAt, res.MemoryHits)
+	s.persistAgentRunMetric(userID, clusterID, conversationID, msgID, message, res.Usage, res.Trace, startedAt, res.MemoryHits)
 
 	emit(AgentStreamEvent{
 		Type:           "done",
