@@ -61,3 +61,33 @@ func TestBackupDeleteSelectionAndActiveStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteRestoreRecordRejectsInvalidSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := &Handler{}
+	router.DELETE("/backups/restores/:id", h.DeleteRestoreRecord)
+	router.POST("/backups/restores/batch-delete", h.BatchDeleteRestoreRecords)
+
+	for _, id := range []string{"0", "abc", "4294967296"} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/backups/restores/"+id, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("id %q: expected 400, got %d", id, recorder.Code)
+		}
+	}
+	tooMany := make([]uint, 101)
+	for i := range tooMany {
+		tooMany[i] = uint(i + 1)
+	}
+	for _, ids := range [][]uint{nil, {}, {0}, tooMany} {
+		body, _ := json.Marshal(map[string]any{"ids": ids})
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/backups/restores/batch-delete", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("ids %v: expected 400, got %d", ids, recorder.Code)
+		}
+	}
+}

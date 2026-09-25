@@ -23,6 +23,8 @@ import {
   deleteBackupRecord,
   batchDeleteBackupRecords,
   listRestoreRecords,
+  deleteRestoreRecord,
+  batchDeleteRestoreRecords,
   createRestore,
   BackupScheduleItem,
   BackupRecordItem,
@@ -41,6 +43,9 @@ const REFRESH_MS = 10000
 const backupRecordActive = (record: BackupRecordItem) =>
   record.status === 'pending' || record.status === 'in_progress'
 
+const restoreRecordActive = (record: RestoreRecordItem) =>
+  record.status !== 'completed' && record.status !== 'failed'
+
 function parseJSONArray(raw?: string): string {
   if (!raw) return ''
   try {
@@ -58,7 +63,9 @@ const Backup: React.FC = () => {
   const [restores, setRestores] = useState<RestoreRecordItem[]>([])
   const [loading, setLoading] = useState(false)
   const [deletingBackup, setDeletingBackup] = useState(false)
+  const [deletingRestore, setDeletingRestore] = useState(false)
   const [selectedBackupKeys, setSelectedBackupKeys] = useState<React.Key[]>([])
+  const [selectedRestoreKeys, setSelectedRestoreKeys] = useState<React.Key[]>([])
   const canDeleteBackups = useAuthStore((state) => state.hasPermission('backups', 'delete'))
   const [backupModalVisible, setBackupModalVisible] = useState(false)
   const [scheduleModalVisible, setScheduleModalVisible] = useState(false)
@@ -93,7 +100,10 @@ const Backup: React.FC = () => {
   const fetchRestores = useCallback(async () => {
     try {
       const res = await listRestoreRecords()
-      setRestores(res.data || [])
+      const records = res.data || []
+      setRestores(records)
+      const selectableIDs = new Set(records.filter((record) => !restoreRecordActive(record)).map((record) => record.id))
+      setSelectedRestoreKeys((keys) => keys.filter((key) => selectableIDs.has(Number(key))))
     } catch (e) { console.error(e) }
   }, [])
 
@@ -111,7 +121,7 @@ const Backup: React.FC = () => {
   useInterval(() => {
     if (activeTab === 'schedules') fetchSchedules()
     else if (activeTab === 'backups' && !deletingBackup) fetchBackups()
-    else fetchRestores()
+    else if (activeTab === 'restores' && !deletingRestore) fetchRestores()
   }, REFRESH_MS, autoRefresh)
 
   const openCreateSchedule = () => {
@@ -163,6 +173,21 @@ const Backup: React.FC = () => {
       console.error('Failed to delete backup records:', e)
     } finally {
       setDeletingBackup(false)
+    }
+  }
+
+  const handleDeleteRestores = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingRestore(true)
+    try {
+      const res = ids.length === 1 ? await deleteRestoreRecord(ids[0]) : await batchDeleteRestoreRecords(ids)
+      message.success(`已删除 ${res.data.deleted} 条恢复记录`)
+      setSelectedRestoreKeys([])
+      await Promise.all([fetchRestores(), fetchBackups()])
+    } catch (e) {
+      console.error('Failed to delete restore records:', e)
+    } finally {
+      setDeletingRestore(false)
     }
   }
 
@@ -369,6 +394,23 @@ const Backup: React.FC = () => {
       title: '完成时间', dataIndex: 'completed_at', key: 'completed_at',
       render: (t) => t ? new Date(t).toLocaleString() : '-'
     },
+    ...(canDeleteBackups ? [{
+      title: '操作', key: 'action', width: 90,
+      render: (_: unknown, record: RestoreRecordItem) => (
+        <Popconfirm
+          title="删除这条恢复记录？"
+          description="仅删除平台记录，不撤销已恢复的资源。"
+          okText="删除"
+          okButtonProps={{ danger: true, loading: deletingRestore }}
+          onConfirm={() => handleDeleteRestores([record.id])}
+          disabled={restoreRecordActive(record) || deletingRestore}
+        >
+          <Tooltip title={restoreRecordActive(record) ? '进行中的恢复不能删除' : '删除恢复记录'}>
+            <Button type="link" danger icon={<DeleteOutlined />} disabled={restoreRecordActive(record) || deletingRestore} />
+          </Tooltip>
+        </Popconfirm>
+      ),
+    }] : []),
   ]
 
   return (
@@ -456,8 +498,30 @@ const Backup: React.FC = () => {
             key: 'restores',
             label: <span><RollbackOutlined /> 恢复记录</span>,
             children: (
-              <Card>
-                <Table columns={restoreColumns} dataSource={restores} rowKey="id" />
+              <Card extra={canDeleteBackups && (
+                <Popconfirm
+                  title={`删除选中的 ${selectedRestoreKeys.length} 条恢复记录？`}
+                  description="仅删除平台记录，不撤销已恢复的资源。"
+                  okText="删除"
+                  okButtonProps={{ danger: true, loading: deletingRestore }}
+                  onConfirm={() => handleDeleteRestores(selectedRestoreKeys.map(Number))}
+                >
+                  <Button danger icon={<DeleteOutlined />} disabled={selectedRestoreKeys.length === 0 || deletingRestore}>
+                    删除所选{selectedRestoreKeys.length > 0 ? ` (${selectedRestoreKeys.length})` : ''}
+                  </Button>
+                </Popconfirm>
+              )}>
+                <Table
+                  columns={restoreColumns}
+                  dataSource={restores}
+                  rowKey="id"
+                  rowSelection={canDeleteBackups ? {
+                    selectedRowKeys: selectedRestoreKeys,
+                    preserveSelectedRowKeys: true,
+                    onChange: setSelectedRestoreKeys,
+                    getCheckboxProps: (record) => ({ disabled: restoreRecordActive(record) }),
+                  } : undefined}
+                />
               </Card>
             ),
           },

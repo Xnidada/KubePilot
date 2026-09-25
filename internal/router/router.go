@@ -219,6 +219,8 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 				// Alert history
 				alertGroup.GET("/history", alertHandler.ListAlertHistory)
+				alertGroup.DELETE("/history/:id", alertHandler.DeleteAlertHistory)
+				alertGroup.POST("/history/batch-delete", alertHandler.BatchDeleteAlertHistory)
 
 				// Notification channels
 				alertGroup.GET("/channels", alertHandler.ListNotificationChannels)

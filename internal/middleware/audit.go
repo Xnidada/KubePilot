@@ -131,7 +131,7 @@ func AuditMiddleware() gin.HandlerFunc {
 		// Extract resource info from path
 		resourceType := extractResourceType(c.FullPath())
 		resourceName := c.Param("name")
-		if resourceName == "" && c.Request.Method == "DELETE" && (resourceType == "backup_records" || resourceType == "inspection_reports") {
+		if resourceName == "" && c.Request.Method == "DELETE" {
 			resourceName = c.Param("id")
 		}
 		clusterID := ""
@@ -190,8 +190,23 @@ func AuditMiddleware() gin.HandlerFunc {
 }
 
 func extractResourceType(path string) string {
+	if strings.HasPrefix(path, "/api/v1/backups/restores") {
+		return "restore_records"
+	}
 	if path == "/api/v1/backups/:id" || path == "/api/v1/backups/batch-delete" {
 		return "backup_records"
+	}
+	if strings.HasPrefix(path, "/api/v1/aiops/memories") {
+		return "agent_memories"
+	}
+	if strings.HasPrefix(path, "/api/v1/webhooks/logs") {
+		return "webhook_logs"
+	}
+	if strings.HasPrefix(path, "/api/v1/event-forward/logs") {
+		return "event_forward_logs"
+	}
+	if strings.HasPrefix(path, "/api/v1/alerts/history") {
+		return "alert_history"
 	}
 	if strings.HasPrefix(path, "/api/v1/inspection/reports") {
 		return "inspection_reports"

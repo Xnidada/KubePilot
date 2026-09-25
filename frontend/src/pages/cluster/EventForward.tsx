@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Card,
   Table,
@@ -17,6 +17,7 @@ import {
   Statistic,
   Row,
   Col,
+  Popconfirm,
 } from 'antd'
 import {
   PlusOutlined,
@@ -36,6 +37,8 @@ import {
   deleteEventForwardRule,
   testEventForwardRule,
   listEventForwardLogs,
+  deleteEventForwardLog,
+  batchDeleteEventForwardLogs,
   getEventForwardStats,
   resetEventForwardStats,
   EventForwardRule,
@@ -45,6 +48,7 @@ import {
 import { useQueryTab } from '../../hooks/useQueryTab'
 import { useInterval } from '../../hooks/useInterval'
 import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
@@ -55,6 +59,12 @@ const EventForward: React.FC = () => {
   const [clusters, setClusters] = useState<Cluster[]>([])
   const [rules, setRules] = useState<EventForwardRule[]>([])
   const [logs, setLogs] = useState<EventForwardLog[]>([])
+  const [logPage, setLogPage] = useState(1)
+  const [logTotal, setLogTotal] = useState(0)
+  const [selectedLogKeys, setSelectedLogKeys] = useState<React.Key[]>([])
+  const [deletingLogs, setDeletingLogs] = useState(false)
+  const logRequest = useRef(0)
+  const canDeleteLogs = useAuthStore((state) => state.hasPermission('event_forward', 'delete'))
   const [stats, setStats] = useState<EventForwardStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedCluster, setSelectedCluster] = useState<number>(0)
@@ -73,14 +83,19 @@ const EventForward: React.FC = () => {
     }
   }, [])
 
-  const fetchLogs = useCallback(async () => {
+  const fetchLogs = useCallback(async (page = 1) => {
+    if (!selectedCluster) return
+    const request = ++logRequest.current
     try {
-      const res = await listEventForwardLogs()
+      const res = await listEventForwardLogs(selectedCluster, page)
+      if (request !== logRequest.current) return
       setLogs(res.data || [])
+      setLogTotal(res.total || 0)
+      setLogPage(page)
     } catch (error) {
       console.error('Failed to fetch logs:', error)
     }
-  }, [])
+  }, [selectedCluster])
 
   const fetchRules = useCallback(async () => {
     if (!selectedCluster) return
@@ -103,13 +118,14 @@ const EventForward: React.FC = () => {
   useEffect(() => {
     if (selectedCluster) {
       fetchRules()
-      fetchLogs()
+      setSelectedLogKeys([])
+      fetchLogs(1)
     }
   }, [selectedCluster, fetchRules, fetchLogs])
 
   useInterval(() => {
     fetchStats()
-    if (activeTab === 'logs') fetchLogs()
+    if (activeTab === 'logs' && !deletingLogs) fetchLogs(logPage)
   }, REFRESH_MS, autoRefresh)
 
   const fetchClusters = async () => {
@@ -191,6 +207,19 @@ const EventForward: React.FC = () => {
     } catch (error) {
       message.error('测试失败')
     }
+  }
+
+  const handleDeleteLogs = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingLogs(true)
+    try {
+      if (ids.length === 1) await deleteEventForwardLog(ids[0])
+      else await batchDeleteEventForwardLogs(ids)
+      message.success(`已删除 ${ids.length} 条转发日志`)
+      setSelectedLogKeys([])
+      await fetchLogs(1)
+    } catch { message.error('删除转发日志失败') }
+    finally { setDeletingLogs(false) }
   }
 
   const ruleColumns = [
@@ -293,6 +322,10 @@ const EventForward: React.FC = () => {
       key: 'created_at',
       render: (t: string) => new Date(t).toLocaleString(),
     },
+    ...(canDeleteLogs ? [{
+      title: '操作', key: 'action', width: 80,
+      render: (_: unknown, log: EventForwardLog) => <Popconfirm title="删除这条转发日志？" onConfirm={() => handleDeleteLogs([log.id])}><Button type="link" danger icon={<DeleteOutlined />} disabled={deletingLogs} /></Popconfirm>,
+    }] : []),
   ]
 
   return (
@@ -302,7 +335,7 @@ const EventForward: React.FC = () => {
         <Space>
           <Select
             value={selectedCluster}
-            onChange={setSelectedCluster}
+            onChange={(id) => { logRequest.current++; setLogs([]); setLogTotal(0); setSelectedLogKeys([]); setSelectedCluster(id) }}
             style={{ width: 200 }}
             placeholder="选择集群"
             options={clusters.map(c => ({ label: c.display_name || c.name, value: c.id }))}
@@ -311,7 +344,7 @@ const EventForward: React.FC = () => {
             <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
             <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
           </Space>
-          <Button icon={<ReloadOutlined />} onClick={() => { fetchRules(); fetchLogs(); fetchStats() }}>
+          <Button icon={<ReloadOutlined />} onClick={() => { fetchRules(); fetchLogs(logPage); fetchStats() }}>
             刷新
           </Button>
         </Space>
@@ -401,12 +434,14 @@ const EventForward: React.FC = () => {
             key: 'logs',
             label: '转发日志',
             children: (
-              <Card title="转发日志">
+              <Card title="转发日志" extra={canDeleteLogs && <Popconfirm title={`删除选中的 ${selectedLogKeys.length} 条转发日志？`} onConfirm={() => handleDeleteLogs(selectedLogKeys.map(Number))} okText="删除" okButtonProps={{ danger: true }}><Button danger icon={<DeleteOutlined />} disabled={selectedLogKeys.length === 0 || deletingLogs}>删除所选{selectedLogKeys.length > 0 ? ` (${selectedLogKeys.length})` : ''}</Button></Popconfirm>}>
                 <Table
                   columns={logColumns}
                   dataSource={logs}
                   rowKey="id"
                   size="small"
+                  rowSelection={canDeleteLogs ? { selectedRowKeys: selectedLogKeys, preserveSelectedRowKeys: true, onChange: (keys) => { if (keys.length > 100) message.warning('每次最多选择 100 条'); setSelectedLogKeys(keys.slice(0, 100)) } } : undefined}
+                  pagination={{ current: logPage, pageSize: 20, total: logTotal, onChange: fetchLogs }}
                 />
               </Card>
             ),

@@ -101,6 +101,12 @@ export const getAlertHistory = (page = 1, size = 20, status?: string) => {
   return get<{ code: number; data: AlertHistory[]; total: number }>('/alerts/history', { params })
 }
 
+export const deleteAlertHistory = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/alerts/history/${id}`)
+
+export const batchDeleteAlertHistory = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/alerts/history/batch-delete', { ids })
+
 // Notification Channels
 export const getNotificationChannels = () => {
   return get<{ code: number; data: NotificationChannel[] }>('/alerts/channels')

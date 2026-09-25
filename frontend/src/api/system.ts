@@ -466,12 +466,14 @@ export const testEventForwardRule = (id: number) => {
   return post(`/event-forward/rules/${id}/test`)
 }
 
-export const listEventForwardLogs = (ruleId?: number, status?: string) => {
-  let params = '?'
-  if (ruleId) params += `rule_id=${ruleId}&`
-  if (status) params += `status=${status}&`
-  return get<{ code: number; data: EventForwardLog[] }>(`/event-forward/logs${params}`)
-}
+export const listEventForwardLogs = (clusterId: number, page = 1, size = 20) =>
+  get<{ code: number; data: EventForwardLog[]; total: number }>('/event-forward/logs', { params: { cluster_id: clusterId, page, size } })
+
+export const deleteEventForwardLog = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/event-forward/logs/${id}`)
+
+export const batchDeleteEventForwardLogs = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/event-forward/logs/batch-delete', { ids })
 
 export interface EventForwardStats {
   watchers_active: number
@@ -580,6 +582,12 @@ export const batchDeleteBackupRecords = (ids: number[]) =>
 
 export const listRestoreRecords = () =>
   get<{ code: number; data: RestoreRecordItem[] }>('/backups/restores')
+
+export const deleteRestoreRecord = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/backups/restores/${id}`)
+
+export const batchDeleteRestoreRecords = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/backups/restores/batch-delete', { ids })
 
 export const createRestore = (data: {
   backup_id: number

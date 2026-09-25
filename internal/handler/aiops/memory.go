@@ -1,6 +1,8 @@
 package aiops
 
 import (
+	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (h *Handler) memoryQuery(c *gin.Context) *gorm.DB {
@@ -93,14 +96,71 @@ func (h *Handler) PinMemory(c *gin.Context) {
 	response.Success(c, m)
 }
 func (h *Handler) ForgetMemory(c *gin.Context) {
-	m, ok := h.ownerMemory(c)
-	if !ok {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "invalid memory id")
 		return
 	}
+	h.forgetMemories(c, []uint{uint(id)})
+}
+
+func (h *Handler) BatchForgetMemories(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids" binding:"required,min=1,max=100,dive,gt=0"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "select 1 to 100 valid memory ids")
+		return
+	}
+	h.forgetMemories(c, req.IDs)
+}
+
+func (h *Handler) forgetMemories(c *gin.Context, ids []uint) {
 	uid := c.MustGet("user_id").(uint)
-	_ = h.db.Delete(m).Error
-	_ = h.db.Create(&model.AgentMemoryAudit{MemoryID: m.ID, ActorID: uid, Action: "forget"}).Error
-	response.SuccessWithMessage(c, "memory forgotten", nil)
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+	}
+	errNotFound := errors.New("memory not found")
+	errPinned := errors.New("unpin memory before forgetting it")
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var rows []model.AgentMemory
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ? AND user_id = ?", unique, uid).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) != len(unique) {
+			return errNotFound
+		}
+		audits := make([]model.AgentMemoryAudit, 0, len(rows))
+		for _, row := range rows {
+			if row.IsPinned {
+				return errPinned
+			}
+			audits = append(audits, model.AgentMemoryAudit{MemoryID: row.ID, ActorID: uid, Action: "forget"})
+		}
+		result := tx.Where("id IN ? AND user_id = ?", unique, uid).Delete(&model.AgentMemory{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(unique)) {
+			return errNotFound
+		}
+		return tx.Create(&audits).Error
+	})
+	switch {
+	case errors.Is(err, errNotFound):
+		response.NotFound(c, err.Error())
+	case errors.Is(err, errPinned):
+		response.Error(c, http.StatusConflict, err.Error())
+	case err != nil:
+		response.InternalError(c, err.Error())
+	default:
+		response.Success(c, gin.H{"deleted": len(unique)})
+	}
 }
 func (h *Handler) GetMemoryMetrics(c *gin.Context) {
 	if h.service == nil {

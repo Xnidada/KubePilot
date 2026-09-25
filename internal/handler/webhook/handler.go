@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -185,19 +186,32 @@ func (h *Handler) TestWebhook(c *gin.Context) {
 
 // ListWebhookLogs 获取 Webhook 日志
 func (h *Handler) ListWebhookLogs(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
 	var logs []model.WebhookLog
-	query := h.db.Preload("Webhook").Order("created_at DESC").Limit(100)
+	query := h.db.Model(&model.WebhookLog{})
 
 	if webhookID := c.Query("webhook_id"); webhookID != "" {
 		query = query.Where("webhook_id = ?", webhookID)
 	}
 
-	if err := query.Find(&logs).Error; err != nil {
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := query.Preload("Webhook").Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&logs).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, logs)
+	response.PageSuccess(c, logs, total, page, size)
 }
 
 // SendNotification 发送通知（供其他模块调用）
@@ -293,4 +307,3 @@ func (h *Handler) saveLog(webhook *model.WebhookConfig, eventType, reqBody, reqU
 	h.db.Create(log)
 	return log
 }
-

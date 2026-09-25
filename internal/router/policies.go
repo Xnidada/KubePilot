@@ -71,6 +71,8 @@ func registerAPIPolicies(registry *authz.Registry) {
 	registry.MustRegister("PUT", "/api/v1/alerts/rules/:id", authz.Policy{Resource: "alerts", Action: "edit", Scope: authz.ScopePlatform})
 	registry.MustRegister("DELETE", "/api/v1/alerts/rules/:id", authz.Policy{Resource: "alerts", Action: "delete", Scope: authz.ScopePlatform})
 	registry.MustRegister("GET", "/api/v1/alerts/history", authz.Policy{Resource: "alerts", Action: "view", Scope: authz.ScopePlatform})
+	registry.MustRegister("DELETE", "/api/v1/alerts/history/:id", authz.Policy{Resource: "alerts", Action: "delete", Scope: authz.ScopeHandler})
+	registry.MustRegister("POST", "/api/v1/alerts/history/batch-delete", authz.Policy{Resource: "alerts", Action: "delete", Scope: authz.ScopeHandler})
 	registry.MustRegister("GET", "/api/v1/alerts/channels", authz.Policy{Resource: "alerts", Action: "view", Scope: authz.ScopePlatform})
 	registry.MustRegister("POST", "/api/v1/alerts/channels", authz.Policy{Resource: "alerts", Action: "create", Scope: authz.ScopePlatform})
 	registry.MustRegister("PUT", "/api/v1/alerts/channels/:id", authz.Policy{Resource: "alerts", Action: "edit", Scope: authz.ScopePlatform})

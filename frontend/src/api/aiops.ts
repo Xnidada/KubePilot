@@ -173,6 +173,7 @@ export const listAgentMemories = () => get<{ code: number; data: AgentMemory[] }
 export const createAgentMemory = (data: Partial<AgentMemory>) => post<{ code: number; data: AgentMemory }>('/aiops/memories', data)
 export const pinAgentMemory = (id: number) => post<{ code: number; data: AgentMemory }>(`/aiops/memories/${id}/pin`)
 export const forgetAgentMemory = (id: number) => del(`/aiops/memories/${id}`)
+export const batchForgetAgentMemories = (ids: number[]) => post<{ code: number; data: { deleted: number } }>('/aiops/memories/batch-forget', { ids })
 export const getMemoryMetrics = () => get<{ code: number; data: MemoryMetrics }>('/aiops/memory-metrics')
 
 // Set default LLM config

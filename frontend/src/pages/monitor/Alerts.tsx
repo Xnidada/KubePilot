@@ -32,6 +32,8 @@ import {
   NotificationChannel,
   createAlertRule,
   createNotificationChannel,
+  deleteAlertHistory,
+  batchDeleteAlertHistory,
   deleteAlertRule,
   deleteNotificationChannel,
   getAlertHistory,
@@ -43,6 +45,7 @@ import {
 } from '../../api/alert'
 import { Cluster, getClusterList } from '../../api/cluster'
 import { useQueryTab } from '../../hooks/useQueryTab'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
@@ -70,6 +73,9 @@ const Alerts: React.FC = () => {
   const [history, setHistory] = useState<AlertHistory[]>([])
   const [historyTotal, setHistoryTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
+  const [selectedHistoryKeys, setSelectedHistoryKeys] = useState<React.Key[]>([])
+  const [deletingHistory, setDeletingHistory] = useState(false)
+  const canDeleteHistory = useAuthStore((state) => state.hasPermission('alerts', 'delete'))
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [clusters, setClusters] = useState<Cluster[]>([])
 
@@ -119,6 +125,19 @@ const Alerts: React.FC = () => {
     }
   }, [])
 
+  const handleDeleteHistory = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingHistory(true)
+    try {
+      if (ids.length === 1) await deleteAlertHistory(ids[0])
+      else await batchDeleteAlertHistory(ids)
+      message.success(`已删除 ${ids.length} 条告警历史`)
+      setSelectedHistoryKeys([])
+      await fetchHistory(1)
+    } catch { message.error('删除告警历史失败') }
+    finally { setDeletingHistory(false) }
+  }
+
   const fetchChannels = useCallback(async () => {
     setLoading(true)
     try {
@@ -141,7 +160,6 @@ const Alerts: React.FC = () => {
     else if (activeTab === 'history') fetchHistory(1)
     else fetchChannels()
     // 仅在切换 Tab 时自动加载；分页由表格 onChange 触发
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
 
   const openCreateRule = () => {
@@ -402,6 +420,10 @@ const Alerts: React.FC = () => {
       key: 'notified',
       render: (v) => (v ? <Tag color="green">是</Tag> : <Tag>否</Tag>),
     },
+    ...(canDeleteHistory ? [{
+      title: '操作', key: 'action', width: 80,
+      render: (_: unknown, row: AlertHistory) => <Popconfirm title="删除这条告警历史？" onConfirm={() => handleDeleteHistory([row.id])}><Button type="link" danger icon={<DeleteOutlined />} disabled={deletingHistory} /></Popconfirm>,
+    }] : []),
   ]
 
   const channelColumns: ColumnsType<NotificationChannel> = [
@@ -499,11 +521,14 @@ const Alerts: React.FC = () => {
                 </span>
               ),
               children: (
+                <>
+                {canDeleteHistory && <div style={{ marginBottom: 12 }}><Popconfirm title={`删除选中的 ${selectedHistoryKeys.length} 条告警历史？`} onConfirm={() => handleDeleteHistory(selectedHistoryKeys.map(Number))} okText="删除" okButtonProps={{ danger: true }}><Button danger icon={<DeleteOutlined />} disabled={selectedHistoryKeys.length === 0 || deletingHistory}>删除所选{selectedHistoryKeys.length > 0 ? ` (${selectedHistoryKeys.length})` : ''}</Button></Popconfirm></div>}
                 <Table
                   rowKey="id"
                   loading={loading}
                   columns={historyColumns}
                   dataSource={history}
+                  rowSelection={canDeleteHistory ? { selectedRowKeys: selectedHistoryKeys, preserveSelectedRowKeys: true, onChange: (keys) => { if (keys.length > 100) message.warning('每次最多选择 100 条'); setSelectedHistoryKeys(keys.slice(0, 100)) } } : undefined}
                   pagination={{
                     current: historyPage,
                     total: historyTotal,
@@ -511,6 +536,7 @@ const Alerts: React.FC = () => {
                     onChange: (p) => fetchHistory(p),
                   }}
                 />
+                </>
               ),
             },
             {

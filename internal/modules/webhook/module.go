@@ -55,6 +55,8 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("DELETE", "/api/v1/webhooks/:id", authz.Policy{Resource: "webhooks", Action: "delete", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/webhooks/:id/test", authz.Policy{Resource: "webhooks", Action: "execute", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/webhooks/logs", authz.Policy{Resource: "webhooks", Action: "view", Scope: authz.ScopePlatform})
+	reg.MustRegister("DELETE", "/api/v1/webhooks/logs/:id", authz.Policy{Resource: "webhooks", Action: "delete", Scope: authz.ScopePlatform})
+	reg.MustRegister("POST", "/api/v1/webhooks/logs/batch-delete", authz.Policy{Resource: "webhooks", Action: "delete", Scope: authz.ScopePlatform})
 }
 
 func (m *Module) Start(ctx context.Context, host *module.Host) error {
@@ -95,5 +97,7 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.DELETE("/:id", h.DeleteWebhook)
 		g.POST("/:id/test", h.TestWebhook)
 		g.GET("/logs", h.ListWebhookLogs)
+		g.DELETE("/logs/:id", h.DeleteWebhookLog)
+		g.POST("/logs/batch-delete", h.BatchDeleteWebhookLogs)
 	}
 }

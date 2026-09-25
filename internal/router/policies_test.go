@@ -46,6 +46,15 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"GET /api/v1/backups/:id",
 		"DELETE /api/v1/backups/:id",
 		"POST /api/v1/backups/batch-delete",
+		"DELETE /api/v1/backups/restores/:id",
+		"POST /api/v1/backups/restores/batch-delete",
+		"POST /api/v1/aiops/memories/batch-forget",
+		"DELETE /api/v1/webhooks/logs/:id",
+		"POST /api/v1/webhooks/logs/batch-delete",
+		"DELETE /api/v1/event-forward/logs/:id",
+		"POST /api/v1/event-forward/logs/batch-delete",
+		"DELETE /api/v1/alerts/history/:id",
+		"POST /api/v1/alerts/history/batch-delete",
 		"DELETE /api/v1/inspection/reports/:id",
 		"POST /api/v1/inspection/reports/batch-delete",
 		"POST /api/v1/scheduler/tasks",
@@ -69,6 +78,8 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 	for _, key := range []string{
 		"DELETE /api/v1/backups/:id",
 		"POST /api/v1/backups/batch-delete",
+		"DELETE /api/v1/backups/restores/:id",
+		"POST /api/v1/backups/restores/batch-delete",
 	} {
 		parts := strings.SplitN(key, " ", 2)
 		policy, _ := registry.Lookup(parts[0], parts[1])

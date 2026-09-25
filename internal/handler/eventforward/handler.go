@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -332,8 +333,24 @@ func (h *EventForwardHandler) TestRule(c *gin.Context) {
 
 // ListLogs 获取转发日志
 func (h *EventForwardHandler) ListLogs(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Query("cluster_id"), 10, 32)
+	if err != nil || clusterID == 0 {
+		response.BadRequest(c, "cluster_id is required")
+		return
+	}
+	if !authz.EnsureScope(c, "event_forward", "view", uint(clusterID), "*") {
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
 	var logs []model.EventForwardLog
-	query := h.db.Order("created_at DESC").Limit(100)
+	query := h.db.Model(&model.EventForwardLog{}).Where("cluster_id = ?", clusterID)
 
 	if ruleID := c.Query("rule_id"); ruleID != "" {
 		query = query.Where("rule_id = ?", ruleID)
@@ -343,12 +360,17 @@ func (h *EventForwardHandler) ListLogs(c *gin.Context) {
 		query = query.Where("status = ?", status)
 	}
 
-	if err := query.Find(&logs).Error; err != nil {
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := query.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&logs).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, logs)
+	response.PageSuccess(c, logs, total, page, size)
 }
 
 func (h *EventForwardHandler) stopWatcher(ruleID uint) {

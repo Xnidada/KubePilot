@@ -12,6 +12,7 @@ import { get, post, put, del } from '../../api/request'
 import { useQueryTab } from '../../hooks/useQueryTab'
 import { useInterval } from '../../hooks/useInterval'
 import { ModuleHealthAlert } from '../../components/ModuleHealthAlert'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
@@ -44,6 +45,11 @@ interface WebhookLog {
 const Webhooks: React.FC = () => {
   const [webhooks, setWebhooks] = useState<Webhook[]>([])
   const [logs, setLogs] = useState<WebhookLog[]>([])
+  const [logPage, setLogPage] = useState(1)
+  const [logTotal, setLogTotal] = useState(0)
+  const [selectedLogKeys, setSelectedLogKeys] = useState<React.Key[]>([])
+  const [deletingLogs, setDeletingLogs] = useState(false)
+  const canDeleteLogs = useAuthStore((state) => state.hasPermission('webhooks', 'delete'))
   const [loading, setLoading] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
   const [editingWebhook, setEditingWebhook] = useState<Webhook | null>(null)
@@ -60,17 +66,19 @@ const Webhooks: React.FC = () => {
     finally { setLoading(false) }
   }, [])
 
-  const fetchLogs = useCallback(async () => {
+  const fetchLogs = useCallback(async (page = 1) => {
     try {
-      const res = await get<{ code: number; data: WebhookLog[] }>('/webhooks/logs')
+      const res = await get<{ code: number; data: WebhookLog[]; total: number }>('/webhooks/logs', { params: { page, size: 20 } })
       setLogs(res.data || [])
+      setLogTotal(res.total || 0)
+      setLogPage(page)
     } catch (e) { console.error(e) }
   }, [])
 
   useEffect(() => { fetchWebhooks(); fetchLogs() }, [fetchWebhooks, fetchLogs])
 
   useInterval(() => {
-    if (activeTab === 'logs') fetchLogs()
+    if (activeTab === 'logs' && !deletingLogs) fetchLogs(logPage)
     else fetchWebhooks()
   }, REFRESH_MS, autoRefresh)
 
@@ -126,6 +134,20 @@ const Webhooks: React.FC = () => {
       fetchLogs()
       setActiveTab('logs')
     } catch (e) { message.error('测试失败') }
+  }
+
+  const logProtected = (log: WebhookLog) => new Date(log.created_at).getTime() > Date.now() - 24 * 60 * 60 * 1000
+  const handleDeleteLogs = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeletingLogs(true)
+    try {
+      if (ids.length === 1) await del(`/webhooks/logs/${ids[0]}`)
+      else await post('/webhooks/logs/batch-delete', { ids })
+      message.success(`已删除 ${ids.length} 条调用日志`)
+      setSelectedLogKeys([])
+      await fetchLogs(1)
+    } catch { message.error('删除调用日志失败') }
+    finally { setDeletingLogs(false) }
   }
 
   const webhookColumns: ColumnsType<Webhook> = [
@@ -185,6 +207,10 @@ const Webhooks: React.FC = () => {
       title: '时间', dataIndex: 'created_at', key: 'created_at',
       render: (t) => new Date(t).toLocaleString()
     },
+    ...(canDeleteLogs ? [{
+      title: '操作', key: 'action', width: 80,
+      render: (_: unknown, log: WebhookLog) => <Popconfirm title="删除这条调用日志？" onConfirm={() => handleDeleteLogs([log.id])} disabled={logProtected(log) || deletingLogs}><Button type="link" danger icon={<DeleteOutlined />} disabled={logProtected(log) || deletingLogs} /></Popconfirm>,
+    }] : []),
   ]
 
   return (
@@ -196,7 +222,7 @@ const Webhooks: React.FC = () => {
             <Text type="secondary" style={{ fontSize: 12 }}>自动刷新</Text>
             <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
           </Space>
-          <Button icon={<ReloadOutlined />} onClick={() => { fetchWebhooks(); fetchLogs() }}>
+      <Button icon={<ReloadOutlined />} onClick={() => { fetchWebhooks(); fetchLogs(logPage) }}>
             刷新
           </Button>
         </Space>
@@ -227,8 +253,9 @@ const Webhooks: React.FC = () => {
             key: 'logs',
             label: <span><HistoryOutlined /> 调用日志</span>,
             children: (
-              <Card>
-                <Table columns={logColumns} dataSource={logs} rowKey="id" />
+              <Card extra={canDeleteLogs && <Popconfirm title={`删除选中的 ${selectedLogKeys.length} 条调用日志？`} onConfirm={() => handleDeleteLogs(selectedLogKeys.map(Number))} okText="删除" okButtonProps={{ danger: true }}><Button danger icon={<DeleteOutlined />} disabled={selectedLogKeys.length === 0 || deletingLogs}>删除所选{selectedLogKeys.length > 0 ? ` (${selectedLogKeys.length})` : ''}</Button></Popconfirm>}>
+                <Text type="secondary">近 24 小时日志用于模块健康统计，暂不可删除。</Text>
+                <Table columns={logColumns} dataSource={logs} rowKey="id" rowSelection={canDeleteLogs ? { selectedRowKeys: selectedLogKeys, preserveSelectedRowKeys: true, onChange: (keys) => { if (keys.length > 100) message.warning('每次最多选择 100 条'); setSelectedLogKeys(keys.slice(0, 100)) }, getCheckboxProps: (log) => ({ disabled: logProtected(log) }) } : undefined} pagination={{ current: logPage, pageSize: 20, total: logTotal, onChange: fetchLogs }} />
               </Card>
             ),
           },

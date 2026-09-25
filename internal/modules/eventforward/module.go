@@ -62,6 +62,8 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("DELETE", "/api/v1/event-forward/rules/:id", authz.Policy{Resource: "event_forward", Action: "delete", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/event-forward/rules/:id/test", authz.Policy{Resource: "event_forward", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/event-forward/logs", authz.Policy{Resource: "event_forward", Action: "view", Scope: authz.ScopePlatform})
+	reg.MustRegister("DELETE", "/api/v1/event-forward/logs/:id", authz.Policy{Resource: "event_forward", Action: "delete", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/event-forward/logs/batch-delete", authz.Policy{Resource: "event_forward", Action: "delete", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/event-forward/stats", authz.Policy{Resource: "event_forward", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/event-forward/stats/reset", authz.Policy{Resource: "event_forward", Action: "edit", Scope: authz.ScopePlatform})
 }
@@ -182,17 +184,17 @@ func (m *Module) StatusDetails(ctx context.Context) map[string]any {
 	}
 
 	details := map[string]any{
-		"watchers_active":      s.WatchersActive,
-		"enabled_rules":        enabled,
-		"events_seen":          s.EventsSeen,
-		"events_matched":       s.EventsMatched,
-		"forward_ok":           s.ForwardOK,
-		"forward_fail":         s.ForwardFail,
-		"fail_rate":            failRate,
-		"fail_rate_threshold":  m.failRateThreshold(),
-		"min_matched":          m.minMatched(),
-		"health_sustain":       m.healthSustain().String(),
-		"fail_rate_check_off":  m.failRateDisabled(),
+		"watchers_active":     s.WatchersActive,
+		"enabled_rules":       enabled,
+		"events_seen":         s.EventsSeen,
+		"events_matched":      s.EventsMatched,
+		"forward_ok":          s.ForwardOK,
+		"forward_fail":        s.ForwardFail,
+		"fail_rate":           failRate,
+		"fail_rate_threshold": m.failRateThreshold(),
+		"min_matched":         m.minMatched(),
+		"health_sustain":      m.healthSustain().String(),
+		"fail_rate_check_off": m.failRateDisabled(),
 	}
 
 	bad, _, msg := m.failRateCondition(s)
@@ -230,6 +232,8 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.DELETE("/rules/:id", h.DeleteRule)
 		g.POST("/rules/:id/test", h.TestRule)
 		g.GET("/logs", h.ListLogs)
+		g.DELETE("/logs/:id", h.DeleteLog)
+		g.POST("/logs/batch-delete", h.BatchDeleteLogs)
 		g.GET("/stats", h.GetStats)
 		g.POST("/stats/reset", h.ResetStats)
 	}
