@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Input, Space, Tag, Typography } from 'antd'
-import { SearchOutlined } from '@ant-design/icons'
+import { Button, Card, Table, Input, Popconfirm, Space, Tag, Typography, message } from 'antd'
+import { DeleteOutlined, SearchOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getLoginLogs, LoginLog } from '../../api/system'
+import { batchDeleteLoginLogs, deleteLoginLog, getLoginLogs, LoginLog } from '../../api/system'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title } = Typography
 const { Search } = Input
@@ -15,20 +16,28 @@ const LoginLogs: React.FC = () => {
   const [pageSize, setPageSize] = useState(20)
   const [usernameFilter, setUsernameFilter] = useState('')
   const [ipFilter, setIpFilter] = useState('')
+  const [appliedFilters, setAppliedFilters] = useState({ username: '', ip: '' })
+  const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
+  const [deleting, setDeleting] = useState(false)
+  const canDelete = useAuthStore((state) => state.hasPermission('login_logs', 'delete'))
 
   useEffect(() => {
-    fetchLogs()
-  }, [page, pageSize])
+    void fetchLogs(page, pageSize, appliedFilters)
+  }, [page, pageSize, appliedFilters])
 
-  const fetchLogs = async () => {
+  const fetchLogs = async (currentPage: number, currentSize: number, filters: { username: string; ip: string }) => {
     setLoading(true)
     try {
       const res = await getLoginLogs({
-        page,
-        size: pageSize,
-        username: usernameFilter || undefined,
-        ip: ipFilter || undefined,
+        page: currentPage,
+        size: currentSize,
+        username: filters.username || undefined,
+        ip: filters.ip || undefined,
       })
+      if (currentPage > 1 && res.total <= (currentPage - 1) * currentSize) {
+        setPage(Math.max(1, Math.ceil(res.total / currentSize)))
+        return
+      }
       setLogs(res.data || [])
       setTotal(res.total || 0)
     } catch (error) {
@@ -39,8 +48,24 @@ const LoginLogs: React.FC = () => {
   }
 
   const handleSearch = () => {
+    setSelectedKeys([])
     setPage(1)
-    fetchLogs()
+    setAppliedFilters({ username: usernameFilter.trim(), ip: ipFilter.trim() })
+  }
+
+  const handleDelete = async (ids: number[]) => {
+    if (ids.length === 0) return
+    setDeleting(true)
+    try {
+      const res = ids.length === 1 ? await deleteLoginLog(ids[0]) : await batchDeleteLoginLogs(ids)
+      message.success(`已删除 ${res.data.deleted} 条登入日志`)
+      setSelectedKeys([])
+      await fetchLogs(page, pageSize, appliedFilters)
+    } catch (error) {
+      console.error('Failed to delete login logs:', error)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const columns: ColumnsType<LoginLog> = [
@@ -98,6 +123,23 @@ const LoginLogs: React.FC = () => {
         }
       },
     },
+    ...(canDelete ? [{
+      title: '操作',
+      key: 'actions',
+      width: 90,
+      render: (_: unknown, row: LoginLog) => (
+        <Popconfirm
+          title="确认删除这条登入日志？"
+          description="删除后无法恢复，操作会写入审计日志。"
+          okText="删除"
+          okButtonProps={{ danger: true, loading: deleting }}
+          cancelText="取消"
+          onConfirm={() => handleDelete([row.id])}
+        >
+          <Button type="link" danger icon={<DeleteOutlined />} disabled={deleting}>删除</Button>
+        </Popconfirm>
+      ),
+    }] : []),
   ]
 
   return (
@@ -123,12 +165,30 @@ const LoginLogs: React.FC = () => {
             style={{ width: 200 }}
             prefix={<SearchOutlined />}
           />
+          {canDelete && (
+            <Popconfirm
+              title={`确认删除选中的 ${selectedKeys.length} 条登入日志？`}
+              description="删除后无法恢复，操作会写入审计日志。"
+              okText="删除"
+              okButtonProps={{ danger: true, loading: deleting }}
+              cancelText="取消"
+              onConfirm={() => handleDelete(selectedKeys.map(Number))}
+            >
+              <Button danger icon={<DeleteOutlined />} disabled={selectedKeys.length === 0 || deleting}>
+                删除所选{selectedKeys.length > 0 ? ` (${selectedKeys.length})` : ''}
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
         <Table
           columns={columns}
           dataSource={logs}
           rowKey="id"
           loading={loading}
+          rowSelection={canDelete ? {
+            selectedRowKeys: selectedKeys,
+            onChange: setSelectedKeys,
+          } : undefined}
           pagination={{
             current: page,
             pageSize,
@@ -136,6 +196,7 @@ const LoginLogs: React.FC = () => {
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条`,
             onChange: (p, ps) => {
+              setSelectedKeys([])
               setPage(p)
               setPageSize(ps)
             },

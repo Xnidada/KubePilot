@@ -57,14 +57,14 @@ func (h *Handler) ListUsers(c *gin.Context) {
 	result := make([]UserInfo, 0, len(users))
 	for _, u := range users {
 		info := UserInfo{
-			ID:       u.ID,
-			Username: u.Username,
-			Email:    u.Email,
-			RealName: u.RealName,
-			Phone:    u.Phone,
-			Status:   u.Status,
-			RoleID:   u.RoleID,
-			RoleName: u.Role.Name,
+			ID:        u.ID,
+			Username:  u.Username,
+			Email:     u.Email,
+			RealName:  u.RealName,
+			Phone:     u.Phone,
+			Status:    u.Status,
+			RoleID:    u.RoleID,
+			RoleName:  u.Role.Name,
 			CreatedAt: u.CreatedAt.Format("2006-01-02 15:04:05"),
 		}
 		if u.LastLogin != nil {
@@ -303,13 +303,13 @@ func (h *Handler) ListRoles(c *gin.Context) {
 
 	// 解析权限
 	type RoleInfo struct {
-		ID          uint                  `json:"id"`
-		Name        string                `json:"name"`
-		Description string                `json:"description"`
-		Permissions model.PermissionList  `json:"permissions"`
-		IsSystem    bool                  `json:"is_system"`
-		UserCount   int64                 `json:"user_count"`
-		CreatedAt   string                `json:"created_at"`
+		ID          uint                 `json:"id"`
+		Name        string               `json:"name"`
+		Description string               `json:"description"`
+		Permissions model.PermissionList `json:"permissions"`
+		IsSystem    bool                 `json:"is_system"`
+		UserCount   int64                `json:"user_count"`
+		CreatedAt   string               `json:"created_at"`
 	}
 
 	result := make([]RoleInfo, 0, len(roles))
@@ -590,6 +590,43 @@ func (h *Handler) GetLoginLogs(c *gin.Context) {
 	response.PageSuccess(c, logs, total, page, size)
 }
 
+// DeleteLoginLog 删除单条登入日志。
+func (h *Handler) DeleteLoginLog(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "invalid login log id")
+		return
+	}
+
+	result := h.db.Delete(&model.LoginLog{}, uint(id))
+	if result.Error != nil {
+		response.InternalError(c, result.Error.Error())
+		return
+	}
+	if result.RowsAffected == 0 {
+		response.NotFound(c, "login log not found")
+		return
+	}
+	response.Success(c, gin.H{"deleted": result.RowsAffected})
+}
+
+// BatchDeleteLoginLogs 仅按明确选择的 ID 批量删除登入日志。
+func (h *Handler) BatchDeleteLoginLogs(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids" binding:"required,min=1,max=100,dive,gt=0"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "select 1 to 100 valid login log ids")
+		return
+	}
+
+	result := h.db.Where("id IN ?", req.IDs).Delete(&model.LoginLog{})
+	if result.Error != nil {
+		response.InternalError(c, result.Error.Error())
+		return
+	}
+	response.Success(c, gin.H{"deleted": result.RowsAffected})
+}
 
 // generateRandomPassword 生成随机密码
 func generateRandomPassword(length int) string {

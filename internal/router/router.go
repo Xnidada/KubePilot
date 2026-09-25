@@ -198,6 +198,14 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 				// Login logs
 				systemGroup.GET("/login-logs", systemHandler.GetLoginLogs)
+				systemGroup.DELETE("/login-logs/:id", systemHandler.DeleteLoginLog)
+				systemGroup.POST("/login-logs/batch-delete", systemHandler.BatchDeleteLoginLogs)
+
+				// SSO / OAuth provider configuration
+				systemGroup.GET("/oauth/configs", oauthHandler.ListConfigs)
+				systemGroup.POST("/oauth/configs", oauthHandler.CreateConfig)
+				systemGroup.PUT("/oauth/configs/:id", oauthHandler.UpdateConfig)
+				systemGroup.DELETE("/oauth/configs/:id", oauthHandler.DeleteConfig)
 			}
 
 			// Alert management

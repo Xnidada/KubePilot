@@ -294,6 +294,12 @@ export const getLoginLogs = (params?: {
   return get<{ code: number; data: LoginLog[]; total: number }>('/system/login-logs', { params })
 }
 
+export const deleteLoginLog = (id: number) =>
+  del<{ code: number; data: { deleted: number } }>(`/system/login-logs/${id}`)
+
+export const batchDeleteLoginLogs = (ids: number[]) =>
+  post<{ code: number; data: { deleted: number } }>('/system/login-logs/batch-delete', { ids })
+
 // ==================== 两步验证 ====================
 
 export const get2FAStatus = () => {

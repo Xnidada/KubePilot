@@ -35,6 +35,12 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"PUT /api/v1/system/user-groups/:id/clusters",
 		"GET /api/v1/system/users/:id/effective-cluster-permissions",
 		"GET /api/v1/system/users/:id/effective-access",
+		"DELETE /api/v1/system/login-logs/:id",
+		"POST /api/v1/system/login-logs/batch-delete",
+		"GET /api/v1/system/oauth/configs",
+		"POST /api/v1/system/oauth/configs",
+		"PUT /api/v1/system/oauth/configs/:id",
+		"DELETE /api/v1/system/oauth/configs/:id",
 		"POST /api/v1/ws/tickets/pod/:id/:ns/:name",
 		"GET /api/v1/inspection/rules/:id",
 		"GET /api/v1/backups/:id",
@@ -44,6 +50,28 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		parts := strings.SplitN(key, " ", 2)
 		if !registry.Registered(parts[0], parts[1]) {
 			t.Fatalf("missing policy for %s", key)
+		}
+	}
+	for _, key := range []string{
+		"DELETE /api/v1/system/login-logs/:id",
+		"POST /api/v1/system/login-logs/batch-delete",
+	} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "login_logs" || policy.Action != "delete" || policy.Scope != authz.ScopePlatform {
+			t.Fatalf("unsafe login log deletion policy for %s: %#v", key, policy)
+		}
+	}
+	for _, key := range []string{
+		"GET /api/v1/system/oauth/configs",
+		"POST /api/v1/system/oauth/configs",
+		"PUT /api/v1/system/oauth/configs/:id",
+		"DELETE /api/v1/system/oauth/configs/:id",
+	} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "users" || policy.Action != "admin" || policy.Scope != authz.ScopePlatform {
+			t.Fatalf("unsafe OAuth config policy for %s: %#v", key, policy)
 		}
 	}
 

@@ -66,6 +66,7 @@ const resourceLabels: Record<string, string> = {
   effective_permissions: '用户有效权限',
   roles: '角色管理',
   audit_logs: '审计日志',
+  login_logs: '登入日志',
   appstore: '应用商店',
   scheduler: '任务调度',
   inspection: '集群巡检',

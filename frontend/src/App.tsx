@@ -23,6 +23,7 @@ import PersistentVolumeClaims from './pages/storage/PersistentVolumeClaims'
 import StorageClasses from './pages/storage/StorageClasses'
 import MonitorOverview from './pages/monitor/Overview'
 import MonitorDashboard from './pages/monitor/Dashboard'
+import MonitorAlerts from './pages/monitor/Alerts'
 import AppStoreList from './pages/appstore/List'
 import AIDiagnosis from './pages/aiops/Diagnosis'
 import AISettings from './pages/aiops/Settings'
@@ -37,6 +38,7 @@ import Backup from './pages/system/Backup'
 import Webhooks from './pages/system/Webhooks'
 import Modules from './pages/system/Modules'
 import LoginLogs from './pages/system/LoginLogs'
+import SSOSettings from './pages/system/SSO'
 import Profile from './pages/Profile'
 import Inspection from './pages/cluster/Inspection'
 import EventForward from './pages/cluster/EventForward'
@@ -93,6 +95,7 @@ function App() {
         <Route path="storage/storageclasses" element={<StorageClasses />} />
         <Route path="monitor" element={<MonitorOverview />} />
         <Route path="monitor/dashboard" element={<MonitorDashboard />} />
+        <Route path="monitor/alerts" element={<MonitorAlerts />} />
         <Route path="appstore" element={<AppStoreList />} />
         <Route path="aiops/agent" element={<AIAgent />} />
         <Route path="aiops/diagnosis" element={<AIDiagnosis />} />
@@ -107,6 +110,7 @@ function App() {
         <Route path="system/webhooks" element={<Webhooks />} />
         <Route path="system/modules" element={<Modules />} />
         <Route path="system/login-logs" element={<LoginLogs />} />
+        <Route path="system/sso" element={<SSOSettings />} />
         <Route path="profile" element={<Profile />} />
         <Route path="cluster/inspection" element={<Inspection />} />
         <Route path="cluster/event-forward" element={<EventForward />} />

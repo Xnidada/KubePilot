@@ -77,6 +77,7 @@ var ResourceTypes = []string{
 	"cluster_access",
 	"roles",
 	"audit_logs",
+	"login_logs",
 	"appstore",
 	"scheduler",
 	"inspection",

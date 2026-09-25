@@ -30,6 +30,7 @@ var sensitivePaths = []string{
 	"/auth/register",
 	"/secrets",
 	"/aiops/configs",
+	"/system/oauth/configs",
 	"/profile/password",
 }
 
@@ -49,36 +50,22 @@ func maskSensitiveData(data []byte, path string) string {
 		return ""
 	}
 
-	// 对于登录/注册请求，隐藏密码
-	if strings.Contains(path, "/auth/") {
-		var m map[string]interface{}
-		if err := json.Unmarshal(data, &m); err == nil {
-			if _, ok := m["password"]; ok {
-				m["password"] = "******"
-			}
-			if masked, err := json.Marshal(m); err == nil {
-				return string(masked)
-			}
-		}
-		return "[masked]"
-	}
-
 	// 对于 Secret 操作，不记录内容
 	if strings.Contains(path, "/secrets") {
 		return "[secret data masked]"
 	}
 
-	// 对于 LLM 配置，隐藏 API Key
-	if strings.Contains(path, "/aiops/configs") {
-		var m map[string]interface{}
-		if err := json.Unmarshal(data, &m); err == nil {
-			if _, ok := m["api_key"]; ok {
-				m["api_key"] = "******"
+	var decoded interface{}
+	if err := json.Unmarshal(data, &decoded); err == nil {
+		masked, err := json.Marshal(redactAuditValue(decoded))
+		if err == nil {
+			if len(masked) > 4096 {
+				return string(masked[:4096]) + "...[truncated]"
 			}
-			if masked, err := json.Marshal(m); err == nil {
-				return string(masked)
-			}
+			return string(masked)
 		}
+	}
+	if isSensitivePath(path) {
 		return "[masked]"
 	}
 
@@ -88,6 +75,25 @@ func maskSensitiveData(data []byte, path string) string {
 	}
 
 	return string(data)
+}
+
+func redactAuditValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, child := range v {
+			switch strings.ToLower(key) {
+			case "password", "api_key", "client_secret", "kubeconfig", "token", "access_token", "refresh_token":
+				v[key] = "******"
+			default:
+				v[key] = redactAuditValue(child)
+			}
+		}
+	case []interface{}:
+		for i, child := range v {
+			v[i] = redactAuditValue(child)
+		}
+	}
+	return value
 }
 
 func AuditMiddleware() gin.HandlerFunc {
@@ -125,7 +131,10 @@ func AuditMiddleware() gin.HandlerFunc {
 		// Extract resource info from path
 		resourceType := extractResourceType(c.FullPath())
 		resourceName := c.Param("name")
-		clusterID := c.Param("id")
+		clusterID := ""
+		if strings.Contains(c.FullPath(), "/clusters/:id") {
+			clusterID = c.Param("id")
+		}
 		namespace := c.Param("ns")
 
 		// Mask request body for sensitive paths
@@ -178,6 +187,12 @@ func AuditMiddleware() gin.HandlerFunc {
 }
 
 func extractResourceType(path string) string {
+	if strings.Contains(path, "/login-logs") {
+		return "login_logs"
+	}
+	if strings.Contains(path, "/oauth/configs") {
+		return "oauth_configs"
+	}
 	resources := []string{"clusters", "deployments", "pods", "services", "configmaps", "secrets", "namespaces", "nodes", "ingresses", "jobs", "cronjobs", "statefulsets", "daemonsets", "users", "roles", "audit-logs"}
 	for _, r := range resources {
 		if strings.Contains(path, r) {

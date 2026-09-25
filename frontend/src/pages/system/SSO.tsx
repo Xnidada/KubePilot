@@ -47,7 +47,6 @@ const SSOSettings: React.FC = () => {
     form.setFieldsValue({
       provider: 'github',
       enabled: true,
-      default_role: 2,
       redirect_url: `${window.location.origin}/api/v1/oauth/github/callback`,
     })
     setOpen(true)
@@ -66,7 +65,6 @@ const SSOSettings: React.FC = () => {
       userinfo_url: row.userinfo_url,
       scopes: row.scopes,
       enabled: row.enabled,
-      default_role: row.default_role || 2,
     })
     setOpen(true)
   }
@@ -152,6 +150,7 @@ const SSOSettings: React.FC = () => {
           <Paragraph style={{ marginBottom: 0 }}>
             Redirect URL 需在第三方应用中登记，格式一般为{' '}
             <Text code>{`${window.location.origin}/api/v1/oauth/<provider>/callback`}</Text>
+            。新 SSO 用户默认获得只读 viewer 角色；同邮箱的现有用户会自动关联，请仅接入可信的身份提供商。
           </Paragraph>
         }
       />

@@ -318,20 +318,20 @@ func generateRandomState() string {
 
 func oauthConfigPublic(cfg model.OAuthConfig) gin.H {
 	return gin.H{
-		"id":            cfg.ID,
-		"provider":      cfg.Provider,
-		"name":          cfg.Name,
-		"client_id":     cfg.ClientID,
-		"redirect_url":  cfg.RedirectURL,
-		"auth_url":      cfg.AuthURL,
-		"token_url":     cfg.TokenURL,
-		"userinfo_url":  cfg.UserInfoURL,
-		"scopes":        cfg.Scopes,
-		"enabled":       cfg.Enabled,
-		"default_role":  cfg.DefaultRole,
-		"has_secret":    cfg.ClientSecret != "",
-		"created_at":    cfg.CreatedAt,
-		"updated_at":    cfg.UpdatedAt,
+		"id":           cfg.ID,
+		"provider":     cfg.Provider,
+		"name":         cfg.Name,
+		"client_id":    cfg.ClientID,
+		"redirect_url": cfg.RedirectURL,
+		"auth_url":     cfg.AuthURL,
+		"token_url":    cfg.TokenURL,
+		"userinfo_url": cfg.UserInfoURL,
+		"scopes":       cfg.Scopes,
+		"enabled":      cfg.Enabled,
+		"default_role": cfg.DefaultRole,
+		"has_secret":   cfg.ClientSecret != "",
+		"created_at":   cfg.CreatedAt,
+		"updated_at":   cfg.UpdatedAt,
 	}
 }
 
@@ -370,6 +370,15 @@ func (h *OAuthHandler) CreateConfig(c *gin.Context) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
 	defaults := oauthProviderDefaults(provider)
+	defaultRole := req.DefaultRole
+	if defaultRole == 0 {
+		var viewerRole model.Role
+		if err := h.db.Select("id").Where("name = ?", "viewer").First(&viewerRole).Error; err != nil {
+			response.InternalError(c, "default viewer role is unavailable")
+			return
+		}
+		defaultRole = viewerRole.ID
+	}
 	cfg := model.OAuthConfig{
 		Provider:     provider,
 		Name:         req.Name,
@@ -381,13 +390,10 @@ func (h *OAuthHandler) CreateConfig(c *gin.Context) {
 		UserInfoURL:  firstNonEmpty(req.UserInfoURL, defaults.UserInfoURL),
 		Scopes:       firstNonEmpty(req.Scopes, defaults.Scopes),
 		Enabled:      true,
-		DefaultRole:  2,
+		DefaultRole:  defaultRole,
 	}
 	if req.Enabled != nil {
 		cfg.Enabled = *req.Enabled
-	}
-	if req.DefaultRole > 0 {
-		cfg.DefaultRole = req.DefaultRole
 	}
 	if err := h.db.Create(&cfg).Error; err != nil {
 		response.BadRequest(c, err.Error())

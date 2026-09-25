@@ -38,3 +38,28 @@ func TestMaskSensitiveDataRedactsNestedFields(t *testing.T) {
 		t.Fatalf("non-sensitive field changed")
 	}
 }
+
+func TestMaskSensitiveDataRedactsOAuthClientSecret(t *testing.T) {
+	masked := maskSensitiveData([]byte(`{"provider":"github","client_secret":"do-not-log"}`), "/api/v1/system/oauth/configs")
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(masked), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["client_secret"] != "******" || decoded["provider"] != "github" {
+		t.Fatalf("unexpected masked OAuth config: %#v", decoded)
+	}
+	if got := maskSensitiveData([]byte(`not-json`), "/api/v1/system/oauth/configs"); got != "[masked]" {
+		t.Fatalf("invalid secret payload must be fully masked, got %q", got)
+	}
+}
+
+func TestExtractResourceTypeForSystemSecurityRoutes(t *testing.T) {
+	for path, want := range map[string]string{
+		"/api/v1/system/login-logs/:id": "login_logs",
+		"/api/v1/system/oauth/configs":  "oauth_configs",
+	} {
+		if got := extractResourceType(path); got != want {
+			t.Errorf("%s: got %q, want %q", path, got, want)
+		}
+	}
+}
