@@ -30,6 +30,7 @@ const { Header, Sider, Content } = Layout
 const menuModuleMap: Record<string, string> = {
   '/aiops': 'aiops',
   '/aiops/agent': 'aiops',
+  '/aiops/changes': 'aiops',
   '/aiops/diagnosis': 'aiops',
   '/aiops/tools': 'aiops',
   '/aiops/memories': 'aiops',
@@ -251,6 +252,10 @@ const menuItems: MenuProps['items'] = [
         label: 'AI Agent',
       },
       {
+        key: '/aiops/changes',
+        label: '变更中心',
+      },
+      {
         key: '/aiops/diagnosis',
         label: '智能诊断',
       },
@@ -323,6 +328,7 @@ const menuPermissionMap: Record<string, { resource: string; action: string }> = 
   '/system/login-logs': { resource: 'login_logs', action: 'view' },
   // 浏览 AI 页面只需 view；实际对话/诊断等 API 仍校验 execute
   '/aiops/agent': { resource: 'aiops', action: 'view' },
+  '/aiops/changes': { resource: 'aiops', action: 'execute' },
   '/aiops/diagnosis': { resource: 'aiops', action: 'view' },
   '/aiops/tools': { resource: 'aiops', action: 'view' },
   '/aiops/memories': { resource: 'aiops', action: 'view' },

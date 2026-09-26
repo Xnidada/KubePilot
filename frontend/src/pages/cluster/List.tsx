@@ -9,6 +9,7 @@ import {
   Modal,
   Form,
   Input,
+  Select,
   message,
   Popconfirm,
   Typography,
@@ -61,6 +62,7 @@ const ClusterList: React.FC = () => {
   const handleCreate = () => {
     setEditingCluster(null)
     form.resetFields()
+    form.setFieldsValue({ environment: 'production' })
     setModalVisible(true)
   }
 
@@ -72,6 +74,7 @@ const ClusterList: React.FC = () => {
       description: record.description,
       api_server: record.api_server,
       tags: record.tags,
+      environment: record.environment || 'production',
     })
     setModalVisible(true)
   }
@@ -85,6 +88,7 @@ const ClusterList: React.FC = () => {
           api_server: values.api_server,
           kubeconfig: values.kubeconfig,
           tags: values.tags,
+          environment: values.environment,
         })
         message.success('集群更新成功')
       } else {
@@ -302,6 +306,9 @@ const ClusterList: React.FC = () => {
           </Form.Item>
           <Form.Item name="tags" label="标签">
             <Input placeholder="多个标签用逗号分隔" />
+          </Form.Item>
+          <Form.Item name="environment" label="环境" rules={[{ required: true, message: '请选择环境' }]}>
+            <Select options={[{ value: 'production', label: '生产（双人审批）' }, { value: 'staging', label: '预发' }, { value: 'development', label: '开发' }]} />
           </Form.Item>
         </Form>
       </Modal>

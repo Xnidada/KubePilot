@@ -78,3 +78,7 @@ export const listPublicOAuthProviders = () => {
 export const initiateOAuthLogin = (provider: string) => {
   return get<{ code: number; data: { auth_url: string; state: string } }>(`/oauth/${provider}/login`)
 }
+
+export const exchangeOAuthLogin = () => {
+  return post<LoginResponse>('/oauth/exchange')
+}

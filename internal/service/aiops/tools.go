@@ -37,6 +37,8 @@ type ToolTraceItem struct {
 type PendingActionInfo struct {
 	ID          uint   `json:"id"`
 	ActionID    uint   `json:"action_id"` // alias for UI confirm API
+	Status      string `json:"status"`
+	ClusterID   uint   `json:"cluster_id"`
 	Action      string `json:"action"`
 	Name        string `json:"name"`
 	Namespace   string `json:"namespace"`
@@ -944,6 +946,10 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	if err != nil {
 		return nil, "", err
 	}
+	resourceUID, baseGeneration, err := s.DeploymentPrecondition(ctx, clusterID, params)
+	if err != nil {
+		return nil, "", err
+	}
 	paramBytes, _ := json.Marshal(params)
 	if conversationID > 0 {
 		var existing model.AgentAction
@@ -952,7 +958,7 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 		if err == nil {
 			return &PendingActionInfo{ID: existing.ID, ActionID: existing.ID, Action: params.Action,
 				Name: params.Name, Namespace: params.Namespace, Description: existing.Description,
-				DryRun: existing.DryRunResult, NeedConfirm: true}, existing.DryRunResult, nil
+				DryRun: existing.DryRunResult, NeedConfirm: true, Status: "pending", ClusterID: clusterID}, existing.DryRunResult, nil
 		}
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", fmt.Errorf("failed to check staged action: %w", err)
@@ -979,29 +985,36 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 		actionType = "scale"
 	}
 	rec := model.AgentAction{
-		UserID:       userID,
-		ActionType:   actionType,
-		ResourceType: params.Action,
-		ResourceName: params.Name,
-		Namespace:    params.Namespace,
-		ClusterID:    clusterID,
-		Description:  desc,
-		Parameters:   string(paramBytes),
-		DryRunResult: dry,
-		Status:       "pending",
-		CreatedAt:    time.Now(),
+		UserID:         userID,
+		ActionType:     actionType,
+		ResourceType:   params.Action,
+		ResourceName:   params.Name,
+		Namespace:      params.Namespace,
+		ClusterID:      clusterID,
+		Description:    desc,
+		Parameters:     string(paramBytes),
+		DryRunResult:   dry,
+		ResourceUID:    resourceUID,
+		BaseGeneration: baseGeneration,
+		Status:         "pending",
+		CreatedAt:      time.Now(),
 	}
 	if conversationID > 0 {
 		cid := conversationID
 		rec.ConversationID = &cid
 	}
-	if err := s.db.Create(&rec).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&rec).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.AgentActionAudit{ActionID: rec.ID, ActorID: userID, Event: "staged", Detail: "server dry-run preview created"}).Error
+	}); err != nil {
 		return nil, "", fmt.Errorf("failed to stage action: %w", err)
 	}
 	pending := &PendingActionInfo{
 		ID: rec.ID, ActionID: rec.ID, Action: params.Action,
 		Name: params.Name, Namespace: params.Namespace,
-		Description: desc, DryRun: dry, NeedConfirm: true,
+		Description: desc, DryRun: dry, NeedConfirm: true, Status: "pending", ClusterID: clusterID,
 	}
 	return pending, dry, nil
 }

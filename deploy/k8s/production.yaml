@@ -1,0 +1,166 @@
+# Replace every example.invalid host and image digest before applying.
+# Create kubepilot-prod-credentials, kubepilot-db-ca and kubepilot-tls outside Git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubepilot-production-config
+  namespace: kubepilot
+data:
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 8080
+      mode: "release"
+      read_timeout: 30s
+      write_timeout: 180s
+    database:
+      driver: "postgres"
+      host: "postgres.example.invalid"
+      port: 5432
+      username: "kubepilot"
+      dbname: "kubepilot"
+      sslmode: "verify-full"
+      sslrootcert: "/etc/kubepilot/db-ca/ca.crt"
+    cache:
+      type: "redis"
+      addr: "redis.example.invalid:6379"
+      tls: true
+    jwt:
+      expire_time: 8h
+      issuer: "kubepilot"
+    security:
+      allow_registration: false
+      cors_allowed_origins: []
+    log:
+      level: "info"
+      format: "json"
+      output: "stdout"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubepilot-production
+  namespace: kubepilot
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: { app: kubepilot-production }
+  template:
+    metadata:
+      labels: { app: kubepilot-production }
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: kubepilot-production }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: kubepilot
+          image: registry.example.invalid/kubepilot@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ports:
+            - { name: http, containerPort: 8080 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            - name: KUBEPILOT_JWT_SECRET
+              valueFrom: { secretKeyRef: { name: kubepilot-prod-credentials, key: JWT_SECRET } }
+            - name: KUBEPILOT_SECURITY_ENCRYPT_KEY
+              valueFrom: { secretKeyRef: { name: kubepilot-prod-credentials, key: ENCRYPT_KEY } }
+            - name: KUBEPILOT_DATABASE_PASSWORD
+              valueFrom: { secretKeyRef: { name: kubepilot-prod-credentials, key: DATABASE_PASSWORD } }
+            - name: KUBEPILOT_CACHE_PASSWORD
+              valueFrom: { secretKeyRef: { name: kubepilot-prod-credentials, key: REDIS_PASSWORD } }
+            - name: KUBEPILOT_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: kubepilot-prod-credentials, key: BOOTSTRAP_ADMIN_PASSWORD } }
+            - name: HOME
+              value: /home/kubepilot
+          volumeMounts:
+            - { name: config, mountPath: /app/configs, readOnly: true }
+            - { name: db-ca, mountPath: /etc/kubepilot/db-ca, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: home, mountPath: /home/kubepilot }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap: { name: kubepilot-production-config }
+        - name: db-ca
+          secret: { secretName: kubepilot-db-ca }
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubepilot-production
+  namespace: kubepilot
+spec:
+  type: ClusterIP
+  selector: { app: kubepilot-production }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubepilot-production
+  namespace: kubepilot
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [kubepilot.example.invalid]
+      secretName: kubepilot-tls
+  rules:
+    - host: kubepilot.example.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kubepilot-production
+                port: { name: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubepilot-production-ingress
+  namespace: kubepilot
+spec:
+  podSelector:
+    matchLabels: { app: kubepilot-production }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8080 }

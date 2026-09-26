@@ -12,6 +12,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"github.com/kubepilot/kubepilot/internal/service/aiops"
 	"gorm.io/gorm"
@@ -22,15 +23,17 @@ type aiopsResult = aiops.ExecuteResult
 
 // Handler AIOps处理器
 type Handler struct {
-	service *aiops.Service
-	db      *gorm.DB
+	service    *aiops.Service
+	db         *gorm.DB
+	encryptKey string
 }
 
 // NewHandler 创建AIOps处理器
-func NewHandler(service *aiops.Service, db *gorm.DB) *Handler {
+func NewHandler(service *aiops.Service, db *gorm.DB, encryptKey string) *Handler {
 	return &Handler{
-		service: service,
-		db:      db,
+		service:    service,
+		db:         db,
+		encryptKey: encryptKey,
 	}
 }
 
@@ -86,7 +89,6 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
 
 	c.Writer.Flush()
 
@@ -238,10 +240,15 @@ func (h *Handler) ListLLMConfigs(c *gin.Context) {
 	// 隐藏API Key
 	result := make([]gin.H, 0, len(configs))
 	for _, cfg := range configs {
+		apiKey, err := crypto.OpenSecret(cfg.APIKey, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "failed to decrypt LLM key")
+			return
+		}
 		result = append(result, gin.H{
 			"id":                 cfg.ID,
 			"provider":           cfg.Provider,
-			"api_key":            maskAPIKey(cfg.APIKey),
+			"api_key":            maskAPIKey(apiKey),
 			"base_url":           cfg.BaseURL,
 			"model":              cfg.Model,
 			"temperature":        cfg.Temperature,
@@ -272,7 +279,12 @@ func (h *Handler) GetLLMConfig(c *gin.Context) {
 	}
 
 	// 隐藏API Key中间部分
-	maskedKey := maskAPIKey(config.APIKey)
+	apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to decrypt LLM key")
+		return
+	}
+	maskedKey := maskAPIKey(apiKey)
 
 	response.Success(c, gin.H{
 		"configured":         true,
@@ -298,11 +310,16 @@ func (h *Handler) GetLLMConfigByID(c *gin.Context) {
 		response.NotFound(c, "config not found")
 		return
 	}
+	apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to decrypt LLM key")
+		return
+	}
 
 	response.Success(c, gin.H{
 		"id":                 config.ID,
 		"provider":           config.Provider,
-		"api_key":            maskAPIKey(config.APIKey),
+		"api_key":            maskAPIKey(apiKey),
 		"base_url":           config.BaseURL,
 		"model":              config.Model,
 		"temperature":        config.Temperature,
@@ -379,6 +396,11 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 		response.BadRequest(c, "LLM returned empty response")
 		return
 	}
+	sealedAPIKey, err := crypto.SealSecret(req.APIKey, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to encrypt LLM key")
+		return
+	}
 
 	// 将所有现有配置设为非活跃
 	h.db.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false)
@@ -386,7 +408,7 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 	// 创建新配置
 	config := model.LLMConfig{
 		Provider:        req.Provider,
-		APIKey:          req.APIKey,
+		APIKey:          sealedAPIKey,
 		BaseURL:         req.BaseURL,
 		Model:           req.Model,
 		Temperature:     req.Temperature,
@@ -450,7 +472,12 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 
 	// 更新字段
 	if req.APIKey != "" {
-		config.APIKey = req.APIKey
+		sealed, err := crypto.SealSecret(req.APIKey, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "failed to encrypt LLM key")
+			return
+		}
+		config.APIKey = sealed
 	}
 	if req.BaseURL != "" {
 		config.BaseURL = req.BaseURL
@@ -481,9 +508,14 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 
 	// 如果是当前活跃配置，更新服务
 	if config.IsActive && h.service != nil {
+		apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "failed to decrypt LLM key")
+			return
+		}
 		h.service.UpdateConfig(&llm.LLMConfig{
 			Provider:    llm.LLMProvider(config.Provider),
-			APIKey:      config.APIKey,
+			APIKey:      apiKey,
 			BaseURL:     config.BaseURL,
 			Model:       config.Model,
 			Temperature: config.Temperature,
@@ -535,9 +567,14 @@ func (h *Handler) DeleteLLMConfig(c *gin.Context) {
 	}
 
 	if config.IsActive && h.service != nil {
+		apiKey, err := crypto.OpenSecret(replacement.APIKey, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "config deleted but replacement LLM key is unavailable")
+			return
+		}
 		if err := h.service.UpdateConfig(&llm.LLMConfig{
 			Provider:    llm.LLMProvider(replacement.Provider),
-			APIKey:      replacement.APIKey,
+			APIKey:      apiKey,
 			BaseURL:     replacement.BaseURL,
 			Model:       replacement.Model,
 			Temperature: replacement.Temperature,
@@ -574,9 +611,14 @@ func (h *Handler) SetDefaultLLMConfig(c *gin.Context) {
 
 	// 更新服务配置
 	if h.service != nil {
+		apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "failed to decrypt LLM key")
+			return
+		}
 		h.service.UpdateConfig(&llm.LLMConfig{
 			Provider:    llm.LLMProvider(config.Provider),
-			APIKey:      config.APIKey,
+			APIKey:      apiKey,
 			BaseURL:     config.BaseURL,
 			Model:       config.Model,
 			Temperature: config.Temperature,
@@ -614,7 +656,12 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 			req.Provider = stored.Provider
 		}
 		if req.APIKey == "" || strings.Contains(req.APIKey, "****") {
-			req.APIKey = stored.APIKey
+			apiKey, err := crypto.OpenSecret(stored.APIKey, h.encryptKey)
+			if err != nil {
+				response.InternalError(c, "failed to decrypt LLM key")
+				return
+			}
+			req.APIKey = apiKey
 		}
 		if req.BaseURL == "" {
 			req.BaseURL = stored.BaseURL
@@ -828,13 +875,17 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		response.NotFound(c, "action not found")
 		return
 	}
-	if action.Status != "pending" {
-		response.BadRequest(c, "action is not pending")
-		return
-	}
-
 	userID, _ := c.Get("user_id")
 	roleID, _ := c.Get("role_id")
+	production, err := h.productionAction(action.ClusterID)
+	if err != nil {
+		response.BadRequest(c, "cluster unavailable")
+		return
+	}
+	if production && action.UserID != userID.(uint) {
+		response.Forbidden(c, "only the requester can submit or execute this production change")
+		return
+	}
 	if action.UserID != 0 && action.UserID != userID.(uint) {
 		var role model.Role
 		if err := h.db.First(&role, roleID).Error; err != nil || !(role.IsSystem || role.Name == "admin") {
@@ -850,13 +901,64 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", action.ClusterID, ns) {
 		return
 	}
+	if production && action.Status == "pending" {
+		if err := h.submitActionForApproval(action, userID.(uint)); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		response.Success(c, gin.H{"success": true, "action_id": action.ID, "status": "approval_pending", "message": "已提交，等待另一名有权限的人员审批"})
+		return
+	}
+	expectedStatus := "pending"
+	if production {
+		expectedStatus = "approved"
+		if action.ApprovedBy == nil || *action.ApprovedBy == action.UserID {
+			response.Forbidden(c, "independent approval required")
+			return
+		}
+	}
+	if action.Status != expectedStatus {
+		response.BadRequest(c, "action is not ready for execution")
+		return
+	}
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		claim := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, expectedStatus).Update("status", "executing")
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return fmt.Errorf("action was already claimed")
+		}
+		return tx.Create(&model.AgentActionAudit{ActionID: action.ID, ActorID: userID.(uint), Event: "executing", Detail: "confirmed staged change"}).Error
+	})
+	if err != nil {
+		response.BadRequest(c, "action was already claimed")
+		return
+	}
 
-	result, err := h.service.ExecuteStagedActionWithRetry(c.Request.Context(), &action)
+	var result *aiopsResult
+	var observation, rollback string
+	if production {
+		result, observation, rollback, err = h.service.ExecuteObservedDeploymentChange(c.Request.Context(), &action)
+	} else {
+		result, err = h.service.ExecuteStagedActionWithRetry(c.Request.Context(), &action)
+	}
+	action.Observation = observation
+	action.RollbackResult = rollback
 	if err != nil {
 		action.Status = "failed"
+		if strings.HasPrefix(rollback, "rollback verified") {
+			action.Status = "rolled_back"
+		}
+		if strings.HasPrefix(rollback, "rollback submitted") {
+			action.Status = "rollback_pending"
+		}
 		action.Result = err.Error()
-		h.db.Save(&action)
-		response.InternalError(c, err.Error())
+		if saveErr := h.recordActionOutcome(&action, userID.(uint), "failed", err.Error()); saveErr != nil {
+			response.InternalError(c, "change result could not be audited")
+			return
+		}
+		response.InternalError(c, err.Error()+"; "+rollback)
 		return
 	}
 	if result == nil || !result.Success {
@@ -866,7 +968,10 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		}
 		action.Status = "failed"
 		action.Result = msg
-		h.db.Save(&action)
+		if saveErr := h.recordActionOutcome(&action, userID.(uint), "failed", msg); saveErr != nil {
+			response.InternalError(c, "change result could not be audited")
+			return
+		}
 		response.BadRequest(c, msg)
 		return
 	}
@@ -875,7 +980,10 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 	action.Result = result.Message
 	now := time.Now()
 	action.ExecutedAt = &now
-	h.db.Save(&action)
+	if err := h.recordActionOutcome(&action, userID.(uint), "executed", result.Message); err != nil {
+		response.InternalError(c, "change result could not be audited")
+		return
+	}
 
 	response.Success(c, gin.H{
 		"success":   true,
@@ -959,27 +1067,39 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		response.BadRequest(c, "dry-run failed: "+err.Error())
 		return
 	}
+	resourceUID, baseGeneration, err := h.service.DeploymentPrecondition(c.Request.Context(), req.ClusterID, params)
+	if err != nil {
+		response.BadRequest(c, "resource snapshot failed: "+err.Error())
+		return
+	}
 
 	paramBytes, _ := json.Marshal(params)
 	userID, _ := c.Get("user_id")
 	actionType, resourceType := stagedActionMeta(req.Action)
 	action := model.AgentAction{
-		UserID:       userID.(uint),
-		ActionType:   actionType,
-		ResourceType: resourceType,
-		ResourceName: req.Name,
-		Namespace:    req.Namespace,
-		ClusterID:    req.ClusterID,
-		Description:  fmt.Sprintf("%s %s/%s", req.Action, req.Namespace, req.Name),
-		Parameters:   string(paramBytes),
-		DryRunResult: dryRun,
-		Status:       "pending",
+		UserID:         userID.(uint),
+		ActionType:     actionType,
+		ResourceType:   resourceType,
+		ResourceName:   req.Name,
+		Namespace:      req.Namespace,
+		ClusterID:      req.ClusterID,
+		Description:    fmt.Sprintf("%s %s/%s", req.Action, req.Namespace, req.Name),
+		Parameters:     string(paramBytes),
+		DryRunResult:   dryRun,
+		ResourceUID:    resourceUID,
+		BaseGeneration: baseGeneration,
+		Status:         "pending",
 	}
 	if req.ConversationID > 0 {
 		cid := req.ConversationID
 		action.ConversationID = &cid
 	}
-	if err := h.db.Create(&action).Error; err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&action).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.AgentActionAudit{ActionID: action.ID, ActorID: userID.(uint), Event: "staged", Detail: "server dry-run preview created"}).Error
+	}); err != nil {
 		response.InternalError(c, "failed to stage action: "+err.Error())
 		return
 	}
@@ -1035,19 +1155,15 @@ func (h *Handler) KubectlExecute(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
 		return
 	}
-
-	ctx := c.Request.Context()
-
-	// 如果是apply命令且有YAML内容
-	if req.Command == "apply" && req.YAML != "" {
-		result, err := h.service.ExecuteKubectlApply(ctx, req.ClusterID, req.YAML)
-		if err != nil {
-			response.InternalError(c, err.Error())
-			return
-		}
-		response.Success(c, result)
+	// All writes must pass through staged preview and the production approval gate.
+	switch req.Command {
+	case "get", "describe", "logs", "top", "explain", "api-resources", "version":
+	default:
+		response.BadRequest(c, "kubectl write commands are disabled here; use staged Agent changes")
 		return
 	}
+
+	ctx := c.Request.Context()
 
 	// 构建参数
 	args := append([]string{req.Command}, req.Args...)

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Form, Input, Button, Card, message, Typography, Space, Divider } from 'antd'
 import { UserOutlined, LockOutlined, SafetyOutlined, GithubOutlined, GoogleOutlined } from '@ant-design/icons'
-import { login, verify2FALogin, listPublicOAuthProviders, initiateOAuthLogin, getProfile } from '../api/auth'
+import { login, verify2FALogin, listPublicOAuthProviders, initiateOAuthLogin, exchangeOAuthLogin } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
 
 const { Title, Text } = Typography
@@ -25,6 +25,7 @@ const Login: React.FC = () => {
   const { setToken, setUser } = useAuthStore()
   const [loginForm] = Form.useForm<LoginForm>()
   const [twoFactorForm] = Form.useForm<TwoFactorForm>()
+  const oauthExchangeStarted = useRef(false)
 
   const completeLogin = (data: { token: string; user: any }) => {
     setToken(data.token)
@@ -40,14 +41,15 @@ const Login: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    const oauthToken = searchParams.get('oauth_token')
-    if (!oauthToken) return
+    if (searchParams.get('oauth') !== 'complete' || oauthExchangeStarted.current) return
+    oauthExchangeStarted.current = true
     ;(async () => {
       setLoading(true)
       try {
-        setToken(oauthToken)
-        const profile = await getProfile()
-        setUser(profile.data as any)
+        const result = await exchangeOAuthLogin()
+        if (!result.data?.token || !result.data?.user) throw new Error('OAuth exchange failed')
+        setToken(result.data.token)
+        setUser(result.data.user)
         message.success('OAuth 登录成功')
         setSearchParams({})
         navigate('/')

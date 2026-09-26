@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -286,7 +287,12 @@ status_snapshot:
 			diffLines = append(diffLines, fmt.Sprintf("  + containers[0].image: %s", params.NewImage))
 		}
 		if len(params.EnvVars) > 0 {
-			diffLines = append(diffLines, fmt.Sprintf("  + env overrides: %v", params.EnvVars))
+			keys := make([]string, 0, len(params.EnvVars))
+			for key := range params.EnvVars {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			diffLines = append(diffLines, fmt.Sprintf("  + env override keys (values redacted): %v", keys))
 		}
 		if len(params.ResourceLimits) > 0 {
 			diffLines = append(diffLines, fmt.Sprintf("  + resource limits: %v", params.ResourceLimits))

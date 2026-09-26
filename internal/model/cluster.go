@@ -11,6 +11,7 @@ type Cluster struct {
 	Name                 string         `json:"name" gorm:"uniqueIndex;size:128;not null"`
 	DisplayName          string         `json:"display_name" gorm:"size:128"`
 	Description          string         `json:"description" gorm:"size:512"`
+	Environment          string         `json:"environment" gorm:"size:20;default:'production'"`
 	APIServer            string         `json:"api_server" gorm:"size:256;not null"`
 	Kubeconfig           string         `json:"-" gorm:"type:text"` // encrypted
 	Status               string         `json:"status" gorm:"size:20;default:'unknown'"` // unknown, connected, disconnected, error

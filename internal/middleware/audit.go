@@ -18,6 +18,10 @@ import (
 
 func AuditMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
+			c.Next()
+			return
+		}
 		startTime := time.Now()
 		// Audit only metadata: free-form Agent prompts, YAML and tool results may
 		// contain secrets, and reading bodies here can exhaust memory.

@@ -10,7 +10,7 @@ type OAuthConfig struct {
 	Provider     string    `json:"provider" gorm:"uniqueIndex;size:32;not null"` // github, gitlab, google, ldap
 	Name         string    `json:"name" gorm:"size:64;not null"`
 	ClientID     string    `json:"client_id" gorm:"size:256"`
-	ClientSecret string    `json:"-" gorm:"size:256"` // 不返回给前端
+	ClientSecret string    `json:"-" gorm:"type:text"` // encrypted at rest
 	RedirectURL  string    `json:"redirect_url" gorm:"size:512"`
 	// OAuth endpoints
 	AuthURL      string    `json:"auth_url" gorm:"size:512"`
@@ -22,12 +22,12 @@ type OAuthConfig struct {
 	LDAPPort     int       `json:"ldap_port"`
 	LDAPBaseDN   string    `json:"ldap_base_dn" gorm:"size:256"`
 	LDAPBindDN   string    `json:"ldap_bind_dn" gorm:"size:256"`
-	LDAPBindPass string    `json:"-" gorm:"size:256"`
+	LDAPBindPass string    `json:"-" gorm:"type:text"`
 	LDAPUserAttr string    `json:"ldap_user_attr" gorm:"size:64"`
 	LDAPFilter   string    `json:"ldap_filter" gorm:"size:512"`
 	// 通用配置
 	Enabled      bool      `json:"enabled" gorm:"default:true"`
-	DefaultRole  uint      `json:"default_role" gorm:"default:2"` // 默认角色 ID
+	DefaultRole  uint      `json:"default_role"` // resolved by role name when creating a provider
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

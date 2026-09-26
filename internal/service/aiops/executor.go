@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -540,7 +541,9 @@ func (s *Service) ExecuteUpdateDeployment(ctx context.Context, clusterID uint, p
 		container.Image = params.NewImage
 	}
 	if len(params.EnvVars) > 0 {
+		envKeys := make([]string, 0, len(params.EnvVars))
 		for k, v := range params.EnvVars {
+			envKeys = append(envKeys, k)
 			found := false
 			for i, ev := range container.Env {
 				if ev.Name == k {
@@ -553,7 +556,8 @@ func (s *Service) ExecuteUpdateDeployment(ctx context.Context, clusterID uint, p
 				container.Env = append(container.Env, corev1.EnvVar{Name: k, Value: v})
 			}
 		}
-		changes = append(changes, fmt.Sprintf("env_vars updated: %v", params.EnvVars))
+		sort.Strings(envKeys)
+		changes = append(changes, fmt.Sprintf("env_var keys updated (values redacted): %v", envKeys))
 	}
 	if len(params.ResourceLimits) > 0 {
 		if container.Resources.Limits == nil {

@@ -17,7 +17,33 @@ export interface PendingAction {
   description: string
   dry_run: string
   need_confirm: boolean
+  status?: string
+  cluster_id?: number
 }
+
+export interface AgentChange {
+  id: number
+  user_id: number
+  cluster_id: number
+  action: string
+  resource_name: string
+  namespace: string
+  status: string
+  dry_run: string
+  evidence: string
+  result: string
+  observation: string
+  rollback_result: string
+  approved_by?: number
+  created_at: string
+}
+
+export const listAgentChanges = () => get<ApiResult<{ mine: AgentChange[]; awaiting_my_approval: AgentChange[] }>>('/aiops/agent/changes')
+export const decideAgentChange = (id: number, decision: 'approve' | 'reject', reason = '') =>
+  post<ApiResult<{ action_id: number; status: string }>>(`/aiops/agent/changes/${id}/decision`, { decision, reason })
+export const cancelAgentChange = (id: number) =>
+  post<ApiResult<{ action_id: number; status: string }>>(`/aiops/agent/changes/${id}/cancel`)
+export const exportAgentChange = (id: number) => get<any>(`/aiops/agent/changes/${id}/export`)
 
 export interface ToolTraceItem {
   name: string

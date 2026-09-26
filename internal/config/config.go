@@ -2,6 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -9,16 +12,16 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig             `mapstructure:"server"`
-	Database DatabaseConfig           `mapstructure:"database"`
-	Redis    RedisConfig              `mapstructure:"redis"`
-	JWT      JWTConfig                `mapstructure:"jwt"`
-	Security SecurityConfig           `mapstructure:"security"`
-	Log      LogConfig                `mapstructure:"log"`
-	K8S      K8SConfig                `mapstructure:"k8s"`
-	LLM      LLMConfig                `mapstructure:"llm"`
-	Cache    CacheConfig              `mapstructure:"cache"`
-	Modules  map[string]ModuleConfig  `mapstructure:"modules"`
+	Server   ServerConfig            `mapstructure:"server"`
+	Database DatabaseConfig          `mapstructure:"database"`
+	Redis    RedisConfig             `mapstructure:"redis"`
+	JWT      JWTConfig               `mapstructure:"jwt"`
+	Security SecurityConfig          `mapstructure:"security"`
+	Log      LogConfig               `mapstructure:"log"`
+	K8S      K8SConfig               `mapstructure:"k8s"`
+	LLM      LLMConfig               `mapstructure:"llm"`
+	Cache    CacheConfig             `mapstructure:"cache"`
+	Modules  map[string]ModuleConfig `mapstructure:"modules"`
 }
 
 // ModuleConfig controls in-process feature modules.
@@ -48,6 +51,7 @@ type DatabaseConfig struct {
 	Password     string `mapstructure:"password"`
 	DBName       string `mapstructure:"dbname"`
 	SSLMode      string `mapstructure:"sslmode"`
+	SSLRootCert  string `mapstructure:"sslrootcert"`
 	MaxIdleConns int    `mapstructure:"max_idle_conns"`
 	MaxOpenConns int    `mapstructure:"max_open_conns"`
 }
@@ -69,7 +73,9 @@ type JWTConfig struct {
 // Kubeconfig ciphertext in the database is sealed with EncryptKey; changing
 // JWT.Secret alone must not invalidate cluster credentials.
 type SecurityConfig struct {
-	EncryptKey string `mapstructure:"encrypt_key"`
+	EncryptKey         string   `mapstructure:"encrypt_key"`
+	AllowRegistration  bool     `mapstructure:"allow_registration"`
+	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins"`
 }
 
 type LogConfig struct {
@@ -79,13 +85,13 @@ type LogConfig struct {
 }
 
 type K8SConfig struct {
-	DefaultNamespace string `mapstructure:"default_namespace"`
+	DefaultNamespace string  `mapstructure:"default_namespace"`
 	QPS              float32 `mapstructure:"qps"`
 	Burst            int     `mapstructure:"burst"`
 }
 
 type LLMConfig struct {
-	Provider    string  `mapstructure:"provider"`    // openai, anthropic
+	Provider    string  `mapstructure:"provider"` // openai, anthropic
 	APIKey      string  `mapstructure:"api_key"`
 	BaseURL     string  `mapstructure:"base_url"`
 	Model       string  `mapstructure:"model"`
@@ -99,6 +105,7 @@ type CacheConfig struct {
 	Addr     string `mapstructure:"addr"`
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
+	TLS      bool   `mapstructure:"tls"`
 }
 
 func Load() (*Config, error) {
@@ -169,7 +176,7 @@ func (c *Config) ModuleSettings(name string) ModuleConfig {
 // Validate 验证配置
 func (c *Config) Validate() error {
 	secret := strings.TrimSpace(c.JWT.Secret)
-	if secret == "" || secret == "kubepilot-secret-key" {
+	if secret == "" || secret == "kubepilot-secret-key" || secret == "CHANGE_YOUR_JWT_SECRET" || strings.HasPrefix(secret, "your_jwt_secret") {
 		return fmt.Errorf("jwt.secret must be set to a non-default value for security")
 	}
 	if len(secret) < 16 {
@@ -178,7 +185,7 @@ func (c *Config) Validate() error {
 
 	encryptKey := strings.TrimSpace(c.Security.EncryptKey)
 	if encryptKey != "" {
-		if encryptKey == "kubepilot-encrypt-key" || encryptKey == "change-me" {
+		if encryptKey == "kubepilot-encrypt-key" || encryptKey == "change-me" || strings.HasPrefix(encryptKey, "your_encrypt_key") {
 			return fmt.Errorf("security.encrypt_key must be set to a non-default value for security")
 		}
 		if len(encryptKey) < 16 {
@@ -229,6 +236,7 @@ func setDefaults() {
 
 	// Security defaults (empty = fall back to jwt.secret for compatibility)
 	viper.SetDefault("security.encrypt_key", "")
+	viper.SetDefault("security.allow_registration", false)
 
 	// Log defaults
 	viper.SetDefault("log.level", "info")
@@ -248,8 +256,14 @@ func setDefaults() {
 }
 
 func (d *DatabaseConfig) DSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		d.Host, d.Port, d.Username, d.Password, d.DBName, d.SSLMode)
+	u := &url.URL{Scheme: "postgres", User: url.UserPassword(d.Username, d.Password), Host: net.JoinHostPort(d.Host, strconv.Itoa(d.Port)), Path: "/" + d.DBName}
+	q := u.Query()
+	q.Set("sslmode", d.SSLMode)
+	if d.SSLRootCert != "" {
+		q.Set("sslrootcert", d.SSLRootCert)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func (r *RedisConfig) Addr() string {

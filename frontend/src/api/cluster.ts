@@ -13,6 +13,7 @@ export interface Cluster {
   memory_capacity: string
   last_health_check: string | null
   tags: string
+  environment: 'production' | 'staging' | 'development'
   created_at: string
 }
 
@@ -43,6 +44,7 @@ export interface CreateClusterRequest {
   api_server: string
   kubeconfig: string
   tags?: string
+  environment?: 'production' | 'staging' | 'development'
 }
 
 interface ListResponse {
@@ -81,6 +83,7 @@ export interface UpdateClusterRequest {
   api_server?: string
   kubeconfig?: string
   tags?: string
+  environment?: 'production' | 'staging' | 'development'
 }
 
 export const updateCluster = (id: number, data: UpdateClusterRequest) => {

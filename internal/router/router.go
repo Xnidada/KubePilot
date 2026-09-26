@@ -44,7 +44,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	})
 
 	// Global middleware
-	r.Use(middleware.CORSMiddleware())
+	r.Use(middleware.CORSMiddleware(cfg.Security.CORSAllowedOrigins))
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 	r.Use(middleware.AuditMiddleware()) // 启用审计日志
@@ -72,7 +72,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(encryptKey))
 	systemHandler := system.NewHandler(model.DB)
 	alertHandler := alert.NewHandler(model.DB)
-	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance)
+	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance, encryptKey)
 	opsHandler := opsHandler.NewHandler()
 	tenantHandler := tenant.NewHandler(model.DB)
 
@@ -93,7 +93,9 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 		authGroup.Use(middleware.RateLimitMiddleware(10, time.Minute, cacheInstance)) // 10 requests per minute
 		{
 			authGroup.POST("/login", authHandler.Login)
-			authGroup.POST("/register", authHandler.Register)
+			if cfg.Security.AllowRegistration {
+				authGroup.POST("/register", authHandler.Register)
+			}
 			authGroup.POST("/2fa/verify", twoFactorHandler.LoginVerify) // 2FA 登录验证
 		}
 
@@ -103,6 +105,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 			oauthGroup.GET("/providers", oauthHandler.ListProviders)
 			oauthGroup.GET("/:provider/login", oauthHandler.Login)
 			oauthGroup.GET("/:provider/callback", oauthHandler.Callback)
+			oauthGroup.POST("/exchange", oauthHandler.Exchange)
 		}
 
 		// Protected routes
@@ -489,6 +492,13 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+	r.GET("/ready", func(c *gin.Context) {
+		sqlDB, err := model.DB.DB()
+		if err == nil { err = sqlDB.PingContext(c.Request.Context()) }
+		if err == nil { _, err = cacheInstance.Exists(c.Request.Context(), "kubepilot:readiness") }
+		if err != nil { c.JSON(503, gin.H{"status": "unavailable"}); return }
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 

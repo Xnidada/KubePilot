@@ -41,6 +41,7 @@ func (m *Module) Migrations() []any {
 		&model.AgentMemoryAudit{},
 		&model.AgentRunMetric{},
 		&model.AgentAction{},
+		&model.AgentActionAudit{},
 		&model.AgentToolTrace{},
 		&model.LLMConfig{},
 		&model.TokenUsageLog{},
@@ -106,6 +107,10 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("GET", "/api/v1/aiops/agent/pending", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent/pending/cancel", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent/confirm/:actionId", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("GET", "/api/v1/aiops/agent/changes", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/aiops/agent/changes/:actionId/decision", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("POST", "/api/v1/aiops/agent/changes/:actionId/cancel", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
+	reg.MustRegister("GET", "/api/v1/aiops/agent/changes/:actionId/export", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/agent/execute", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("POST", "/api/v1/aiops/kubectl", authz.Policy{Resource: "aiops", Action: "execute", Scope: authz.ScopeHandler})
 	reg.MustRegister("GET", "/api/v1/aiops/kubectl/:id/query", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopeHandler})
@@ -170,7 +175,7 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 	if err != nil {
 		logger.Warn("failed to initialize AIOps service", zap.Error(err))
 	}
-	m.handler = aiopsHandler.NewHandler(svc, ctx.Host.DB)
+	m.handler = aiopsHandler.NewHandler(svc, ctx.Host.DB, ctx.Host.EncryptKey)
 
 	g := protected.Group("/aiops")
 	{
@@ -217,6 +222,10 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.GET("/agent/pending", m.handler.AgentListPending)
 		g.POST("/agent/pending/cancel", m.handler.AgentCancelPending)
 		g.POST("/agent/confirm/:actionId", m.handler.AgentConfirmAction)
+		g.GET("/agent/changes", m.handler.AgentListChanges)
+		g.POST("/agent/changes/:actionId/decision", m.handler.AgentDecideChange)
+		g.POST("/agent/changes/:actionId/cancel", m.handler.AgentCancelChange)
+		g.GET("/agent/changes/:actionId/export", m.handler.AgentExportChange)
 		g.POST("/agent/execute", m.handler.AgentExecute)
 		g.POST("/kubectl", m.handler.KubectlExecute)
 		g.GET("/kubectl/:id/query", m.handler.KubectlQuery)

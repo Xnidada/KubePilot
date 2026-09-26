@@ -13,6 +13,7 @@ database:
   password: "your_password_here"
   dbname: "kubepilot"
   sslmode: "disable"
+  # sslrootcert: "/etc/kubepilot/db-ca/ca.crt"  # production with sslmode=verify-full
   max_idle_conns: 10
   max_open_conns: 100
 
@@ -32,6 +33,8 @@ jwt:
 # cannot be decrypted. If omitted, jwt.secret is used (legacy compatibility).
 security:
   encrypt_key: "your_encrypt_key_here"
+  allow_registration: false
+  cors_allowed_origins: []  # list exact external origins only
 
 # In-process feature modules (default enabled when omitted)
 modules:

@@ -30,8 +30,13 @@ ARG TARGETARCH=amd64
 RUN apk add --no-cache ca-certificates tzdata curl \
     && curl -fsSL -o /usr/local/bin/kubectl \
        "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && curl -fsSL -o /tmp/kubectl.sha256 \
+       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" \
+    && printf '%s  %s\n' "$(cat /tmp/kubectl.sha256)" /usr/local/bin/kubectl | sha256sum -c - \
+    && rm /tmp/kubectl.sha256 \
     && chmod +x /usr/local/bin/kubectl \
-    && kubectl version --client
+    && kubectl version --client \
+    && addgroup -S kubepilot && adduser -S -G kubepilot -u 10001 kubepilot
 
 WORKDIR /app
 
@@ -40,5 +45,7 @@ COPY --from=frontend-builder /build/frontend/dist ./web
 COPY configs ./configs
 
 EXPOSE 8080
+
+USER 10001:10001
 
 CMD ["./kubepilot"]

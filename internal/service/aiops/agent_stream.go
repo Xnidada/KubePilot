@@ -11,6 +11,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"golang.org/x/sync/errgroup"
+	"gorm.io/gorm"
 )
 
 // AgentStreamEvent is one SSE payload for /aiops/agent/stream.
@@ -284,7 +285,7 @@ func (s *Service) persistAssistantMessage(conversationID uint, content string, t
 // ListPendingActions returns pending staged actions for a conversation.
 func (s *Service) ListPendingActions(userID, conversationID uint) ([]PendingActionInfo, error) {
 	var rows []model.AgentAction
-	q := s.db.Where("status = ? AND conversation_id = ?", "pending", conversationID)
+	q := s.db.Where("status IN ? AND conversation_id = ?", []string{"pending", "approval_pending", "approved"}, conversationID)
 	if userID > 0 {
 		q = q.Where("user_id = ?", userID)
 	}
@@ -293,15 +294,23 @@ func (s *Service) ListPendingActions(userID, conversationID uint) ([]PendingActi
 	}
 	out := make([]PendingActionInfo, 0, len(rows))
 	for _, r := range rows {
+		var params StagedActionParams
+		_ = json.Unmarshal([]byte(r.Parameters), &params)
+		kind := params.Action
+		if kind == "" {
+			kind = r.ResourceType
+		}
 		out = append(out, PendingActionInfo{
 			ID:          r.ID,
 			ActionID:    r.ID,
-			Action:      r.ResourceType,
+			Status:      r.Status,
+			ClusterID:   r.ClusterID,
+			Action:      kind,
 			Name:        r.ResourceName,
 			Namespace:   r.Namespace,
 			Description: r.Description,
 			DryRun:      r.DryRunResult,
-			NeedConfirm: true,
+			NeedConfirm: r.Status == "pending" || r.Status == "approved",
 		})
 	}
 	return out, nil
@@ -309,12 +318,28 @@ func (s *Service) ListPendingActions(userID, conversationID uint) ([]PendingActi
 
 // CancelPendingActions marks pending actions cancelled for a conversation (or specific IDs).
 func (s *Service) CancelPendingActions(userID, conversationID uint, actionIDs []uint) error {
-	q := s.db.Model(&model.AgentAction{}).
-		Where("status = ? AND conversation_id = ? AND user_id = ?", "pending", conversationID, userID)
-	if len(actionIDs) > 0 {
-		q = q.Where("id IN ?", actionIDs)
-	}
-	return q.Update("status", "cancelled").Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		q := tx.Where("status IN ? AND conversation_id = ? AND user_id = ?", []string{"pending", "approval_pending", "approved"}, conversationID, userID)
+		if len(actionIDs) > 0 {
+			q = q.Where("id IN ?", actionIDs)
+		}
+		var actions []model.AgentAction
+		if err := q.Find(&actions).Error; err != nil {
+			return err
+		}
+		for _, action := range actions {
+			result := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, action.Status).Update("status", "cancelled")
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 1 {
+				if err := tx.Create(&model.AgentActionAudit{ActionID: action.ID, ActorID: userID, Event: "cancelled", Detail: "requester cancelled staged change"}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conversationID uint, message string, emit agentEmitFunc) (*agentLoopResult, error) {

@@ -2,8 +2,10 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -258,12 +260,17 @@ type RedisCache struct {
 	client *redis.Client
 }
 
-func NewRedisCache(addr, password string, db int) *RedisCache {
-	client := redis.NewClient(&redis.Options{
+func NewRedisCache(addr, password string, db int, useTLS bool) *RedisCache {
+	opts := &redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
-	})
+	}
+	if useTLS {
+		host, _, _ := net.SplitHostPort(addr)
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
+	}
+	client := redis.NewClient(opts)
 	return &RedisCache{client: client}
 }
 
@@ -331,13 +338,14 @@ type Config struct {
 	Addr     string
 	Password string
 	DB       int
+	TLS      bool
 }
 
 // New 创建缓存实例并验证外部缓存连接。
 func New(cfg Config) (Cache, error) {
 	switch cfg.Type {
 	case "redis":
-		redisCache := NewRedisCache(cfg.Addr, cfg.Password, cfg.DB)
+		redisCache := NewRedisCache(cfg.Addr, cfg.Password, cfg.DB, cfg.TLS)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := redisCache.client.Ping(ctx).Err(); err != nil {

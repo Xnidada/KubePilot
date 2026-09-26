@@ -173,7 +173,14 @@ type AgentAction struct {
 	Description    string     `json:"description" gorm:"type:text"`
 	Parameters     string     `json:"parameters" gorm:"type:text"` // JSON
 	DryRunResult   string     `json:"dry_run_result" gorm:"type:text"`
+	ResourceUID    string     `json:"resource_uid" gorm:"size:64"`
+	BaseGeneration int64      `json:"base_generation"`
+	Evidence       string     `json:"evidence" gorm:"type:text"`               // provenance without raw tool outputs
 	Status         string     `json:"status" gorm:"size:20;default:'pending'"` // pending, confirmed, executed, failed, cancelled
+	ApprovedBy     *uint      `json:"approved_by"`
+	ApprovedAt     *time.Time `json:"approved_at"`
+	Observation    string     `json:"observation" gorm:"type:text"`
+	RollbackResult string     `json:"rollback_result" gorm:"type:text"`
 	Result         string     `json:"result" gorm:"type:text"`
 	CreatedAt      time.Time  `json:"created_at"`
 	ExecutedAt     *time.Time `json:"executed_at"`
@@ -182,6 +189,17 @@ type AgentAction struct {
 func (AgentAction) TableName() string {
 	return "agent_actions"
 }
+
+type AgentActionAudit struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	ActionID  uint      `json:"action_id" gorm:"index;not null"`
+	ActorID   uint      `json:"actor_id"`
+	Event     string    `json:"event" gorm:"size:32;not null"`
+	Detail    string    `json:"detail" gorm:"type:text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (AgentActionAudit) TableName() string { return "agent_action_audits" }
 
 // AgentToolTrace stores one agent turn's tool call observability payload.
 type AgentToolTrace struct {

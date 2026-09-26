@@ -13,6 +13,7 @@ import (
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
+	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"gorm.io/gorm"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -44,10 +45,14 @@ func NewService(db *gorm.DB, llmConfig *llm.LLMConfig, encryptKey string, cacheI
 	// 尝试从数据库加载配置
 	var dbConfig model.LLMConfig
 	if err := db.Where("is_active = ?", true).Order("id desc").First(&dbConfig).Error; err == nil {
+		apiKey, keyErr := crypto.OpenSecret(dbConfig.APIKey, encryptKey)
+		if keyErr != nil {
+			return nil, fmt.Errorf("decrypt active LLM key: %w", keyErr)
+		}
 		// 使用数据库配置
 		llmConfig = &llm.LLMConfig{
 			Provider:    llm.LLMProvider(dbConfig.Provider),
-			APIKey:      dbConfig.APIKey,
+			APIKey:      apiKey,
 			BaseURL:     dbConfig.BaseURL,
 			Model:       dbConfig.Model,
 			Temperature: dbConfig.Temperature,

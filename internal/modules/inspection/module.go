@@ -79,7 +79,6 @@ func (m *Module) Start(ctx context.Context, host *module.Host) error {
 		logger = zap.NewNop()
 	}
 	m.scheduler = inspectionHandler.NewScheduler(host.DB, logger, h)
-	h.SetScheduler(m.scheduler)
 	return m.scheduler.Start()
 }
 
@@ -125,9 +124,6 @@ func (m *Module) StatusDetails(ctx context.Context) map[string]any {
 
 func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup) {
 	h := m.ensureHandler(ctx.Host)
-	if m.scheduler != nil {
-		h.SetScheduler(m.scheduler)
-	}
 	g := protected.Group("/inspection")
 	{
 		g.GET("/rules", h.ListRules)

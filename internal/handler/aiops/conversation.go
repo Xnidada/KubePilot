@@ -250,7 +250,7 @@ func (h *Handler) DeleteConversation(c *gin.Context) {
 	}
 
 	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := clearConversationContent(tx, conversation.ID); err != nil {
+		if err := clearConversationContent(tx, conversation.ID, c.GetUint("user_id")); err != nil {
 			return err
 		}
 		return tx.Delete(conversation).Error
@@ -271,7 +271,7 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 	}
 
 	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		return clearConversationContent(tx, conversation.ID)
+		return clearConversationContent(tx, conversation.ID, c.GetUint("user_id"))
 	}); err != nil {
 		response.InternalError(c, "failed to clear conversation")
 		return
@@ -282,9 +282,21 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 
 // Long-term memories and historical usage metrics are managed separately;
 // clearing a conversation removes only replayable context and pending writes.
-func clearConversationContent(tx *gorm.DB, conversationID uint) error {
-	if err := tx.Model(&model.AgentAction{}).Where("conversation_id = ? AND status = ?", conversationID, "pending").Update("status", "cancelled").Error; err != nil {
+func clearConversationContent(tx *gorm.DB, conversationID, actorID uint) error {
+	var actions []model.AgentAction
+	if err := tx.Where("conversation_id = ? AND status IN ?", conversationID, []string{"pending", "approval_pending", "approved"}).Find(&actions).Error; err != nil {
 		return err
+	}
+	for _, action := range actions {
+		result := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, action.Status).Update("status", "cancelled")
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 1 {
+			if err := tx.Create(&model.AgentActionAudit{ActionID: action.ID, ActorID: actorID, Event: "cancelled", Detail: "conversation cleared or deleted"}).Error; err != nil {
+				return err
+			}
+		}
 	}
 	if err := tx.Where("conversation_id = ?", conversationID).Delete(&model.ChatMessage{}).Error; err != nil {
 		return err

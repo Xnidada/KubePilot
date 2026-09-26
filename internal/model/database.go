@@ -1,7 +1,11 @@
 package model
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -24,7 +28,9 @@ func InitDatabase(driver, dsn string, maxIdle, maxOpen int) error {
 
 	var err error
 	DB, err = gorm.Open(dialector, &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.New(log.New(os.Stderr, "gorm: ", log.LstdFlags), logger.Config{
+			SlowThreshold: time.Second, LogLevel: logger.Warn, ParameterizedQueries: true,
+		}),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database (%s): %w", driver, err)
@@ -53,6 +59,25 @@ func AutoMigrate() error {
 		return err
 	}
 	return nil
+}
+
+// WithMigrationLock serializes startup schema/seed changes across replicas.
+func WithMigrationLock(ctx context.Context, migrate func() error) error {
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return err
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	const lockID int64 = 0x4b7562654d696772 // "KubeMigr"
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", lockID)
+	return migrate()
 }
 
 // AutoMigrateCore migrates platform tables that are not owned by feature modules.

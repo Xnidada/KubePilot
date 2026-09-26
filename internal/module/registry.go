@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
@@ -16,11 +17,15 @@ type EnabledFunc func(name string) bool
 
 // Registry holds registered modules and runs lifecycle hooks for enabled ones.
 type Registry struct {
-	enabled EnabledFunc
-	mods    map[string]Module
-	order   []string // topologically sorted enabled names after Resolve
-	started []string
-	logger  *zap.Logger
+	enabled       EnabledFunc
+	mods          map[string]Module
+	order         []string // topologically sorted enabled names after Resolve
+	started       []string
+	logger        *zap.Logger
+	leaderCancel  context.CancelFunc
+	leaderDone    chan struct{}
+	leaderEnabled atomic.Bool
+	leaderActive  atomic.Bool
 }
 
 func NewRegistry(enabled EnabledFunc, logger *zap.Logger) *Registry {
@@ -173,7 +178,12 @@ func (r *Registry) Start(ctx context.Context, host *Host) error {
 		return err
 	}
 	r.started = r.started[:0]
+	var leaderModules []Module
 	for _, m := range mods {
+		if m.Meta().MultiInstance == MultiInstanceLeaderOnly {
+			leaderModules = append(leaderModules, m)
+			continue
+		}
 		name := m.Meta().Name
 		if err := m.Start(ctx, host); err != nil {
 			_ = r.Stop(context.Background())
@@ -182,10 +192,32 @@ func (r *Registry) Start(ctx context.Context, host *Host) error {
 		r.started = append(r.started, name)
 		r.logger.Info("module started", zap.String("module", name))
 	}
+	if len(leaderModules) > 0 {
+		sqlDB, err := host.DB.DB()
+		if err != nil {
+			_ = r.Stop(context.Background())
+			return fmt.Errorf("leader election database: %w", err)
+		}
+		leaderCtx, cancel := context.WithCancel(ctx)
+		r.leaderCancel = cancel
+		r.leaderDone = make(chan struct{})
+		r.leaderEnabled.Store(true)
+		go r.runLeader(leaderCtx, sqlDB, leaderModules, host)
+	}
 	return nil
 }
 
 func (r *Registry) Stop(ctx context.Context) error {
+	if r.leaderCancel != nil {
+		r.leaderCancel()
+		select {
+		case <-r.leaderDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		r.leaderCancel = nil
+		r.leaderDone = nil
+	}
 	var firstErr error
 	for i := len(r.started) - 1; i >= 0; i-- {
 		name := r.started[i]
@@ -209,6 +241,10 @@ func (r *Registry) statusOf(ctx context.Context, name string, m Module) Status {
 		Healthy:       true,
 	}
 	if st.Enabled {
+		if meta.MultiInstance == MultiInstanceLeaderOnly && r.leaderEnabled.Load() && !r.leaderActive.Load() {
+			st.Details = map[string]any{"role": "standby"}
+			return st
+		}
 		if err := m.Health(ctx); err != nil {
 			st.Healthy = false
 			st.HealthError = err.Error()

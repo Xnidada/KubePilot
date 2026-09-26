@@ -2,8 +2,9 @@ package inspection
 
 import (
 	"fmt"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/robfig/cron/v3"
@@ -18,6 +19,9 @@ type Scheduler struct {
 	logger  *zap.Logger
 	mu      sync.Mutex
 	entries map[uint]cron.EntryID
+	specs   map[uint]string
+	stopCh  chan struct{}
+	doneCh  chan struct{}
 	runner  ScheduleRunner
 }
 
@@ -35,34 +39,72 @@ func NewScheduler(db *gorm.DB, logger *zap.Logger, runner ScheduleRunner) *Sched
 		cron:    cron.New(),
 		logger:  logger,
 		entries: make(map[uint]cron.EntryID),
+		specs:   make(map[uint]string),
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 		runner:  runner,
 	}
 }
 
 func (s *Scheduler) Start() error {
+	if err := s.Refresh(); err != nil {
+		return err
+	}
+	s.cron.Start()
+	go func() {
+		defer close(s.doneCh)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				if err := s.Refresh(); err != nil {
+					s.logger.Warn("inspection schedule refresh failed", zap.Error(err))
+				}
+			}
+		}
+	}()
+	s.logger.Info("inspection scheduler started", zap.Int("active", s.ActiveCount()))
+	return nil
+}
+
+// Refresh makes schedule edits on standby replicas visible to the elected leader.
+func (s *Scheduler) Refresh() error {
 	var rules []model.InspectionRule
 	if err := s.db.Where("enabled = ? AND schedule <> ? AND schedule IS NOT NULL", true, "").Find(&rules).Error; err != nil {
 		return fmt.Errorf("list inspection schedules: %w", err)
 	}
+	active := make(map[uint]bool, len(rules))
 	for i := range rules {
+		active[rules[i].ID] = true
 		if err := s.Add(rules[i]); err != nil {
-			s.logger.Warn("skip invalid inspection schedule",
-				zap.Uint("id", rules[i].ID),
-				zap.String("schedule", rules[i].Schedule),
-				zap.Error(err),
-			)
+			s.logger.Warn("skip invalid inspection schedule", zap.Uint("id", rules[i].ID), zap.Error(err))
 		}
 	}
-	s.cron.Start()
-	s.logger.Info("inspection scheduler started", zap.Int("active", len(s.entries)))
+	s.mu.Lock()
+	var stale []uint
+	for id := range s.entries {
+		if !active[id] {
+			stale = append(stale, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range stale {
+		s.Remove(id)
+	}
 	return nil
 }
 
 func (s *Scheduler) Stop() {
+	close(s.stopCh)
+	<-s.doneCh
 	ctx := s.cron.Stop()
 	<-ctx.Done()
 	s.mu.Lock()
 	s.entries = make(map[uint]cron.EntryID)
+	s.specs = make(map[uint]string)
 	s.mu.Unlock()
 	s.logger.Info("inspection scheduler stopped")
 }
@@ -88,6 +130,9 @@ func (s *Scheduler) Add(rule model.InspectionRule) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, registered := s.entries[rule.ID]; registered && s.specs[rule.ID] == expr {
+		return nil
+	}
 
 	if entryID, ok := s.entries[rule.ID]; ok {
 		s.cron.Remove(entryID)
@@ -102,6 +147,7 @@ func (s *Scheduler) Add(rule model.InspectionRule) error {
 		return err
 	}
 	s.entries[id] = entryID
+	s.specs[id] = expr
 	s.logger.Info("inspection schedule registered",
 		zap.Uint("id", id),
 		zap.String("cron", expr),
@@ -117,6 +163,7 @@ func (s *Scheduler) Remove(id uint) {
 		delete(s.entries, id)
 		s.logger.Info("inspection schedule unregistered", zap.Uint("id", id))
 	}
+	delete(s.specs, id)
 }
 
 func (s *Scheduler) trigger(ruleID uint) {

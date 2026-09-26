@@ -11,8 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// MultiInstance describes how a module should behave under multiple replicas.
-// Real leader election is not implemented yet; values are advisory metadata.
+// MultiInstance describes how a module behaves under multiple replicas.
 const (
 	MultiInstanceAll        = "all"
 	MultiInstanceLeaderOnly = "leader_only"
@@ -73,13 +72,13 @@ type Module interface {
 // Base provides no-op defaults for optional Module methods.
 type Base struct{}
 
-func (Base) Migrations() []any                            { return nil }
-func (Base) RegisterPolicies(reg *authz.Registry)         {}
-func (Base) Menus() []MenuItem                            { return nil }
-func (Base) Permissions() []PermissionDef                 { return nil }
-func (Base) Start(ctx context.Context, host *Host) error  { return nil }
-func (Base) Stop(ctx context.Context) error               { return nil }
-func (Base) Health(ctx context.Context) error             { return nil }
+func (Base) Migrations() []any                           { return nil }
+func (Base) RegisterPolicies(reg *authz.Registry)        {}
+func (Base) Menus() []MenuItem                           { return nil }
+func (Base) Permissions() []PermissionDef                { return nil }
+func (Base) Start(ctx context.Context, host *Host) error { return nil }
+func (Base) Stop(ctx context.Context) error              { return nil }
+func (Base) Health(ctx context.Context) error            { return nil }
 
 // Status is returned by the modules discovery API.
 type Status struct {

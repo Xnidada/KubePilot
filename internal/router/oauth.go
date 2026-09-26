@@ -5,10 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,14 +27,16 @@ type OAuthHandler struct {
 	db         *gorm.DB
 	authSvc    *auth.Service
 	cache      cache.Cache
+	encryptKey string
 	httpClient *http.Client
 }
 
-func NewOAuthHandler(db *gorm.DB, authSvc *auth.Service, cacheInstance cache.Cache) *OAuthHandler {
+func NewOAuthHandler(db *gorm.DB, authSvc *auth.Service, cacheInstance cache.Cache, encryptKey string) *OAuthHandler {
 	return &OAuthHandler{
-		db:      db,
-		authSvc: authSvc,
-		cache:   cacheInstance,
+		db:         db,
+		authSvc:    authSvc,
+		cache:      cacheInstance,
+		encryptKey: encryptKey,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -78,7 +81,12 @@ func (h *OAuthHandler) Login(c *gin.Context) {
 	// 将 state 存储到缓存，5分钟过期
 	ctx := context.Background()
 	stateKey := fmt.Sprintf("oauth:state:%s", state)
-	h.cache.Set(ctx, stateKey, provider, 5*time.Minute)
+	if err := h.cache.Set(ctx, stateKey, provider, 5*time.Minute); err != nil {
+		response.InternalError(c, "failed to start OAuth login")
+		return
+	}
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("oauth_state", state, 300, "/api/v1/oauth", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
 
 	// 构建授权 URL
 	var authURL string
@@ -113,21 +121,31 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		response.BadRequest(c, "missing code parameter")
 		return
 	}
+	stateCookie, cookieErr := c.Cookie("oauth_state")
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("oauth_state", "", -1, "/api/v1/oauth", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
+	if state == "" || cookieErr != nil || stateCookie != state {
+		response.BadRequest(c, "invalid OAuth browser state")
+		return
+	}
 
 	// 验证 state 参数
 	ctx := context.Background()
 	stateKey := fmt.Sprintf("oauth:state:%s", state)
-	savedProvider, err := h.cache.Get(ctx, stateKey)
+	savedProvider, err := h.cache.Take(ctx, stateKey)
 	if err != nil || savedProvider != provider {
 		response.BadRequest(c, "invalid or expired state parameter")
 		return
 	}
-	// 删除已使用的 state
-	h.cache.Delete(ctx, stateKey)
 
 	var config model.OAuthConfig
 	if err := h.db.Where("provider = ? AND enabled = ?", provider, true).First(&config).Error; err != nil {
 		response.NotFound(c, "OAuth provider not found")
+		return
+	}
+	config.ClientSecret, err = crypto.OpenSecret(config.ClientSecret, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "OAuth provider credential unavailable")
 		return
 	}
 
@@ -152,17 +170,49 @@ func (h *OAuthHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	// 生成 JWT token
+	// Browser OAuth redirect: keep JWT out of URLs and exchange a one-use cookie.
+	accept := c.GetHeader("Accept")
+	if strings.Contains(accept, "text/html") || c.Query("redirect") != "json" {
+		ticket := generateRandomState()
+		if err := h.cache.Set(c.Request.Context(), "oauth:exchange:"+ticket, fmt.Sprintf("%d", user.ID), time.Minute); err != nil {
+			response.InternalError(c, "failed to finish OAuth login")
+			return
+		}
+		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetCookie("oauth_exchange", ticket, 60, "/api/v1/oauth/exchange", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
+		c.Redirect(http.StatusFound, "/login?oauth=complete")
+		return
+	}
 	token, err := h.authSvc.GenerateTokenForUser(user.ID)
 	if err != nil {
 		response.InternalError(c, "failed to generate token")
 		return
 	}
+	response.Success(c, token)
+}
 
-	// Browser OAuth redirect: send token to SPA login page.
-	accept := c.GetHeader("Accept")
-	if strings.Contains(accept, "text/html") || c.Query("redirect") != "json" {
-		c.Redirect(http.StatusFound, "/login?oauth_token="+url.QueryEscape(token.Token))
+// Exchange consumes the short-lived browser cookie and issues a token in the response body.
+func (h *OAuthHandler) Exchange(c *gin.Context) {
+	ticket, err := c.Cookie("oauth_exchange")
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("oauth_exchange", "", -1, "/api/v1/oauth/exchange", "", c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https", true)
+	if err != nil || ticket == "" {
+		response.Unauthorized(c, "OAuth exchange expired")
+		return
+	}
+	userID, err := h.cache.Take(c.Request.Context(), "oauth:exchange:"+ticket)
+	if err != nil {
+		response.Unauthorized(c, "OAuth exchange expired")
+		return
+	}
+	id, err := strconv.ParseUint(userID, 10, 64)
+	if err != nil {
+		response.Unauthorized(c, "OAuth exchange invalid")
+		return
+	}
+	token, err := h.authSvc.GenerateTokenForUser(uint(id))
+	if err != nil {
+		response.Unauthorized(c, "OAuth account unavailable")
 		return
 	}
 	response.Success(c, token)
@@ -251,21 +301,14 @@ func (h *OAuthHandler) findOrCreateUser(config *model.OAuthConfig, userInfo *OAu
 		return &user, nil
 	}
 
-	// 查找是否有相同邮箱的用户
+	// Never bind an unlinked external identity to a local account by email alone.
 	var existingUser model.User
 	err = h.db.Where("email = ?", userInfo.Email).First(&existingUser).Error
 	if err == nil {
-		// 关联到现有用户
-		oauthUser = model.OAuthUser{
-			UserID:     existingUser.ID,
-			Provider:   config.Provider,
-			ExternalID: userInfo.ID,
-			Username:   userInfo.Username,
-			Email:      userInfo.Email,
-			Avatar:     userInfo.Avatar,
-		}
-		h.db.Create(&oauthUser)
-		return &existingUser, nil
+		return nil, fmt.Errorf("email already belongs to an unlinked account; ask an administrator to link it")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
 	}
 
 	// 创建新用户
@@ -312,7 +355,9 @@ func (h *OAuthHandler) findOrCreateUser(config *model.OAuthConfig, userInfo *OAu
 // generateRandomState 生成随机 state
 func generateRandomState() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
 	return base64.URLEncoding.EncodeToString(b)
 }
 
@@ -379,11 +424,16 @@ func (h *OAuthHandler) CreateConfig(c *gin.Context) {
 		}
 		defaultRole = viewerRole.ID
 	}
+	sealedSecret, err := crypto.SealSecret(req.ClientSecret, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to encrypt OAuth credential")
+		return
+	}
 	cfg := model.OAuthConfig{
 		Provider:     provider,
 		Name:         req.Name,
 		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
+		ClientSecret: sealedSecret,
 		RedirectURL:  req.RedirectURL,
 		AuthURL:      firstNonEmpty(req.AuthURL, defaults.AuthURL),
 		TokenURL:     firstNonEmpty(req.TokenURL, defaults.TokenURL),
@@ -433,7 +483,12 @@ func (h *OAuthHandler) UpdateConfig(c *gin.Context) {
 		cfg.ClientID = *req.ClientID
 	}
 	if req.ClientSecret != nil && strings.TrimSpace(*req.ClientSecret) != "" {
-		cfg.ClientSecret = *req.ClientSecret
+		sealed, err := crypto.SealSecret(*req.ClientSecret, h.encryptKey)
+		if err != nil {
+			response.InternalError(c, "failed to encrypt OAuth credential")
+			return
+		}
+		cfg.ClientSecret = sealed
 	}
 	if req.RedirectURL != nil {
 		cfg.RedirectURL = *req.RedirectURL

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/model"
@@ -12,12 +13,14 @@ import (
 )
 
 type Service struct {
+	db         *gorm.DB
 	userRepo   *repository.UserRepository
 	jwtManager *utils.JWTManager
 }
 
 func NewService(db *gorm.DB, jwtManager *utils.JWTManager) *Service {
 	return &Service{
+		db:         db,
 		userRepo:   repository.NewUserRepository(db),
 		jwtManager: jwtManager,
 	}
@@ -48,7 +51,7 @@ type UserInfo struct {
 type RegisterRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=64"`
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required,min=12"`
 	RealName string `json:"real_name"`
 }
 
@@ -102,13 +105,18 @@ func (s *Service) Register(req *RegisterRequest) (*UserInfo, error) {
 		return nil, err
 	}
 
+	var role model.Role
+	if err := s.db.Where("name = ?", "user").First(&role).Error; err != nil {
+		return nil, fmt.Errorf("default role unavailable: %w", err)
+	}
 	user := &model.User{
 		Username: req.Username,
 		Email:    req.Email,
 		Password: hashedPassword,
 		RealName: req.RealName,
 		Status:   1,
-		RoleID:   2, // Default role: user
+		RoleID:   role.ID,
+		Role:     role,
 	}
 
 	if err := s.userRepo.Create(user); err != nil {
@@ -166,6 +174,9 @@ func (s *Service) GenerateTokenForUser(userID uint) (*LoginResponse, error) {
 	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return nil, err
+	}
+	if user.Status != 1 {
+		return nil, errors.New("account is disabled")
 	}
 
 	token, err := s.jwtManager.GenerateToken(user.ID, user.Username, user.RoleID)

@@ -51,20 +51,22 @@ func main() {
 	modReg := module.NewRegistry(cfg.ModuleEnabled, logger.GetLogger())
 	modules.RegisterAll(modReg)
 
-	// Auto migrate core + enabled modules
-	if err := model.AutoMigrateCore(); err != nil {
-		logger.Fatal("failed to migrate core database", zap.Error(err))
+	// Serialize schema and seed changes when multiple replicas start together.
+	if err := model.WithMigrationLock(context.Background(), func() error {
+		if err := model.AutoMigrateCore(); err != nil {
+			return err
+		}
+		if err := modReg.Migrate(model.DB); err != nil {
+			return err
+		}
+		if err := model.SealStoredSecrets(model.DB, cfg.EncryptKey()); err != nil {
+			return err
+		}
+		return model.SeedData()
+	}); err != nil {
+		logger.Fatal("database migration or bootstrap failed", zap.Error(err))
 	}
-	if err := modReg.Migrate(model.DB); err != nil {
-		logger.Fatal("failed to migrate module database", zap.Error(err))
-	}
-	logger.Info("database migrated")
-
-	// Seed default data (roles, permissions, users)
-	if err := model.SeedData(); err != nil {
-		logger.Warn("failed to seed data", zap.Error(err))
-	}
-	logger.Info("seed data initialized")
+	logger.Info("database migrated and seed data initialized")
 
 	// Initialize cache
 	cacheInstance, err := cache.New(cache.Config{
@@ -72,6 +74,7 @@ func main() {
 		Addr:     cfg.Cache.Addr,
 		Password: cfg.Cache.Password,
 		DB:       cfg.Cache.DB,
+		TLS:      cfg.Cache.TLS,
 	})
 	if err != nil {
 		logger.Fatal("failed to initialize cache", zap.Error(err))

@@ -264,6 +264,7 @@ function PendingConfirmPanel({
 }) {
   if (!actions.length) return null
   const hasRecreateRisk = actions.some(isControllerOwnedDelete)
+  const canSubmit = actions.some((a) => !a.status || a.status === 'pending' || a.status === 'approved')
   return (
     <div style={{ marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
       <Alert
@@ -295,6 +296,8 @@ function PendingConfirmPanel({
                 >
                   <Space wrap size={6} style={{ marginBottom: 4 }}>
                     <Tag color="orange">{p.action}</Tag>
+                    {p.status === 'approval_pending' && <Tag color="blue">待另一人审批</Tag>}
+                    {p.status === 'approved' && <Tag color="green">已批准待执行</Tag>}
                     <Text code>
                       {p.namespace}/{p.name}
                     </Text>
@@ -321,8 +324,9 @@ function PendingConfirmPanel({
                 danger
                 icon={<CheckCircleOutlined />}
                 onClick={onConfirm}
+                disabled={!canSubmit}
               >
-                确认执行
+                {actions.some((a) => a.status === 'approved') ? '执行已批准变更' : '确认 / 提交审批'}
               </Button>
               <Button size="small" icon={<CloseCircleOutlined />} onClick={onCancel}>
                 取消
@@ -692,16 +696,17 @@ const AIAgent: React.FC = () => {
       return
     }
 
-    const staged = [...pendingActions]
+    const staged = pendingActions.filter((a) => !a.status || a.status === 'pending' || a.status === 'approved')
+    if (!staged.length) { message.info('变更正在等待审批，请到变更中心查看进度'); return }
     const recreateRisk = staged.some(isControllerOwnedDelete)
     Modal.confirm({
-      title: `确认执行 ${staged.length} 项写操作？`,
+      title: `确认 / 提交 ${staged.length} 项写操作？`,
       width: 560,
       icon: <WarningOutlined style={{ color: '#faad14' }} />,
       content: (
         <div style={{ marginTop: 12 }}>
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            确认后将真正变更集群，此操作不可自动回滚。
+            生产集群将先提交双人审批；审批通过后由发起人执行。仅支持安全回滚的 Deployment 操作可自动执行。
           </Text>
           {recreateRisk && (
             <Alert
@@ -771,7 +776,10 @@ const AIAgent: React.FC = () => {
             results.push(`❌ ${label}: ${error?.response?.data?.message || error.message || '执行失败'}`)
           }
         }
-        setPendingActions([])
+        try {
+          const refreshed = await listPendingActions(activeId)
+          setPendingActions(refreshed.data?.pending_actions || [])
+        } catch { setPendingActions([]) }
         setPendingHostMessageId(null)
         setMessageExtras((prev) => {
           const next = { ...prev }

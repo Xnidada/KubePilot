@@ -28,6 +28,7 @@ import AppStoreList from './pages/appstore/List'
 import AIDiagnosis from './pages/aiops/Diagnosis'
 import AISettings from './pages/aiops/Settings'
 import AIAgent from './pages/aiops/Agent'
+import AIChanges from './pages/aiops/Changes'
 import AITools from './pages/aiops/AITools'
 import MemoryCenter from './pages/aiops/MemoryCenter'
 import SystemUsers from './pages/system/Users'
@@ -98,6 +99,7 @@ function App() {
         <Route path="monitor/alerts" element={<MonitorAlerts />} />
         <Route path="appstore" element={<AppStoreList />} />
         <Route path="aiops/agent" element={<AIAgent />} />
+        <Route path="aiops/changes" element={<AIChanges />} />
         <Route path="aiops/diagnosis" element={<AIDiagnosis />} />
         <Route path="aiops/tools" element={<AITools />} />
         <Route path="aiops/memories" element={<MemoryCenter />} />

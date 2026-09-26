@@ -31,3 +31,10 @@ func TestValidateRejectsShortEncryptKey(t *testing.T) {
 		t.Fatal("expected validation error for short encrypt_key")
 	}
 }
+
+func TestValidateRejectsManifestJWTPlaceholder(t *testing.T) {
+	cfg := &Config{JWT: JWTConfig{Secret: "CHANGE_YOUR_JWT_SECRET"}, Database: DatabaseConfig{Host: "localhost", Driver: "postgres"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("manifest JWT placeholder accepted")
+	}
+}

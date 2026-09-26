@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
@@ -32,6 +33,7 @@ type CreateClusterRequest struct {
 	APIServer   string `json:"api_server" binding:"required"`
 	Kubeconfig  string `json:"kubeconfig" binding:"required"`
 	Tags        string `json:"tags"`
+	Environment string `json:"environment"`
 }
 
 type UpdateClusterRequest struct {
@@ -40,27 +42,33 @@ type UpdateClusterRequest struct {
 	APIServer   string `json:"api_server"`
 	Kubeconfig  string `json:"kubeconfig"`
 	Tags        string `json:"tags"`
+	Environment string `json:"environment"`
 }
 
 type ClusterResponse struct {
-	ID             uint   `json:"id"`
-	Name           string `json:"name"`
-	DisplayName    string `json:"display_name"`
-	Description    string `json:"description"`
-	APIServer      string `json:"api_server"`
-	Status         string `json:"status"`
-	Version        string `json:"version"`
-	NodeCount      int    `json:"node_count"`
-	CPUCapacity    string `json:"cpu_capacity"`
-	MemoryCapacity string `json:"memory_capacity"`
+	ID              uint    `json:"id"`
+	Name            string  `json:"name"`
+	DisplayName     string  `json:"display_name"`
+	Description     string  `json:"description"`
+	APIServer       string  `json:"api_server"`
+	Status          string  `json:"status"`
+	Version         string  `json:"version"`
+	NodeCount       int     `json:"node_count"`
+	CPUCapacity     string  `json:"cpu_capacity"`
+	MemoryCapacity  string  `json:"memory_capacity"`
 	LastHealthCheck *string `json:"last_health_check"`
-	Tags           string `json:"tags"`
-	CreatedAt      string `json:"created_at"`
+	Tags            string  `json:"tags"`
+	Environment     string  `json:"environment"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 func (s *Service) Create(req *CreateClusterRequest) (*ClusterResponse, error) {
+	environment, err := normalizeEnvironment(req.Environment)
+	if err != nil {
+		return nil, err
+	}
 	// Check if cluster name exists
-	_, err := s.clusterRepo.GetByName(req.Name)
+	_, err = s.clusterRepo.GetByName(req.Name)
 	if err == nil {
 		return nil, errors.New("cluster name already exists")
 	}
@@ -75,13 +83,14 @@ func (s *Service) Create(req *CreateClusterRequest) (*ClusterResponse, error) {
 	}
 
 	cluster := &model.Cluster{
-		Name:       req.Name,
+		Name:        req.Name,
 		DisplayName: req.DisplayName,
 		Description: req.Description,
 		APIServer:   req.APIServer,
 		Kubeconfig:  encryptedConfig,
 		Status:      "unknown",
 		Tags:        req.Tags,
+		Environment: environment,
 	}
 
 	if err := s.clusterRepo.Create(cluster); err != nil {
@@ -119,6 +128,13 @@ func (s *Service) Update(id uint, req *UpdateClusterRequest) (*ClusterResponse, 
 	}
 	if req.Tags != "" {
 		cluster.Tags = req.Tags
+	}
+	if req.Environment != "" {
+		environment, err := normalizeEnvironment(req.Environment)
+		if err != nil {
+			return nil, err
+		}
+		cluster.Environment = environment
 	}
 
 	// 如果提供了新的 kubeconfig，加密后更新
@@ -252,6 +268,7 @@ func (s *Service) toResponse(cluster *model.Cluster) *ClusterResponse {
 		CPUCapacity:    cluster.CPUCapacity,
 		MemoryCapacity: cluster.MemoryCapacity,
 		Tags:           cluster.Tags,
+		Environment:    cluster.Environment,
 		CreatedAt:      cluster.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
@@ -261,4 +278,17 @@ func (s *Service) toResponse(cluster *model.Cluster) *ClusterResponse {
 	}
 
 	return resp
+}
+
+func normalizeEnvironment(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "production":
+		return "production", nil
+	case "staging":
+		return "staging", nil
+	case "development":
+		return "development", nil
+	default:
+		return "", fmt.Errorf("environment must be production, staging or development")
+	}
 }
