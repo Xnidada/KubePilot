@@ -112,6 +112,10 @@ const menuItems: MenuProps['items'] = [
         label: 'Ingress',
       },
       {
+        key: '/workloads/gateway-api',
+        label: 'Gateway API',
+      },
+      {
         key: '/workloads/networkpolicies',
         label: 'NetworkPolicy',
       },
@@ -319,6 +323,7 @@ const menuItems: MenuProps['items'] = [
 ]
 
 const menuPermissionMap: Record<string, { resource: string; action: string }> = {
+  '/workloads/gateway-api': { resource: 'custom_resources', action: 'view' },
   '/system/users': { resource: 'users', action: 'view' },
   '/system/user-groups': { resource: 'user_groups', action: 'view' },
   '/system/roles': { resource: 'roles', action: 'view' },
@@ -467,6 +472,7 @@ const MainLayout: React.FC = () => {
       '/monitor/alerts': ['/monitor'],
       '/workloads/services': ['/network'],
       '/workloads/ingresses': ['/network'],
+      '/workloads/gateway-api': ['/network'],
       '/workloads/configmaps': ['/config'],
       '/workloads/secrets': ['/config'],
       '/workloads/namespaces': ['/cluster-resources'],

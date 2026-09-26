@@ -11,6 +11,7 @@ import WorkloadServices from './pages/workload/Services'
 import ConfigMaps from './pages/workload/ConfigMaps'
 import Secrets from './pages/workload/Secrets'
 import Ingresses from './pages/workload/Ingresses'
+import GatewayAPI from './pages/workload/GatewayAPI'
 import Namespaces from './pages/workload/Namespaces'
 import StatefulSets from './pages/workload/StatefulSets'
 import DaemonSets from './pages/workload/DaemonSets'
@@ -84,6 +85,7 @@ function App() {
         <Route path="workloads/configmaps" element={<ConfigMaps />} />
         <Route path="workloads/secrets" element={<Secrets />} />
         <Route path="workloads/ingresses" element={<Ingresses />} />
+        <Route path="workloads/gateway-api" element={<GatewayAPI />} />
         <Route path="workloads/namespaces" element={<Namespaces />} />
         <Route path="workloads/statefulsets" element={<StatefulSets />} />
         <Route path="workloads/daemonsets" element={<DaemonSets />} />

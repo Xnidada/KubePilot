@@ -25,6 +25,7 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"GET /api/v1/clusters",
 		"GET /api/v1/clusters/:id/workloads/deployments",
 		"GET /api/v1/clusters/:id/workloads/deployments/:ns/:name",
+		"GET /api/v1/clusters/:id/workloads/gateway-api",
 		"POST /api/v1/clusters/:id/workloads/batch",
 		"POST /api/v1/clusters/:id/workloads/yaml/apply",
 		"POST /api/v1/aiops/agent",
@@ -67,6 +68,9 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		if !registry.Registered(parts[0], parts[1]) {
 			t.Fatalf("missing policy for %s", key)
 		}
+	}
+	if policy, _ := registry.Lookup("GET", "/api/v1/clusters/:id/workloads/gateway-api"); policy.Resource != "custom_resources" || policy.Action != "view" || policy.Scope != authz.ScopeNamespaceList || !policy.AllowFilteredNamespaceList {
+		t.Fatalf("unsafe Gateway API policy: %#v", policy)
 	}
 	for _, key := range []string{
 		"GET /api/v1/aiops/mcp",

@@ -316,6 +316,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 				workloads.GET("/ingresses/:ns/:name", workloadHandler.GetIngress)
 				workloads.PUT("/ingresses/:ns/:name", workloadHandler.UpdateIngress)
 				workloads.DELETE("/ingresses/:ns/:name", workloadHandler.DeleteIngress)
+				workloads.GET("/gateway-api", workloadHandler.ListGatewayAPI)
 
 				// PV
 				workloads.GET("/pvs", workloadHandler.ListPVs)

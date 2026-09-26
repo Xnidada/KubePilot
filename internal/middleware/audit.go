@@ -164,6 +164,9 @@ func extractResourceType(path string) string {
 	if strings.HasPrefix(path, "/api/v1/inspection/reports") {
 		return "inspection_reports"
 	}
+	if strings.Contains(path, "/workloads/gateway-api") {
+		return "gateway_api"
+	}
 	if strings.Contains(path, "/login-logs") {
 		return "login_logs"
 	}

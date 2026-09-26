@@ -146,6 +146,7 @@ func registerAPIPolicies(registry *authz.Registry) {
 	registry.MustRegister("GET", "/api/v1/clusters/:id/workloads/ingresses/:ns/:name", authz.Policy{Resource: "ingresses", Action: "view", Scope: authz.ScopeNamespace})
 	registry.MustRegister("PUT", "/api/v1/clusters/:id/workloads/ingresses/:ns/:name", authz.Policy{Resource: "ingresses", Action: "edit", Scope: authz.ScopeNamespace})
 	registry.MustRegister("DELETE", "/api/v1/clusters/:id/workloads/ingresses/:ns/:name", authz.Policy{Resource: "ingresses", Action: "delete", Scope: authz.ScopeNamespace})
+	registry.MustRegister("GET", "/api/v1/clusters/:id/workloads/gateway-api", authz.Policy{Resource: "custom_resources", Action: "view", Scope: authz.ScopeNamespaceList, AllowFilteredNamespaceList: true})
 	registry.MustRegister("GET", "/api/v1/clusters/:id/workloads/pvcs", authz.Policy{Resource: "pvcs", Action: "view", Scope: authz.ScopeNamespaceList, AllowFilteredNamespaceList: true})
 	registry.MustRegister("POST", "/api/v1/clusters/:id/workloads/pvcs", authz.Policy{Resource: "pvcs", Action: "create", Scope: authz.ScopeNamespaceList})
 	registry.MustRegister("GET", "/api/v1/clusters/:id/workloads/pvcs/:ns/:name", authz.Policy{Resource: "pvcs", Action: "view", Scope: authz.ScopeNamespace})

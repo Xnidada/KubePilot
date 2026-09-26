@@ -138,6 +138,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
 - **受限 MCP 服务** - `/api/v1/aiops/mcp` 提供无状态 Streamable HTTP，只开放 `list_workloads`（Pod/Deployment/Service 状态）和 `list_events`；每次请求使用现有用户 Bearer JWT，并同时校验 AI 查看权限、对应资源查看权限及指定集群/命名空间授权。必须指定具体命名空间；不开放写操作、Secret、Pod 完整 YAML 或日志。工具调用只记录元数据审计，不记录查询结果/令牌。
+- **Gateway API 专用视图** - 网络菜单下只读查看 GatewayClass、Gateway、HTTPRoute，以及集群提供时的 GRPCRoute、ReferenceGrant；展示关联关系与控制器 Conditions，未安装 CRD 时给出明确提示。使用 `custom_resources:view` 权限并按集群/命名空间授权过滤。
 
 > 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。当前流式最终总结未回传 Token 用量，所以 Prompt Token 与费用只覆盖已上报的调用。敏感内容识别为防护规则，仍需人工核查。
 
@@ -386,6 +387,7 @@ POST   /api/v1/clusters            # 添加集群
 PUT    /api/v1/clusters/:id        # 更新集群
 DELETE /api/v1/clusters/:id        # 删除集群
 POST   /api/v1/clusters/:id/health # 健康检查
+GET    /api/v1/clusters/:id/workloads/gateway-api?ns=default # Gateway API 只读视图（ns 可省略）
 ```
 
 ### 任务调度
