@@ -901,16 +901,31 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", action.ClusterID, ns) {
 		return
 	}
+	approvalEnabled := false
+	if production {
+		approvalEnabled, err = h.dualApprovalEnabled()
+		if err != nil {
+			response.InternalError(c, "failed to load approval settings")
+			return
+		}
+	}
 	if production && action.Status == "pending" {
-		if err := h.submitActionForApproval(action, userID.(uint)); err != nil {
+		action.Evidence, err = h.productionChangeEvidence(action)
+		if err != nil {
 			response.BadRequest(c, err.Error())
 			return
 		}
-		response.Success(c, gin.H{"success": true, "action_id": action.ID, "status": "approval_pending", "message": "已提交，等待另一名有权限的人员审批"})
-		return
+		if approvalEnabled {
+			if err := h.submitActionForApproval(action, userID.(uint), action.Evidence); err != nil {
+				response.BadRequest(c, err.Error())
+				return
+			}
+			response.Success(c, gin.H{"success": true, "action_id": action.ID, "status": "approval_pending", "message": "已提交，等待另一名有权限的人员审批"})
+			return
+		}
 	}
 	expectedStatus := "pending"
-	if production {
+	if production && action.Status == "approved" {
 		expectedStatus = "approved"
 		if action.ApprovedBy == nil || *action.ApprovedBy == action.UserID {
 			response.Forbidden(c, "independent approval required")
@@ -922,7 +937,11 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		return
 	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		claim := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, expectedStatus).Update("status", "executing")
+		updates := map[string]any{"status": "executing"}
+		if production && expectedStatus == "pending" {
+			updates["evidence"] = action.Evidence
+		}
+		claim := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, expectedStatus).Updates(updates)
 		if claim.Error != nil {
 			return claim.Error
 		}
@@ -1155,7 +1174,7 @@ func (h *Handler) KubectlExecute(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
 		return
 	}
-	// All writes must pass through staged preview and the production approval gate.
+	// All writes must pass through staged preview and the configured production approval gate.
 	switch req.Command {
 	case "get", "describe", "logs", "top", "explain", "api-resources", "version":
 	default:

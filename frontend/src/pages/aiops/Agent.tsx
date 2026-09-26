@@ -706,7 +706,7 @@ const AIAgent: React.FC = () => {
       content: (
         <div style={{ marginTop: 12 }}>
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            生产集群将先提交双人审批；审批通过后由发起人执行。仅支持安全回滚的 Deployment 操作可自动执行。
+            生产集群是否需要双人审批由 AI 设置控制；关闭时确认后执行。仅支持安全回滚的 Deployment 操作可自动执行。
           </Text>
           {recreateRisk && (
             <Alert

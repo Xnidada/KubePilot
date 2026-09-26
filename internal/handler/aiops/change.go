@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -15,7 +16,47 @@ import (
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+func (h *Handler) dualApprovalEnabled() (bool, error) {
+	var setting model.AgentApprovalSetting
+	err := h.db.First(&setting, 1).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return setting.Enabled, err
+}
+
+func (h *Handler) GetApprovalSettings(c *gin.Context) {
+	enabled, err := h.dualApprovalEnabled()
+	if err != nil {
+		response.InternalError(c, "failed to load approval settings")
+		return
+	}
+	response.Success(c, gin.H{"enabled": enabled})
+}
+
+func (h *Handler) UpdateApprovalSettings(c *gin.Context) {
+	var req struct {
+		Enabled *bool `json:"enabled" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "enabled must be true or false")
+		return
+	}
+	setting := model.AgentApprovalSetting{ID: 1, Enabled: *req.Enabled}
+	err := h.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"enabled", "updated_at"}),
+	}).Create(&setting).Error
+	if err != nil {
+		response.InternalError(c, "failed to save approval settings")
+		return
+	}
+	c.Set("audit_resource_name", fmt.Sprintf("dual_approval:%t", setting.Enabled))
+	response.Success(c, gin.H{"enabled": setting.Enabled})
+}
 
 func (h *Handler) productionAction(clusterID uint) (bool, error) {
 	var cluster model.Cluster
@@ -89,16 +130,16 @@ func diagnosticTool(name string) bool {
 	}
 }
 
-func (h *Handler) submitActionForApproval(action model.AgentAction, actorID uint) error {
+func (h *Handler) productionChangeEvidence(action model.AgentAction) (string, error) {
 	var params aiopsService.StagedActionParams
 	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
-		return fmt.Errorf("invalid staged change: %w", err)
+		return "", fmt.Errorf("invalid staged change: %w", err)
 	}
 	if !aiopsService.ProductionAutoRollbackSupported(params.Action) {
-		return fmt.Errorf("production automation for %s has no safe automatic rollback; use a separate change runbook", params.Action)
+		return "", fmt.Errorf("production automation for %s has no safe automatic rollback; use a separate change runbook", params.Action)
 	}
 	if len(params.HostPathMounts) > 0 || len(params.EnvVars) > 0 {
-		return fmt.Errorf("production automation does not allow hostPath mounts or environment value changes")
+		return "", fmt.Errorf("production automation does not allow hostPath mounts or environment value changes")
 	}
 	evidence := h.actionEvidence(action)
 	if action.ConversationID != nil {
@@ -106,9 +147,13 @@ func (h *Handler) submitActionForApproval(action model.AgentAction, actorID uint
 			Tools []json.RawMessage `json:"tools"`
 		}
 		if json.Unmarshal([]byte(evidence), &data) != nil || len(data.Tools) == 0 {
-			return fmt.Errorf("agent must collect live diagnostic evidence before submitting a production change")
+			return "", fmt.Errorf("agent must collect live diagnostic evidence before a production change")
 		}
 	}
+	return evidence, nil
+}
+
+func (h *Handler) submitActionForApproval(action model.AgentAction, actorID uint, evidence string) error {
 	return h.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ? AND user_id = ?", action.ID, "pending", actorID).
 			Updates(map[string]any{"status": "approval_pending", "evidence": evidence})

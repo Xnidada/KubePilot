@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Card, message, Modal, Space, Table, Tag, Typography } from 'antd'
 import { AgentChange, cancelAgentChange, confirmK8SOperation, decideAgentChange, exportAgentChange, listAgentChanges } from '../../api/agent'
+import { getAgentApprovalSettings } from '../../api/aiops'
 
 const { Text, Title } = Typography
 
@@ -22,8 +23,10 @@ const Changes: React.FC = () => {
   const [mine, setMine] = useState<AgentChange[]>([])
   const [approvals, setApprovals] = useState<AgentChange[]>([])
   const [busy, setBusy] = useState(false)
+  const [approvalEnabled, setApprovalEnabled] = useState<boolean | null>(null)
 
   const load = async () => {
+    void getAgentApprovalSettings().then(res => setApprovalEnabled(res.data.enabled)).catch(() => setApprovalEnabled(null))
     try {
       const res = await listAgentChanges()
       setMine(res.data?.mine || [])
@@ -94,7 +97,8 @@ const Changes: React.FC = () => {
 
   return <div style={{ padding: 24 }}>
     <Title level={3}>变更中心</Title>
-    <Alert type="info" showIcon message="生产集群默认双人审批；目前仅 Deployment 创建、扩缩容和更新支持自动观察与回滚。其他写操作需独立变更预案。" style={{ marginBottom: 16 }} />
+    <Alert type="info" showIcon message={approvalEnabled === null ? '审批开关状态暂不可用，请以服务端校验为准。' :
+      `生产集群双人审批已${approvalEnabled ? '开启' : '关闭'}；仅 Deployment 创建、扩缩容和更新支持自动观察与回滚。其他写操作需独立变更预案。`} style={{ marginBottom: 16 }} />
     <Card title={`待我审批（${approvals.length}）`} style={{ marginBottom: 16 }}>
       <Table rowKey="id" dataSource={approvals} pagination={{ pageSize: 10 }} columns={[...common,
         { title: '操作', render: (_: unknown, row: AgentChange) => <Space>

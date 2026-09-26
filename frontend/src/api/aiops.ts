@@ -1,5 +1,11 @@
 import { get, post, put, del } from './request'
 
+export const getAgentApprovalSettings = () =>
+  get<{ code: number; data: { enabled: boolean } }>('/aiops/approval-settings')
+
+export const updateAgentApprovalSettings = (enabled: boolean) =>
+  put<{ code: number; data: { enabled: boolean } }>('/aiops/approval-settings', { enabled })
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string

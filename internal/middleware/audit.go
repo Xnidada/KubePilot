@@ -163,6 +163,9 @@ func extractResourceType(path string) string {
 	if strings.HasPrefix(path, "/api/v1/aiops/memories") {
 		return "agent_memories"
 	}
+	if path == "/api/v1/aiops/approval-settings" {
+		return "aiops_config"
+	}
 	if strings.HasPrefix(path, "/api/v1/webhooks/logs") {
 		return "webhook_logs"
 	}

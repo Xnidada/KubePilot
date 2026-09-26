@@ -308,7 +308,7 @@ const ClusterList: React.FC = () => {
             <Input placeholder="多个标签用逗号分隔" />
           </Form.Item>
           <Form.Item name="environment" label="环境" rules={[{ required: true, message: '请选择环境' }]}>
-            <Select options={[{ value: 'production', label: '生产（双人审批）' }, { value: 'staging', label: '预发' }, { value: 'development', label: '开发' }]} />
+            <Select options={[{ value: 'production', label: '生产' }, { value: 'staging', label: '预发' }, { value: 'development', label: '开发' }]} />
           </Form.Item>
         </Form>
       </Modal>

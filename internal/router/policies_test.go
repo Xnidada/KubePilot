@@ -35,6 +35,8 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/aiops/mcp",
 		"DELETE /api/v1/aiops/mcp",
 		"POST /api/v1/aiops/agent/confirm/:actionId",
+		"GET /api/v1/aiops/approval-settings",
+		"PUT /api/v1/aiops/approval-settings",
 		"POST /api/v1/aiops/kubectl",
 		"GET /api/v1/system/user-groups",
 		"PUT /api/v1/system/user-groups/:id/members",
@@ -91,6 +93,12 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		if policy.Resource != "aiops" || policy.Action != "view" || policy.Scope != authz.ScopePlatform {
 			t.Fatalf("unsafe MCP policy for %s: %#v", key, policy)
 		}
+	}
+	if policy, _ := registry.Lookup("PUT", "/api/v1/aiops/approval-settings"); policy.Resource != "aiops_config" || policy.Action != "admin" || policy.Scope != authz.ScopePlatform {
+		t.Fatalf("unsafe approval setting policy: %#v", policy)
+	}
+	if policy, _ := registry.Lookup("GET", "/api/v1/aiops/approval-settings"); !policy.AuthenticatedOnly {
+		t.Fatalf("approval setting must require authentication: %#v", policy)
 	}
 	for _, key := range []string{
 		"DELETE /api/v1/inspection/reports/:id",

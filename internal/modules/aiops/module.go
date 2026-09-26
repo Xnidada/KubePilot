@@ -42,6 +42,7 @@ func (m *Module) Migrations() []any {
 		&model.AgentRunMetric{},
 		&model.AgentAction{},
 		&model.AgentActionAudit{},
+		&model.AgentApprovalSetting{},
 		&model.AgentToolTrace{},
 		&model.LLMConfig{},
 		&model.TokenUsageLog{},
@@ -78,6 +79,8 @@ func (m *Module) RegisterPolicies(reg *authz.Registry) {
 	reg.MustRegister("DELETE", "/api/v1/aiops/configs/:id", authz.Policy{Resource: "aiops_config", Action: "delete", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/aiops/configs/:id/set-default", authz.Policy{Resource: "aiops_config", Action: "admin", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/aiops/configs/test", authz.Policy{Resource: "aiops_config", Action: "execute", Scope: authz.ScopePlatform})
+	reg.MustRegister("GET", "/api/v1/aiops/approval-settings", authz.Policy{AuthenticatedOnly: true})
+	reg.MustRegister("PUT", "/api/v1/aiops/approval-settings", authz.Policy{Resource: "aiops_config", Action: "admin", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/aiops/conversations", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/aiops/conversations", authz.Policy{Resource: "aiops", Action: "create", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/aiops/conversations/:id", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopePlatform})
@@ -194,6 +197,8 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 		g.DELETE("/configs/:id", m.handler.DeleteLLMConfig)
 		g.POST("/configs/:id/set-default", m.handler.SetDefaultLLMConfig)
 		g.POST("/configs/test", m.handler.TestLLMConfig)
+		g.GET("/approval-settings", m.handler.GetApprovalSettings)
+		g.PUT("/approval-settings", m.handler.UpdateApprovalSettings)
 
 		g.GET("/conversations", m.handler.ListConversations)
 		g.POST("/conversations", m.handler.CreateConversation)

@@ -21,6 +21,7 @@ import {
   Col,
   Tabs,
   Spin,
+  Switch,
 } from 'antd'
 import {
   PlusOutlined,
@@ -42,6 +43,8 @@ import {
   setDefaultLLMConfig,
   testLLMConfig,
   getTokenUsageStats,
+  getAgentApprovalSettings,
+  updateAgentApprovalSettings,
   LLMConfig,
   TokenUsageStats,
 } from '../../api/aiops'
@@ -92,6 +95,8 @@ const AISettings: React.FC = () => {
   const [form] = Form.useForm()
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [approvalEnabled, setApprovalEnabled] = useState<boolean | null>(null)
+  const [approvalLoading, setApprovalLoading] = useState(false)
 
   // Token usage stats
   const [tokenStats, setTokenStats] = useState<TokenUsageStats | null>(null)
@@ -101,7 +106,33 @@ const AISettings: React.FC = () => {
   useEffect(() => {
     fetchConfigs()
     fetchTokenStats()
+    fetchApprovalSettings()
   }, [])
+
+  const fetchApprovalSettings = async () => {
+    setApprovalLoading(true)
+    try {
+      const res = await getAgentApprovalSettings()
+      setApprovalEnabled(res.data.enabled)
+    } catch {
+      setApprovalEnabled(null)
+    } finally {
+      setApprovalLoading(false)
+    }
+  }
+
+  const setDualApproval = async (enabled: boolean) => {
+    setApprovalLoading(true)
+    try {
+      const res = await updateAgentApprovalSettings(enabled)
+      setApprovalEnabled(res.data.enabled)
+      message.success(enabled ? '双人审批已开启' : '双人审批已关闭')
+    } catch {
+      message.error('更新审批设置失败')
+    } finally {
+      setApprovalLoading(false)
+    }
+  }
 
   const fetchConfigs = async () => {
     setLoading(true)
@@ -417,6 +448,21 @@ const AISettings: React.FC = () => {
     <div>
       <Title level={4}>🤖 AI 设置</Title>
       <AIReadOnlyBanner resource="aiops_config" action="edit" />
+
+      <Card title="生产变更审批" style={{ marginBottom: 16 }}>
+        <Space>
+          <Switch checked={approvalEnabled ?? false} loading={approvalLoading}
+            disabled={!canAdmin || approvalEnabled === null}
+            onChange={value => void setDualApproval(value)} />
+          <Text>双人审批（默认关闭）</Text>
+          <Button size="small" onClick={() => void fetchApprovalSettings()} loading={approvalLoading}>刷新</Button>
+        </Space>
+        <Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+          仅作用于 AI Agent 的生产集群暂存变更；关闭后仍需发起人确认，并保留预览、安全限制、执行观察与失败回滚。
+          已进入待审批状态的变更仍须完成审批或取消。
+        </Paragraph>
+        {!approvalLoading && approvalEnabled === null && <Text type="danger">审批设置加载失败，请刷新重试。</Text>}
+      </Card>
 
       {/* Token Usage Statistics */}
       <Card
