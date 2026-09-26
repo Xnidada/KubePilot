@@ -56,6 +56,14 @@ type gatewayAPIInstallPlan struct {
 	ManifestSHA256    string `json:"manifest_sha256"`
 }
 
+type gatewayInstallEvent struct {
+	Type    string `json:"type"` // log | done
+	Level   string `json:"level,omitempty"`
+	Message string `json:"message"`
+	Status  string `json:"status,omitempty"`
+	At      string `json:"at"`
+}
+
 func (h *Handler) GetGatewayAPIInstallPlan(c *gin.Context) {
 	_, cluster, client, ok := gatewayInstallerTarget(c)
 	if !ok {
@@ -143,21 +151,140 @@ func (h *Handler) InstallGatewayAPI(c *gin.Context) {
 		gatewayInstallCheckError(c, err)
 		return
 	}
-	success, _, errMsg, err := h.kubectlExecutor.ExecuteKubectl(ctx, clusterID, []string{"apply", "--server-side", "-f", file.Name()})
+	h.runGatewayInstall(c, ctx, clusterID, client.Clientset, file.Name())
+}
+
+// runGatewayInstall starts after the namespace claim; tests can exercise its log stream without touching a cluster.
+func (h *Handler) runGatewayInstall(c *gin.Context, ctx context.Context, clusterID uint, client kubernetes.Interface, manifestPath string) {
+	stream := strings.Contains(c.GetHeader("Accept"), "text/event-stream")
+	if stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("X-Accel-Buffering", "no")
+		c.Writer.Flush()
+	}
+	logs := make([]gatewayInstallEvent, 0, 20)
+	emit := func(level, message string) {
+		event := gatewayInstallEvent{Type: "log", Level: level, Message: gatewayInstallLogText(message), At: time.Now().UTC().Format(time.RFC3339)}
+		logs = append(logs, event)
+		if stream {
+			writeGatewayInstallEvent(c, event)
+		}
+	}
+	finish := func(status, message string, statusCode int) {
+		if stream {
+			if status == "failed" {
+				c.Set("audit_success", false)
+			}
+			writeGatewayInstallEvent(c, gatewayInstallEvent{Type: "done", Status: status, Message: message, At: time.Now().UTC().Format(time.RFC3339)})
+			return
+		}
+		code := 0
+		if statusCode >= 400 {
+			code = statusCode
+		}
+		data := gin.H{"status": status, "logs": logs}
+		if status == "ready" {
+			data["controller"] = "Envoy Gateway"
+			data["version"] = gatewayInstallerVersion
+		} else if status == "pending" {
+			data["detail"] = message
+		}
+		c.JSON(statusCode, response.Response{Code: code, Message: message, Data: data})
+	}
+	emit("success", "预检通过；已创建 envoy-gateway-system 命名空间")
+	emit("info", "开始应用 Envoy Gateway v1.9.1 与 Gateway API v1.6.1 官方清单（server-side apply）")
+	type applyResult struct {
+		success        bool
+		output, errMsg string
+		err            error
+	}
+	results := make(chan applyResult, 1)
+	go func() {
+		success, output, errMsg, err := h.kubectlExecutor.ExecuteKubectl(ctx, clusterID, []string{"apply", "--server-side", "-f", manifestPath})
+		results <- applyResult{success, output, errMsg, err}
+	}()
+	progress := time.NewTicker(15 * time.Second)
+	defer progress.Stop()
+	var result applyResult
+	for applying := true; applying; {
+		select {
+		case result = <-results:
+			applying = false
+		case <-progress.C:
+			emit("info", "kubectl apply 仍在执行，等待集群 API 返回结果")
+		case <-ctx.Done():
+			message := "安装请求超时；可能已有部分资源，请先检查集群状态，勿重复提交"
+			emit("error", message)
+			finish("failed", message, http.StatusGatewayTimeout)
+			return
+		}
+	}
+	success, output, errMsg, err := result.success, result.output, result.errMsg, result.err
+	if strings.TrimSpace(output) != "" {
+		emit("info", "kubectl apply 输出:\n"+output)
+	}
 	if err != nil || !success {
-		response.InternalError(c, "安装清单应用失败；可能已有部分资源，请检查后手动恢复: "+gatewayInstallFailure(err, errMsg))
+		message := "安装清单应用失败；可能已有部分资源，请检查后手动恢复: " + gatewayInstallFailure(err, errMsg)
+		emit("error", message)
+		finish("failed", message, http.StatusInternalServerError)
 		return
 	}
-	success, _, errMsg, err = h.kubectlExecutor.ExecuteKubectl(ctx, clusterID, []string{
-		"wait", "--for=condition=Available", "deployment/envoy-gateway", "-n", gatewayInstallerNamespace, "--timeout=75s",
-	})
-	if err != nil || !success {
-		c.JSON(http.StatusAccepted, response.Response{Code: 0, Message: "安装清单已应用，控制器尚未就绪，请刷新页面并检查 Deployment", Data: map[string]string{
-			"status": "pending", "detail": gatewayInstallFailure(err, errMsg),
-		}})
+	emit("success", "清单应用完成，开始检查 Envoy Gateway Deployment")
+	ready, reason := waitGatewayController(ctx, client, func(message string) { emit("info", message) })
+	if !ready {
+		message := "安装清单已应用，但控制器尚未就绪：" + reason
+		emit("warning", message)
+		finish("pending", message, http.StatusAccepted)
 		return
 	}
-	response.Success(c, map[string]string{"status": "ready", "controller": "Envoy Gateway", "version": gatewayInstallerVersion})
+	emit("success", "Envoy Gateway Deployment 已就绪")
+	finish("ready", "Envoy Gateway 与 Gateway API CRD 已安装，控制器就绪", http.StatusOK)
+}
+
+func writeGatewayInstallEvent(c *gin.Context, event gatewayInstallEvent) {
+	data, _ := json.Marshal(event)
+	fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+	c.Writer.Flush()
+}
+
+func gatewayInstallLogText(message string) string {
+	const maxLogBytes = 16 << 10
+	message = strings.TrimSpace(message)
+	if len(message) > maxLogBytes {
+		message = strings.ToValidUTF8(message[:maxLogBytes], "") + "\n…输出已截断"
+	}
+	return message
+}
+
+func waitGatewayController(ctx context.Context, client kubernetes.Interface, emit func(string)) (bool, string) {
+	waitCtx, cancel := context.WithTimeout(ctx, 75*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		deployment, err := client.AppsV1().Deployments(gatewayInstallerNamespace).Get(waitCtx, "envoy-gateway", metav1.GetOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return false, "查询 Deployment 失败: " + err.Error()
+		}
+		if err == nil {
+			if deployment.Status.AvailableReplicas > 0 && deployment.Status.ObservedGeneration >= deployment.Generation {
+				return true, ""
+			}
+			var expected int32 = 1
+			if deployment.Spec.Replicas != nil {
+				expected = *deployment.Spec.Replicas
+			}
+			emit(fmt.Sprintf("等待控制器就绪：可用副本 %d，期望副本 %d", deployment.Status.AvailableReplicas, expected))
+		} else {
+			emit("等待 Envoy Gateway Deployment 创建")
+		}
+		select {
+		case <-waitCtx.Done():
+			return false, "75 秒内未就绪，请稍后刷新页面查看控制器状态"
+		case <-ticker.C:
+		}
+	}
 }
 
 func gatewayInstallerTarget(c *gin.Context) (uint, model.Cluster, *k8s.ClusterClient, bool) {

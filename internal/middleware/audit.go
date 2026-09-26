@@ -64,6 +64,12 @@ func AuditMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		success := c.Writer.Status() < 400
+		if value, ok := c.Get("audit_success"); ok {
+			if override, valid := value.(bool); valid {
+				success = override
+			}
+		}
 		auditLog := model.AuditLog{
 			Action:       c.Request.Method,
 			ResourceType: resourceType,
@@ -74,7 +80,7 @@ func AuditMiddleware() gin.HandlerFunc {
 			Latency:      latency,
 			IP:           netutil.RealClientIP(c),
 			UserAgent:    c.Request.UserAgent(),
-			Success:      c.Writer.Status() < 400,
+			Success:      success,
 		}
 
 		// 设置用户信息
