@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Card, Drawer, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Drawer, Input, Modal, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, type Cluster } from '../../api/cluster'
-import { get } from '../../api/request'
+import { get, post } from '../../api/request'
+import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
 
@@ -42,9 +43,25 @@ interface GatewayItem {
 
 interface GatewayOverview {
   installed: boolean
+  crds_ready: boolean
+  envoy_controller: 'ready' | 'not_ready' | 'absent' | 'unknown'
   versions: Record<string, string>
   classes_visible: boolean
   items: GatewayItem[]
+}
+
+interface InstallPlan {
+  installable: boolean
+  reason?: string
+  cluster_name: string
+  environment: string
+  kubernetes_version: string
+  controller: string
+  controller_version: string
+  gateway_api_version: string
+  namespace: string
+  manifest_url: string
+  manifest_sha256: string
 }
 
 const refText = (ref: ResourceRef, ownNamespace?: string) => `${ref.namespace || ownNamespace || '集群'}/${ref.name}${ref.port ? `:${ref.port}` : ''}`
@@ -88,6 +105,14 @@ const GatewayAPI: React.FC = () => {
   const [selected, setSelected] = useState<GatewayItem | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [noticeType, setNoticeType] = useState<'success' | 'warning'>('success')
+  const [installPlan, setInstallPlan] = useState<InstallPlan | null>(null)
+  const [installOpen, setInstallOpen] = useState(false)
+  const [planLoading, setPlanLoading] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [confirmCluster, setConfirmCluster] = useState('')
+  const canInstall = useAuthStore(state => state.hasPermission('clusters', 'admin'))
 
   useEffect(() => {
     getClusterList(1, 100).then(res => {
@@ -114,6 +139,41 @@ const GatewayAPI: React.FC = () => {
   }, [clusterID, namespace])
 
   useEffect(() => { refresh() }, [refresh])
+
+  const openInstallPlan = async () => {
+    setPlanLoading(true)
+    setError('')
+    try {
+      const res = await get<{ code: number; data: InstallPlan }>(`/clusters/${clusterID}/workloads/gateway-api/install-plan`)
+      setInstallPlan(res.data)
+      setConfirmCluster('')
+      setInstallOpen(true)
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '检查安装条件失败')
+    } finally {
+      setPlanLoading(false)
+    }
+  }
+
+  const installGatewayAPI = async () => {
+    if (!installPlan || confirmCluster !== installPlan.cluster_name) return
+    setInstalling(true)
+    setError('')
+    try {
+      const res = await post<{ code: number; data: { status: string; detail?: string } }>(
+        `/clusters/${clusterID}/workloads/gateway-api/install`, { confirm_cluster: confirmCluster })
+      setInstallOpen(false)
+      setNoticeType(res.data.status === 'ready' ? 'success' : 'warning')
+      setNotice(res.data.status === 'ready' ? 'Envoy Gateway 与 Gateway API CRD 已安装，控制器就绪。' :
+        `安装清单已应用，控制器仍在启动；请稍后刷新并检查 envoy-gateway-system 中的 Deployment。${res.data.detail || ''}`)
+      await refresh()
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '安装失败，请检查部分安装资源')
+      await refresh()
+    } finally {
+      setInstalling(false)
+    }
+  }
 
   const nameColumn = {
     title: '名称', dataIndex: 'name', key: 'name',
@@ -154,7 +214,8 @@ const GatewayAPI: React.FC = () => {
       <Space wrap>
         <Select value={clusterID || undefined} style={{ width: 200 }} placeholder="选择集群"
           options={clusters.map(cluster => ({ value: cluster.id, label: cluster.display_name || cluster.name }))}
-          onChange={value => { setClusterID(value); setNamespace(''); setNamespaceDraft(''); setOverview(null) }} />
+          disabled={installing}
+          onChange={value => { setClusterID(value); setNamespace(''); setNamespaceDraft(''); setOverview(null); setInstallPlan(null); setNotice('') }} />
         <Input value={namespaceDraft} onChange={event => setNamespaceDraft(event.target.value)}
           onPressEnter={() => { if (namespaceDraft.trim() === namespace) refresh(); else setNamespace(namespaceDraft.trim()) }}
           placeholder="命名空间（留空为有权范围）" style={{ width: 230 }} allowClear />
@@ -163,8 +224,19 @@ const GatewayAPI: React.FC = () => {
       </Space>
     </Space>
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
-    {overview && !overview.installed ? <Alert type="info" showIcon message="当前集群未提供 Gateway API v1 资源" description="本页面只读取资源，不会自动安装 CRD 或控制器。" /> : null}
+    {notice && <Alert type={noticeType} showIcon closable onClose={() => setNotice('')} message={notice} style={{ marginBottom: 16 }} />}
+    {overview && !overview.crds_ready && <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+      message={overview.installed ? '当前集群的核心 Gateway API CRD 不完整' : '当前集群未提供 Gateway API 核心 CRD'}
+      description={<Space direction="vertical">
+        <Text>Envoy Gateway 控制器：{overview.envoy_controller === 'ready' ? '已就绪' : overview.envoy_controller === 'not_ready' ? '已安装但未就绪' : overview.envoy_controller === 'absent' ? '未检测到' : '状态未知'}。仅在集群没有现有 Gateway API / Envoy Gateway 资源时，才可安装固定版本的控制器与 CRD。</Text>
+        {canInstall && <Button onClick={openInstallPlan} loading={planLoading}>检查并安装 CRD 与控制器</Button>}
+      </Space>} />}
+    {overview?.crds_ready && overview.classes_visible && !overview.items.some(item => item.kind === 'GatewayClass') &&
+      <Alert type="info" showIcon message="尚未发现 GatewayClass" description="CRD 已就绪，但无法仅凭此判断控制器是否安装；请确认控制器运行状态并创建对应的 GatewayClass。" style={{ marginBottom: 16 }} />}
     {overview?.installed && <Card>
+      <Space style={{ marginBottom: 12 }}><Text type="secondary">Envoy Gateway 控制器：</Text><Tag color={overview.envoy_controller === 'ready' ? 'success' : overview.envoy_controller === 'not_ready' ? 'warning' : 'default'}>
+        {overview.envoy_controller === 'ready' ? '已就绪' : overview.envoy_controller === 'not_ready' ? '未就绪' : overview.envoy_controller === 'absent' ? '未检测到（可能使用其他控制器）' : '状态未知'}
+      </Tag></Space>
       {!overview.classes_visible && <Alert type="info" showIcon message="当前账号没有集群级授权，GatewayClass 列表已隐藏。" style={{ marginBottom: 16 }} />}
       <Tabs items={[
         { key: 'gateways', label: `Gateway (${overview.items.filter(item => item.kind === 'Gateway').length})`, children: table(['Gateway'], 'Gateway') },
@@ -185,6 +257,25 @@ const GatewayAPI: React.FC = () => {
         <pre style={{ overflowX: 'auto', maxHeight: 500, fontSize: 12 }}>{JSON.stringify({ spec: selected.spec, status: selected.status }, null, 2)}</pre>
       </>}
     </Drawer>
+    <Modal title="安装 Gateway API CRD 与 Envoy Gateway" open={installOpen}
+      onCancel={() => { if (!installing) setInstallOpen(false) }}
+      onOk={installGatewayAPI} okText="确认安装" okButtonProps={{ disabled: !installPlan?.installable || confirmCluster !== installPlan.cluster_name }}
+      confirmLoading={installing} cancelButtonProps={{ disabled: installing }} closable={!installing} maskClosable={false}>
+      {installPlan && <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert type={installPlan.installable ? 'warning' : 'error'} showIcon
+          message={installPlan.installable ? '这会创建集群级 CRD、RBAC 与控制器工作负载；不会创建 GatewayClass 或流量入口。' : '不满足自动安装条件'}
+          description={installPlan.reason || (installPlan.environment === 'production' ? '生产集群请先完成内部变更审批。' : undefined)} />
+        <Text>集群：{installPlan.cluster_name}（{installPlan.environment}，Kubernetes {installPlan.kubernetes_version}）</Text>
+        <Text>安装：Gateway API {installPlan.gateway_api_version} + {installPlan.controller} {installPlan.controller_version}</Text>
+        <Text>命名空间：{installPlan.namespace}</Text>
+        <Text>官方清单已内置，安装不依赖集群出网；<a href={installPlan.manifest_url} target="_blank" rel="noreferrer">查看固定版本来源</a></Text>
+        <Text copyable>SHA-256：{installPlan.manifest_sha256}</Text>
+        {installPlan.installable && <>
+          <Text>输入集群名称 <Text code>{installPlan.cluster_name}</Text> 以确认：</Text>
+          <Input value={confirmCluster} onChange={event => setConfirmCluster(event.target.value)} placeholder="集群名称" disabled={installing} />
+        </>}
+      </Space>}
+    </Modal>
   </div>
 }
 

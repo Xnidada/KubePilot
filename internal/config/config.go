@@ -210,7 +210,7 @@ func setDefaults() {
 	viper.SetDefault("server.port", 8080)
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("server.read_timeout", 30*time.Second)
-	viper.SetDefault("server.write_timeout", 30*time.Second)
+	viper.SetDefault("server.write_timeout", 180*time.Second)
 
 	// Database defaults
 	viper.SetDefault("database.driver", "postgres")

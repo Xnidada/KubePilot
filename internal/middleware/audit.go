@@ -43,6 +43,11 @@ func AuditMiddleware() gin.HandlerFunc {
 		if resourceName == "" {
 			resourceName = batchIDs
 		}
+		if name, ok := c.Get("audit_resource_name"); ok {
+			if value, valid := name.(string); valid {
+				resourceName = value
+			}
+		}
 		clusterID := ""
 		if strings.Contains(c.FullPath(), "/clusters/:id") {
 			clusterID = c.Param("id")

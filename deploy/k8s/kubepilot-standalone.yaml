@@ -19,7 +19,7 @@ data:
       port: 8080
       mode: "release"
       read_timeout: 30s
-      write_timeout: 30s
+      write_timeout: 180s
 
     database:
       driver: "postgres"

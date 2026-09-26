@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 )
 
 const gatewayAPIGroup = "gateway.networking.k8s.io"
@@ -40,10 +41,12 @@ type gatewayAPIItem struct {
 }
 
 type gatewayAPIOverview struct {
-	Installed      bool              `json:"installed"`
-	Versions       map[string]string `json:"versions"`
-	ClassesVisible bool              `json:"classes_visible"`
-	Items          []gatewayAPIItem  `json:"items"`
+	Installed       bool              `json:"installed"`
+	CRDsReady       bool              `json:"crds_ready"`
+	EnvoyController string            `json:"envoy_controller"`
+	Versions        map[string]string `json:"versions"`
+	ClassesVisible  bool              `json:"classes_visible"`
+	Items           []gatewayAPIItem  `json:"items"`
 }
 
 // ListGatewayAPI is deliberately read-only and exposes only the named Gateway API kinds.
@@ -84,6 +87,8 @@ func (h *Handler) ListGatewayAPI(c *gin.Context) {
 		}
 	}
 	result.Installed = len(result.Versions) > 0
+	result.CRDsReady = result.Versions["GatewayClass"] != "" && result.Versions["Gateway"] != "" && result.Versions["HTTPRoute"] != ""
+	result.EnvoyController = gatewayEnvoyControllerStatus(ctx, client.Clientset)
 	if !result.Installed {
 		response.Success(c, result)
 		return
@@ -114,6 +119,21 @@ func (h *Handler) ListGatewayAPI(c *gin.Context) {
 		result.Items = append(result.Items, items...)
 	}
 	response.Success(c, result)
+}
+
+// This reports only Envoy Gateway; other controllers are represented by GatewayClass conditions.
+func gatewayEnvoyControllerStatus(ctx context.Context, client kubernetes.Interface) string {
+	deployment, err := client.AppsV1().Deployments(gatewayInstallerNamespace).Get(ctx, "envoy-gateway", metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "absent"
+	}
+	if err != nil {
+		return "unknown"
+	}
+	if deployment.Status.AvailableReplicas > 0 && deployment.Status.ObservedGeneration >= deployment.Generation {
+		return "ready"
+	}
+	return "not_ready"
 }
 
 func gatewayQueryNamespaces(selected string, allowed map[string]struct{}) []string {

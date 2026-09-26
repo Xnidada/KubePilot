@@ -26,6 +26,8 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"GET /api/v1/clusters/:id/workloads/deployments",
 		"GET /api/v1/clusters/:id/workloads/deployments/:ns/:name",
 		"GET /api/v1/clusters/:id/workloads/gateway-api",
+		"GET /api/v1/clusters/:id/workloads/gateway-api/install-plan",
+		"POST /api/v1/clusters/:id/workloads/gateway-api/install",
 		"POST /api/v1/clusters/:id/workloads/batch",
 		"POST /api/v1/clusters/:id/workloads/yaml/apply",
 		"POST /api/v1/aiops/agent",
@@ -71,6 +73,13 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 	}
 	if policy, _ := registry.Lookup("GET", "/api/v1/clusters/:id/workloads/gateway-api"); policy.Resource != "custom_resources" || policy.Action != "view" || policy.Scope != authz.ScopeNamespaceList || !policy.AllowFilteredNamespaceList {
 		t.Fatalf("unsafe Gateway API policy: %#v", policy)
+	}
+	for _, key := range []string{"GET /api/v1/clusters/:id/workloads/gateway-api/install-plan", "POST /api/v1/clusters/:id/workloads/gateway-api/install"} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "clusters" || policy.Action != "admin" || policy.Scope != authz.ScopeCluster {
+			t.Fatalf("unsafe Gateway API install policy for %s: %#v", key, policy)
+		}
 	}
 	for _, key := range []string{
 		"GET /api/v1/aiops/mcp",

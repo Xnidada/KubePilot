@@ -138,7 +138,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
 - **受限 MCP 服务** - `/api/v1/aiops/mcp` 提供无状态 Streamable HTTP，只开放 `list_workloads`（Pod/Deployment/Service 状态）和 `list_events`；每次请求使用现有用户 Bearer JWT，并同时校验 AI 查看权限、对应资源查看权限及指定集群/命名空间授权。必须指定具体命名空间；不开放写操作、Secret、Pod 完整 YAML 或日志。工具调用只记录元数据审计，不记录查询结果/令牌。
-- **Gateway API 专用视图** - 网络菜单下只读查看 GatewayClass、Gateway、HTTPRoute，以及集群提供时的 GRPCRoute、ReferenceGrant；展示关联关系与控制器 Conditions，未安装 CRD 时给出明确提示。使用 `custom_resources:view` 权限并按集群/命名空间授权过滤。
+- **Gateway API 专用视图与安装入口** - 网络菜单下查看 GatewayClass、Gateway、HTTPRoute，以及集群提供时的 GRPCRoute、ReferenceGrant；展示关联关系、控制器 Conditions、核心 CRD 与 Envoy Gateway Deployment 状态。读取使用 `custom_resources:view` 并按集群/命名空间授权过滤。集群管理员可在空白集群预览并确认安装固定的 Gateway API v1.6.1 + Envoy Gateway v1.9.1 清单（内置官方发布清单并校验 SHA-256、服务端应用并等待控制器就绪）；不覆盖已有/托管 CRD、已有安装命名空间或部分安装资源，不创建 GatewayClass/Gateway。Envoy Gateway 支持 Kubernetes v1.33–v1.36；自动安装还要求运行时 `kubectl` 与目标集群相差不超过 1 个次版本（随镜像提供的 v1.35 覆盖 v1.34–v1.36），但不要求应用容器访问 GitHub。失败后的部分资源需人工核查与恢复，生产环境须遵守组织变更审批流程。
 
 > 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。当前流式最终总结未回传 Token 用量，所以 Prompt Token 与费用只覆盖已上报的调用。敏感内容识别为防护规则，仍需人工核查。
 
@@ -388,6 +388,8 @@ PUT    /api/v1/clusters/:id        # 更新集群
 DELETE /api/v1/clusters/:id        # 删除集群
 POST   /api/v1/clusters/:id/health # 健康检查
 GET    /api/v1/clusters/:id/workloads/gateway-api?ns=default # Gateway API 只读视图（ns 可省略）
+GET    /api/v1/clusters/:id/workloads/gateway-api/install-plan # 集群管理员查看安装预检与固定清单
+POST   /api/v1/clusters/:id/workloads/gateway-api/install      # 集群管理员确认安装（JSON: confirm_cluster）
 ```
 
 ### 任务调度
