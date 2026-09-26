@@ -3,14 +3,16 @@ package inspection
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/authz"
+	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -65,6 +67,10 @@ func (h *InspectionHandler) CreateRule(c *gin.Context) {
 		response.BadRequest(c, "invalid cron schedule: "+err.Error())
 		return
 	}
+	if reason := inspectionRuleError(&rule); reason != "" {
+		response.BadRequest(c, reason)
+		return
+	}
 
 	rule.Enabled = true
 	if err := h.db.Create(&rule).Error; err != nil {
@@ -113,11 +119,11 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 	var req struct {
 		Name        string  `json:"name"`
 		Description string  `json:"description"`
-		Resource    string  `json:"resource"`
-		CheckType   string  `json:"check_type"`
-		Condition   string  `json:"condition"`
-		Threshold   string  `json:"threshold"`
-		Script      string  `json:"script"`
+		Resource    *string `json:"resource"`
+		CheckType   *string `json:"check_type"`
+		Condition   *string `json:"condition"`
+		Threshold   *string `json:"threshold"`
+		Script      *string `json:"script"`
 		Enabled     *bool   `json:"enabled"`
 		// Schedule: omit = no change; "" = clear (manual-only); non-empty = set cron.
 		Schedule *string `json:"schedule"`
@@ -128,26 +134,32 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{}
+	candidate := rule
 	if req.Name != "" {
 		updates["name"] = req.Name
 	}
 	if req.Description != "" {
 		updates["description"] = req.Description
 	}
-	if req.Resource != "" {
-		updates["resource"] = req.Resource
+	if req.Resource != nil {
+		candidate.Resource = *req.Resource
+		updates["resource"] = *req.Resource
 	}
-	if req.CheckType != "" {
-		updates["check_type"] = req.CheckType
+	if req.CheckType != nil {
+		candidate.CheckType = *req.CheckType
+		updates["check_type"] = *req.CheckType
 	}
-	if req.Condition != "" {
-		updates["condition"] = req.Condition
+	if req.Condition != nil {
+		candidate.Condition = *req.Condition
+		updates["condition"] = *req.Condition
 	}
-	if req.Threshold != "" {
-		updates["threshold"] = req.Threshold
+	if req.Threshold != nil {
+		candidate.Threshold = *req.Threshold
+		updates["threshold"] = *req.Threshold
 	}
-	if req.Script != "" {
-		updates["script"] = req.Script
+	if req.Script != nil {
+		candidate.Script = *req.Script
+		updates["script"] = *req.Script
 	}
 	if req.Enabled != nil {
 		updates["enabled"] = *req.Enabled
@@ -158,6 +170,10 @@ func (h *InspectionHandler) UpdateRule(c *gin.Context) {
 			return
 		}
 		updates["schedule"] = *req.Schedule
+	}
+	if reason := inspectionRuleError(&candidate); reason != "" {
+		response.BadRequest(c, reason)
+		return
 	}
 
 	if err := h.db.Model(&rule).Updates(updates).Error; err != nil {
@@ -244,7 +260,10 @@ func (h *InspectionHandler) RunInspection(c *gin.Context) {
 		Status:    "running",
 		StartedAt: time.Now(),
 	}
-	h.db.Create(&report)
+	if err := h.db.Create(&report).Error; err != nil {
+		response.InternalError(c, "创建巡检报告失败: "+err.Error())
+		return
+	}
 
 	// 执行巡检
 	go h.executeInspection(&report, &rule)
@@ -271,6 +290,14 @@ func (h *InspectionHandler) RunScheduledInspection(rule *model.InspectionRule) {
 
 // executeInspection 执行巡检逻辑
 func (h *InspectionHandler) executeInspection(report *model.InspectionReport, rule *model.InspectionRule) {
+	if reason := inspectionRuleError(rule); reason != "" {
+		report.Status = "failed"
+		report.Error = reason
+		now := time.Now()
+		report.CompletedAt = &now
+		h.db.Save(report)
+		return
+	}
 	client, err := k8s.Manager.GetClient(rule.ClusterID)
 	if err != nil {
 		report.Status = "failed"
@@ -293,40 +320,43 @@ func (h *InspectionHandler) executeInspection(report *model.InspectionReport, ru
 		results = h.checkDeployments(ctx, client, rule)
 	case "service":
 		results = h.checkServices(ctx, client, rule)
-	default:
-		// 自定义脚本检查
-		results = h.runCustomCheck(ctx, client, rule)
 	}
 
-	// 保存结果
+	// 保存结果；空结果不能被当作一次通过的检查。
 	for i := range results {
 		results[i].ReportID = report.ID
 	}
-	h.db.Create(&results)
-
-	// 更新报告
-	passCount := 0
-	failCount := 0
-	warnCount := 0
-	for _, r := range results {
-		switch r.Status {
-		case "pass":
-			passCount++
-		case "fail":
-			failCount++
-		case "warn":
-			warnCount++
+	report.Status, report.Passed, report.Failed, report.Warnings, report.Error = summarizeInspectionResults(results)
+	report.TotalChecks = len(results)
+	if len(results) > 0 {
+		if err := h.db.Create(&results).Error; err != nil {
+			report.Status = "failed"
+			report.Error = fmt.Sprintf("保存巡检结果失败: %v", err)
 		}
 	}
-
-	report.Status = "completed"
-	report.TotalChecks = len(results)
-	report.Passed = passCount
-	report.Failed = failCount
-	report.Warnings = warnCount
 	now := time.Now()
 	report.CompletedAt = &now
 	h.db.Save(report)
+}
+
+func summarizeInspectionResults(results []model.InspectionResult) (status string, passed, failed, warnings int, reason string) {
+	if len(results) == 0 {
+		return "failed", 0, 0, 0, "未发现可检查资源，无法判定巡检通过"
+	}
+	for _, result := range results {
+		switch result.Status {
+		case "pass":
+			passed++
+		case "warn":
+			warnings++
+		default:
+			failed++
+		}
+	}
+	if failed > 0 {
+		return "failed", passed, failed, warnings, fmt.Sprintf("%d 项检查失败", failed)
+	}
+	return "completed", passed, failed, warnings, ""
 }
 
 // checkNodes 检查节点状态
@@ -396,7 +426,29 @@ func (h *InspectionHandler) checkPods(ctx context.Context, client *k8s.ClusterCl
 		}
 
 		switch pod.Status.Phase {
-		case "Running", "Succeeded":
+		case "Running":
+			ready := false
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+					ready = true
+				}
+			}
+			if len(pod.Status.ContainerStatuses) == 0 {
+				ready = false
+			}
+			for _, cs := range pod.Status.ContainerStatuses {
+				if !cs.Ready {
+					ready = false
+				}
+			}
+			if ready {
+				result.Status = "pass"
+				result.Message = "Pod 运行中且容器已就绪"
+			} else {
+				result.Status = "fail"
+				result.Message = "Pod 运行中但容器未就绪"
+			}
+		case "Succeeded":
 			result.Status = "pass"
 			result.Message = fmt.Sprintf("Pod 状态: %s", pod.Status.Phase)
 		case "Pending":
@@ -410,7 +462,9 @@ func (h *InspectionHandler) checkPods(ctx context.Context, client *k8s.ClusterCl
 		// 检查重启次数
 		for _, cs := range pod.Status.ContainerStatuses {
 			if cs.RestartCount > 5 {
-				result.Status = "warn"
+				if result.Status == "pass" {
+					result.Status = "warn"
+				}
 				result.Message += fmt.Sprintf(", 容器 %s 重启 %d 次", cs.Name, cs.RestartCount)
 			}
 		}
@@ -443,17 +497,20 @@ func (h *InspectionHandler) checkDeployments(ctx context.Context, client *k8s.Cl
 			Namespace:    deploy.Namespace,
 		}
 
-		desired := int32(0)
+		desired := int32(1)
 		if deploy.Spec.Replicas != nil {
 			desired = *deploy.Spec.Replicas
 		}
 
-		if deploy.Status.ReadyReplicas == desired {
+		if desired == 0 {
+			result.Status = "warn"
+			result.Message = "Deployment 已缩容至 0，未验证工作负载可用性"
+		} else if deploy.Status.ObservedGeneration >= deploy.Generation && deploy.Status.ReadyReplicas == desired && deploy.Status.AvailableReplicas == desired && deploy.Status.UpdatedReplicas == desired {
 			result.Status = "pass"
-			result.Message = fmt.Sprintf("副本数正常: %d/%d", deploy.Status.ReadyReplicas, desired)
+			result.Message = fmt.Sprintf("最新版本副本已就绪且可用: %d/%d", deploy.Status.ReadyReplicas, desired)
 		} else {
 			result.Status = "fail"
-			result.Message = fmt.Sprintf("副本数异常: %d/%d", deploy.Status.ReadyReplicas, desired)
+			result.Message = fmt.Sprintf("部署未就绪: 就绪 %d、可用 %d、已更新 %d、期望 %d", deploy.Status.ReadyReplicas, deploy.Status.AvailableReplicas, deploy.Status.UpdatedReplicas, desired)
 		}
 
 		results = append(results, result)
@@ -485,11 +542,11 @@ func (h *InspectionHandler) checkServices(ctx context.Context, client *k8s.Clust
 		}
 
 		if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
-			result.Status = "pass"
-			result.Message = fmt.Sprintf("ClusterIP: %s", svc.Spec.ClusterIP)
+			result.Status = "warn"
+			result.Message = fmt.Sprintf("ClusterIP 配置存在: %s；未验证后端可用性", svc.Spec.ClusterIP)
 		} else {
 			result.Status = "warn"
-			result.Message = "无 ClusterIP"
+			result.Message = "无 ClusterIP（可能为 Headless/ExternalName）；未验证后端可用性"
 		}
 
 		results = append(results, result)
@@ -498,16 +555,22 @@ func (h *InspectionHandler) checkServices(ctx context.Context, client *k8s.Clust
 	return results
 }
 
-// runCustomCheck 运行自定义检查
-func (h *InspectionHandler) runCustomCheck(ctx context.Context, client *k8s.ClusterClient, rule *model.InspectionRule) []model.InspectionResult {
-	// 自定义脚本检查（简化实现）
-	return []model.InspectionResult{
-		{
-			ResourceType: rule.Resource,
-			ResourceName: "custom",
-			Status:       "pass",
-			Message:      "自定义检查完成",
-		},
+// inspectionRuleError keeps unsupported checks from being saved or reported as passing.
+func inspectionRuleError(rule *model.InspectionRule) string {
+	if strings.TrimSpace(rule.Script) != "" || rule.CheckType == "custom" {
+		return "自定义脚本巡检尚未实现，未执行检查"
+	}
+	if strings.TrimSpace(rule.Condition) != "" || strings.TrimSpace(rule.Threshold) != "" {
+		return "条件/阈值巡检尚未实现，未执行检查"
+	}
+	if rule.CheckType != "" && rule.CheckType != "status" {
+		return fmt.Sprintf("检查类型 %q 尚未实现，未执行检查", rule.CheckType)
+	}
+	switch rule.Resource {
+	case "node", "pod", "deployment", "service":
+		return ""
+	default:
+		return fmt.Sprintf("检查资源 %q 尚未实现，未执行检查", rule.Resource)
 	}
 }
 

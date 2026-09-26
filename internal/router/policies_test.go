@@ -28,6 +28,9 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		"POST /api/v1/clusters/:id/workloads/batch",
 		"POST /api/v1/clusters/:id/workloads/yaml/apply",
 		"POST /api/v1/aiops/agent",
+		"GET /api/v1/aiops/mcp",
+		"POST /api/v1/aiops/mcp",
+		"DELETE /api/v1/aiops/mcp",
 		"POST /api/v1/aiops/agent/confirm/:actionId",
 		"POST /api/v1/aiops/kubectl",
 		"GET /api/v1/system/user-groups",
@@ -63,6 +66,17 @@ func TestProtectedRoutesHaveExplicitPolicies(t *testing.T) {
 		parts := strings.SplitN(key, " ", 2)
 		if !registry.Registered(parts[0], parts[1]) {
 			t.Fatalf("missing policy for %s", key)
+		}
+	}
+	for _, key := range []string{
+		"GET /api/v1/aiops/mcp",
+		"POST /api/v1/aiops/mcp",
+		"DELETE /api/v1/aiops/mcp",
+	} {
+		parts := strings.SplitN(key, " ", 2)
+		policy, _ := registry.Lookup(parts[0], parts[1])
+		if policy.Resource != "aiops" || policy.Action != "view" || policy.Scope != authz.ScopePlatform {
+			t.Fatalf("unsafe MCP policy for %s: %#v", key, policy)
 		}
 	}
 	for _, key := range []string{

@@ -137,6 +137,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - 资源指南 - 分析资源状态，给出健康评分和优化建议
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
+- **受限 MCP 服务** - `/api/v1/aiops/mcp` 提供无状态 Streamable HTTP，只开放 `list_workloads`（Pod/Deployment/Service 状态）和 `list_events`；每次请求使用现有用户 Bearer JWT，并同时校验 AI 查看权限、对应资源查看权限及指定集群/命名空间授权。必须指定具体命名空间；不开放写操作、Secret、Pod 完整 YAML 或日志。工具调用只记录元数据审计，不记录查询结果/令牌。
 
 > 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。当前流式最终总结未回传 Token 用量，所以 Prompt Token 与费用只覆盖已上报的调用。敏感内容识别为防护规则，仍需人工核查。
 
@@ -419,6 +420,7 @@ POST   /api/v1/aiops/explain               # 划词解释
 POST   /api/v1/aiops/resource-guide        # 资源指南
 POST   /api/v1/aiops/translate-yaml        # YAML 翻译
 POST   /api/v1/aiops/analyze-logs          # 日志问诊
+POST   /api/v1/aiops/mcp                   # 受限只读 MCP（Streamable HTTP）
 ```
 
 ### 运维工具
@@ -438,6 +440,8 @@ POST   /api/v1/inspection/rules/:id/run  # 执行巡检
 GET    /api/v1/event-forward/rules  # 转发规则
 POST   /api/v1/event-forward/rules/:id/test # 测试转发
 ```
+
+巡检目前只支持 Node、Pod、Deployment、Service 的基础状态检查，其中 Service 仅确认 ClusterIP 配置，未验证后端可用性，因此只给告警、不判定为通过。自定义脚本、资源用量、条件/阈值检查尚未实现；新建/更新这类规则会返回具体错误，历史规则运行时会生成 `failed` 报告。检查失败或结果为空也不会再被标为通过。
 
 ### 历史记录删除
 

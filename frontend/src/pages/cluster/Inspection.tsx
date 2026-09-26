@@ -151,8 +151,8 @@ const Inspection: React.FC = () => {
       }
       setShowRuleModal(false)
       fetchRules()
-    } catch (error) {
-      message.error('保存失败')
+    } catch {
+      // Form validation and the API interceptor already show the specific reason.
     }
   }
 
@@ -225,6 +225,7 @@ const Inspection: React.FC = () => {
       case 'pass':
         return <Tag color="success" icon={<CheckCircleOutlined />}>通过</Tag>
       case 'fail':
+      case 'failed':
         return <Tag color="error" icon={<CloseCircleOutlined />}>失败</Tag>
       case 'warn':
         return <Tag color="warning" icon={<WarningOutlined />}>警告</Tag>
@@ -235,6 +236,14 @@ const Inspection: React.FC = () => {
       default:
         return <Tag>{status}</Tag>
     }
+  }
+
+  const getReportStatusTag = (report: InspectionReport) => {
+    if (report.status === 'completed') {
+      if (report.failed > 0 || report.total_checks === 0) return <Tag color="error">需复核</Tag>
+      if (report.warnings > 0) return <Tag color="warning">有告警</Tag>
+    }
+    return getStatusTag(report.status)
   }
 
   const ruleColumns = [
@@ -303,9 +312,8 @@ const Inspection: React.FC = () => {
     { title: 'ID', dataIndex: 'id', key: 'id' },
     {
       title: '状态',
-      dataIndex: 'status',
       key: 'status',
-      render: (status: string) => getStatusTag(status),
+      render: (_: unknown, report: InspectionReport) => getReportStatusTag(report),
     },
     { title: '总检查', dataIndex: 'total_checks', key: 'total_checks' },
     {
@@ -506,7 +514,7 @@ const Inspection: React.FC = () => {
                 { label: 'Pod', value: 'pod' },
                 { label: 'Deployment', value: 'deployment' },
                 { label: 'Service', value: 'service' },
-                { label: '自定义', value: 'custom' },
+                { label: '自定义（尚未实现）', value: 'custom', disabled: true },
               ]}
             />
           </Form.Item>
@@ -514,17 +522,21 @@ const Inspection: React.FC = () => {
             <Select
               options={[
                 { label: '状态检查', value: 'status' },
-                { label: '资源使用', value: 'resource' },
-                { label: '自定义脚本', value: 'custom' },
+                { label: '资源使用（尚未实现）', value: 'resource', disabled: true },
+                { label: '自定义脚本（尚未实现）', value: 'custom', disabled: true },
               ]}
             />
           </Form.Item>
           <Form.Item name="schedule" label="调度（Cron 表达式，留空为手动）">
             <Input placeholder="例如: 0 */6 * * * (每6小时)" />
           </Form.Item>
-          <Form.Item name="script" label="自定义脚本">
-            <Input.TextArea rows={4} placeholder="输入自定义检查脚本..." />
-          </Form.Item>
+          {editingRule?.script && (
+            <Form.Item name="script" label="旧版自定义脚本（请清空后保存）">
+              <Input.TextArea rows={4} />
+            </Form.Item>
+          )}
+          {editingRule?.condition && <Form.Item name="condition" label="旧版条件（请清空后保存）"><Input /></Form.Item>}
+          {editingRule?.threshold && <Form.Item name="threshold" label="旧版阈值（请清空后保存）"><Input /></Form.Item>}
         </Form>
       </Modal>
 
@@ -539,12 +551,13 @@ const Inspection: React.FC = () => {
         {selectedReport && (
           <div style={{ marginBottom: 16 }}>
             <Space>
-              <Badge status={selectedReport.status === 'completed' ? 'success' : 'processing'} text={selectedReport.status} />
+              {getReportStatusTag(selectedReport)}
               <Text>总检查: {selectedReport.total_checks}</Text>
               <Text type="success">通过: {selectedReport.passed}</Text>
               <Text type="danger">失败: {selectedReport.failed}</Text>
               <Text type="warning">警告: {selectedReport.warnings}</Text>
             </Space>
+            {selectedReport.error && <div><Text type="danger">失败原因：{selectedReport.error}</Text></div>}
           </div>
         )}
         <Table

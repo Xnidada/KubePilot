@@ -67,6 +67,9 @@ func (m *Module) Menus() []module.MenuItem {
 }
 
 func (m *Module) RegisterPolicies(reg *authz.Registry) {
+	reg.MustRegister("GET", "/api/v1/aiops/mcp", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopePlatform})
+	reg.MustRegister("POST", "/api/v1/aiops/mcp", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopePlatform})
+	reg.MustRegister("DELETE", "/api/v1/aiops/mcp", authz.Policy{Resource: "aiops", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/aiops/configs", authz.Policy{Resource: "aiops_config", Action: "view", Scope: authz.ScopePlatform})
 	reg.MustRegister("POST", "/api/v1/aiops/configs", authz.Policy{Resource: "aiops_config", Action: "create", Scope: authz.ScopePlatform})
 	reg.MustRegister("GET", "/api/v1/aiops/configs/default", authz.Policy{Resource: "aiops_config", Action: "view", Scope: authz.ScopePlatform})
@@ -179,6 +182,10 @@ func (m *Module) RegisterRoutes(ctx *module.Context, protected *gin.RouterGroup)
 
 	g := protected.Group("/aiops")
 	{
+		mcpHandler := aiopsHandler.NewReadOnlyMCPHandler(m.db)
+		g.GET("/mcp", mcpHandler)
+		g.POST("/mcp", mcpHandler)
+		g.DELETE("/mcp", mcpHandler)
 		g.GET("/configs", m.handler.ListLLMConfigs)
 		g.POST("/configs", m.handler.SaveLLMConfig)
 		g.GET("/configs/default", m.handler.GetLLMConfig)
