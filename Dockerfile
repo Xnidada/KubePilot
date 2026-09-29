@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # 后端构建阶段
-FROM golang:1.26-alpine AS backend-builder
+FROM golang:1.26.8-alpine AS backend-builder
 
 WORKDIR /build
 
@@ -22,9 +22,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o kubepilot ./cmd/server/
 
 # 运行阶段
-FROM alpine:3.19
+FROM alpine:3.24
 
-ARG KUBECTL_VERSION=1.29.14
+ARG KUBECTL_VERSION=1.35.9
 ARG TARGETARCH=amd64
 
 RUN apk add --no-cache ca-certificates tzdata curl \

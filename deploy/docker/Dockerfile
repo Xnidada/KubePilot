@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Backend build stage
-FROM golang:1.26-alpine AS backend-builder
+FROM golang:1.26.8-alpine AS backend-builder
 
 WORKDIR /build
 
@@ -25,11 +25,11 @@ FROM alpine:3.23 AS kubectl-fetcher
 ARG TARGETARCH=amd64
 RUN apk add --no-cache ca-certificates curl && \
     case "$TARGETARCH" in \
-      amd64) digest=a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989 ;; \
-      arm64) digest=58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25 ;; \
+      amd64) digest=3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb ;; \
+      arm64) digest=39c98bca82875d9a9ddfb6f3c5ab17c3f78ea0801230683e538a67d5c053308d ;; \
       *) exit 1 ;; \
     esac && \
-    curl -fLsS --retry 3 "https://dl.k8s.io/release/v1.35.0/bin/linux/${TARGETARCH}/kubectl" -o /tmp/kubectl && \
+    curl -fLsS --retry 3 "https://dl.k8s.io/release/v1.35.9/bin/linux/${TARGETARCH}/kubectl" -o /tmp/kubectl && \
     echo "$digest  /tmp/kubectl" | sha256sum -c - && \
     install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 
