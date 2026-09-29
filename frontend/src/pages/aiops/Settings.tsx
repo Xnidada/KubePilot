@@ -458,8 +458,8 @@ const AISettings: React.FC = () => {
           <Button size="small" onClick={() => void fetchApprovalSettings()} loading={approvalLoading}>刷新</Button>
         </Space>
         <Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
-          仅作用于 AI Agent 的生产集群暂存变更；关闭后仍需发起人确认，并保留预览、安全限制、执行观察与失败回滚。
-          已进入待审批状态的变更仍须完成审批或取消。
+          开启后，生产集群的直接写入 API、交互终端、租户命名空间和调度任务会被拦截；仅支持安全回滚的 Agent 暂存 Deployment 变更可走双人审批链。
+          关闭后手工写入恢复原有权限控制，Agent 仍需发起人确认、预览与安全校验。已进入待审批状态的变更仍须完成审批或取消。
         </Paragraph>
         {!approvalLoading && approvalEnabled === null && <Text type="danger">审批设置加载失败，请刷新重试。</Text>}
       </Card>

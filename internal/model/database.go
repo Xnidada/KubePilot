@@ -93,6 +93,8 @@ func AutoMigrateCore() error {
 		&UserGroupMember{},
 		&GroupCluster{},
 		&AuditLog{},
+		&GatewayInstallJob{},
+		&GatewayInstallLog{},
 		&AlertRule{},
 		&AlertHistory{},
 		&NotificationChannel{},

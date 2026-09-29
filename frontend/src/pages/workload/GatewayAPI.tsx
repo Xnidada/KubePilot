@@ -3,7 +3,7 @@ import { Alert, Button, Card, Drawer, Input, Modal, Select, Space, Table, Tabs, 
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { getClusterList, type Cluster } from '../../api/cluster'
-import { get } from '../../api/request'
+import { get, post } from '../../api/request'
 import { useAuthStore } from '../../stores/auth'
 
 const { Title, Text } = Typography
@@ -64,37 +64,13 @@ interface InstallPlan {
   manifest_sha256: string
 }
 
-type InstallStatus = 'ready' | 'pending' | 'failed'
+interface InstallJob { id: number; status: 'pending' | 'running' | 'pending_controller' | 'ready' | 'failed'; message: string }
 
 interface InstallEvent {
-  type: 'log' | 'done'
+  type: 'log'
   level?: 'info' | 'success' | 'warning' | 'error'
-  status?: InstallStatus
   message: string
   at: string
-}
-
-const readInstallStream = async (response: Response, onEvent: (event: InstallEvent) => void) => {
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('无法读取安装日志流')
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n')
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() || ''
-    for (const part of parts) {
-      const line = part.split('\n').find(item => item.startsWith('data:'))
-      if (!line) continue
-      let event: InstallEvent
-      try { event = JSON.parse(line.slice(5).trim()) as InstallEvent } catch { continue }
-      onEvent(event)
-      if (event.type === 'done') return
-    }
-  }
-  throw new Error('安装日志流中断，安装可能仍在进行；请刷新集群状态，勿重复提交')
 }
 
 const refText = (ref: ResourceRef, ownNamespace?: string) => `${ref.namespace || ownNamespace || '集群'}/${ref.name}${ref.port ? `:${ref.port}` : ''}`
@@ -144,10 +120,13 @@ const GatewayAPI: React.FC = () => {
   const [installOpen, setInstallOpen] = useState(false)
   const [planLoading, setPlanLoading] = useState(false)
   const [installing, setInstalling] = useState(false)
-  const [installResult, setInstallResult] = useState<InstallStatus | null>(null)
+  const [installJob, setInstallJob] = useState<InstallJob | null>(null)
+  const [retryingFailed, setRetryingFailed] = useState(false)
   const [installLogs, setInstallLogs] = useState<InstallEvent[]>([])
   const [confirmCluster, setConfirmCluster] = useState('')
   const logContainer = useRef<HTMLDivElement>(null)
+  const selectedCluster = useRef(clusterID)
+  selectedCluster.current = clusterID
   const canInstall = useAuthStore(state => state.hasPermission('clusters', 'admin'))
 
   useEffect(() => {
@@ -175,19 +154,51 @@ const GatewayAPI: React.FC = () => {
   }, [clusterID, namespace])
 
   useEffect(() => { refresh() }, [refresh])
+
+  const loadInstallJob = useCallback(async () => {
+    if (!clusterID) return null
+    const res = await get<{ code: number; data: { job: InstallJob | null; logs: Array<{ id: number; level: InstallEvent['level']; message: string; at: string }> } }>(
+      `/clusters/${clusterID}/workloads/gateway-api/install-job`)
+    if (selectedCluster.current !== clusterID) return null
+    setInstallJob(res.data.job)
+    if (res.data.job && !retryingFailed) setInstallPlan(null)
+    setInstallLogs((res.data.logs || []).map(log => ({ type: 'log', level: log.level, message: log.message, at: log.at })))
+    const status = res.data.job?.status
+    return status || null
+  }, [clusterID, retryingFailed])
+
+  useEffect(() => {
+    if (!canInstall || !clusterID) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const poll = async () => {
+      try {
+        const status = await loadInstallJob()
+        if (active && (status === 'pending' || status === 'running' || status === 'pending_controller')) {
+          timer = setTimeout(poll, 3000)
+        }
+      } catch { /* cluster-level admin may be unavailable; plan endpoint reports details */ }
+    }
+    void poll()
+    return () => { active = false; clearTimeout(timer) }
+  }, [canInstall, clusterID, installJob?.id, installJob?.status, loadInstallJob])
+
+  useEffect(() => {
+    if (installJob?.status === 'ready' || installJob?.status === 'failed') void refresh()
+  }, [installJob?.status, refresh])
   useEffect(() => {
     if (logContainer.current) logContainer.current.scrollTop = logContainer.current.scrollHeight
   }, [installLogs])
 
-  const openInstallPlan = async () => {
+  const openInstallPlan = async (retry = false) => {
+    if (installJob && !retry) { setInstallOpen(true); return }
     setPlanLoading(true)
     setError('')
     try {
       const res = await get<{ code: number; data: InstallPlan }>(`/clusters/${clusterID}/workloads/gateway-api/install-plan`)
       setInstallPlan(res.data)
+      setRetryingFailed(retry)
       setConfirmCluster('')
-      setInstallResult(null)
-      setInstallLogs([])
       setInstallOpen(true)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : '检查安装条件失败')
@@ -200,41 +211,18 @@ const GatewayAPI: React.FC = () => {
     if (!installPlan || confirmCluster !== installPlan.cluster_name) return
     setInstalling(true)
     setError('')
-    setInstallLogs([])
-    setInstallResult(null)
     try {
-      const baseURL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
-      const response = await fetch(`${baseURL}/clusters/${clusterID}/workloads/gateway-api/install`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-          Authorization: `Bearer ${useAuthStore.getState().token || ''}`,
-        },
-        body: JSON.stringify({ confirm_cluster: confirmCluster }),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { message?: string }
-        throw new Error(body.message || `安装请求失败（HTTP ${response.status}）`)
-      }
-      if (!response.headers.get('content-type')?.includes('text/event-stream')) throw new Error('服务器未返回安装日志流')
-      await readInstallStream(response, event => {
-        setInstallLogs(current => [...current, event])
-        if (event.type === 'done' && event.status) {
-          setInstallResult(event.status)
-          setNoticeType(event.status === 'ready' ? 'success' : event.status === 'pending' ? 'warning' : 'error')
-          setNotice(event.message)
-        }
-      })
-      await refresh()
+      const res = await post<{ code: number; data: { job_id: number; status: InstallJob['status'] } }>(
+        `/clusters/${clusterID}/workloads/gateway-api/install`, { confirm_cluster: confirmCluster })
+      setInstallJob({ id: res.data.job_id, status: res.data.status, message: '安装任务已创建' })
+      setRetryingFailed(false)
+      setNoticeType('warning')
+      setNotice(`安装任务 #${res.data.job_id} 已创建；关闭页面后仍会继续执行，日志可随时重新打开。`)
+      await loadInstallJob()
     } catch (failure) {
-      const message = failure instanceof Error ? failure.message : '安装失败，请检查部分安装资源'
-      const interrupted = message.includes('日志流中断') || failure instanceof TypeError
-      setInstallLogs(current => [...current, { type: 'log', level: 'error', message, at: new Date().toISOString() }])
-      setInstallResult(interrupted ? 'pending' : 'failed')
-      setNoticeType(interrupted ? 'warning' : 'error')
+      const message = failure instanceof Error ? failure.message : '提交安装任务失败'
+      setNoticeType('error')
       setNotice(message)
-      await refresh()
     } finally {
       setInstalling(false)
     }
@@ -280,8 +268,8 @@ const GatewayAPI: React.FC = () => {
         <Select value={clusterID || undefined} style={{ width: 200 }} placeholder="选择集群"
           options={clusters.map(cluster => ({ value: cluster.id, label: cluster.display_name || cluster.name }))}
           disabled={installing}
-          onChange={value => { setClusterID(value); setNamespace(''); setNamespaceDraft(''); setOverview(null); setInstallPlan(null); setInstallLogs([]); setInstallResult(null); setNotice('') }} />
-        {installLogs.length > 0 && <Button onClick={() => setInstallOpen(true)}>查看安装日志</Button>}
+          onChange={value => { setClusterID(value); setNamespace(''); setNamespaceDraft(''); setOverview(null); setInstallPlan(null); setInstallJob(null); setRetryingFailed(false); setInstallLogs([]); setNotice('') }} />
+        {installJob && <Button onClick={() => setInstallOpen(true)}>查看安装任务 #{installJob.id}</Button>}
         <Input value={namespaceDraft} onChange={event => setNamespaceDraft(event.target.value)}
           onPressEnter={() => { if (namespaceDraft.trim() === namespace) refresh(); else setNamespace(namespaceDraft.trim()) }}
           placeholder="命名空间（留空为有权范围）" style={{ width: 230 }} allowClear />
@@ -295,7 +283,7 @@ const GatewayAPI: React.FC = () => {
       message={overview.installed ? '当前集群的核心 Gateway API CRD 不完整' : '当前集群未提供 Gateway API 核心 CRD'}
       description={<Space direction="vertical">
         <Text>Envoy Gateway 控制器：{overview.envoy_controller === 'ready' ? '已就绪' : overview.envoy_controller === 'not_ready' ? '已安装但未就绪' : overview.envoy_controller === 'absent' ? '未检测到' : '状态未知'}。仅在集群没有现有 Gateway API / Envoy Gateway 资源时，才可安装固定版本的控制器与 CRD。</Text>
-        {canInstall && <Button onClick={openInstallPlan} loading={planLoading}>检查并安装 CRD 与控制器</Button>}
+        {canInstall && <Button onClick={() => void openInstallPlan()} loading={planLoading}>检查并安装 CRD 与控制器</Button>}
       </Space>} />}
     {overview?.crds_ready && overview.classes_visible && !overview.items.some(item => item.kind === 'GatewayClass') &&
       <Alert type="info" showIcon message="尚未发现 GatewayClass" description="CRD 已就绪，但无法仅凭此判断控制器是否安装；请确认控制器运行状态并创建对应的 GatewayClass。" style={{ marginBottom: 16 }} />}
@@ -324,33 +312,37 @@ const GatewayAPI: React.FC = () => {
       </>}
     </Drawer>
     <Modal title="安装 Gateway API CRD 与 Envoy Gateway" open={installOpen}
-      onCancel={() => { if (!installing) setInstallOpen(false) }}
-      onOk={installResult ? () => setInstallOpen(false) : installGatewayAPI} okText={installResult ? '关闭' : '确认安装'}
-      okButtonProps={{ disabled: installing || (!installResult && (!installPlan?.installable || confirmCluster !== installPlan.cluster_name)) }}
-      confirmLoading={installing} cancelButtonProps={{ disabled: installing }} closable={!installing} maskClosable={false}>
-      {installPlan && <Space direction="vertical" style={{ width: '100%' }}>
-        <Alert type={installResult === 'ready' ? 'success' : installResult === 'failed' ? 'error' : installPlan.installable ? 'warning' : 'error'} showIcon
-          message={installResult === 'ready' ? '安装完成' : installResult === 'pending' ? '安装已提交，请继续观察控制器状态' : installResult === 'failed' ? '安装失败，请核查下方日志' :
-            installPlan.installable ? '这会创建集群级 CRD、RBAC 与控制器工作负载；不会创建 GatewayClass 或流量入口。' : '不满足自动安装条件'}
-          description={installResult ? undefined : installPlan.reason || (installPlan.environment === 'production' ? '生产集群请先完成内部变更审批。' : undefined)} />
+      onCancel={() => setInstallOpen(false)}
+      onOk={installJob && !retryingFailed ? () => setInstallOpen(false) : installGatewayAPI} okText={installJob && !retryingFailed ? '关闭' : '确认安装'}
+      okButtonProps={{ disabled: installing || ((!installJob || retryingFailed) && (!installPlan?.installable || confirmCluster !== installPlan.cluster_name)) }}
+      confirmLoading={installing} maskClosable={false}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        {installJob && <Alert type={installJob.status === 'ready' ? 'success' : installJob.status === 'failed' ? 'error' : 'warning'} showIcon
+          message={`任务 #${installJob.id}：${installJob.status}`} description={installJob.message || '安装工作进程正在执行'} />}
+        {installJob?.status === 'failed' && !retryingFailed && <Button onClick={() => void openInstallPlan(true)} loading={planLoading}>重新预检后重试</Button>}
+      {installPlan && <>
+        <Alert type={installPlan.installable ? 'warning' : 'error'} showIcon
+          message={installPlan.installable ? '这会创建集群级 CRD、RBAC 与控制器工作负载；不会创建 GatewayClass 或流量入口。' : '不满足自动安装条件'}
+          description={installPlan.reason || (installPlan.environment === 'production' ? '生产集群请先完成内部变更审批。' : undefined)} />
         <Text>集群：{installPlan.cluster_name}（{installPlan.environment}，Kubernetes {installPlan.kubernetes_version}）</Text>
         <Text>安装：Gateway API {installPlan.gateway_api_version} + {installPlan.controller} {installPlan.controller_version}</Text>
         <Text>命名空间：{installPlan.namespace}</Text>
         <Text>官方清单已内置，安装不依赖集群出网；<a href={installPlan.manifest_url} target="_blank" rel="noreferrer">查看固定版本来源</a></Text>
         <Text copyable>SHA-256：{installPlan.manifest_sha256}</Text>
-        {installPlan.installable && !installResult && <>
+        {installPlan.installable && (!installJob || retryingFailed) && <>
           <Text>输入集群名称 <Text code>{installPlan.cluster_name}</Text> 以确认：</Text>
           <Input value={confirmCluster} onChange={event => setConfirmCluster(event.target.value)} placeholder="集群名称" disabled={installing} />
         </>}
+      </>}
         {installLogs.length > 0 && <>
-          <Text copyable={{ text: installLogs.map(event => `${event.at} [${event.level || event.status}] ${event.message}`).join('\n') }}>安装日志</Text>
+          <Text copyable={{ text: installLogs.map(event => `${event.at} [${event.level}] ${event.message}`).join('\n') }}>安装日志</Text>
           <div ref={logContainer} role="log" aria-live="polite" style={{ maxHeight: 260, overflowY: 'auto', padding: 12, background: '#101827', color: '#f3f4f6', borderRadius: 4, width: '100%', boxSizing: 'border-box' }}>
             {installLogs.map((event, index) => <pre key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: '0 0 8px' }}>
-              [{new Date(event.at).toLocaleTimeString()}] [{event.level || event.status}] {event.message}
+              [{new Date(event.at).toLocaleTimeString()}] [{event.level}] {event.message}
             </pre>)}
           </div>
         </>}
-      </Space>}
+      </Space>
     </Modal>
   </div>
 }

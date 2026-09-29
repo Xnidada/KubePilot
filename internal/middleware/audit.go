@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +25,14 @@ func AuditMiddleware() gin.HandlerFunc {
 			return
 		}
 		startTime := time.Now()
+		var requestBytes [16]byte
+		if _, err := rand.Read(requestBytes[:]); err != nil {
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		requestID := hex.EncodeToString(requestBytes[:])
+		c.Header("X-Request-ID", requestID)
+		c.Set("request_id", requestID)
 		// Audit only metadata: free-form Agent prompts, YAML and tool results may
 		// contain secrets, and reading bodies here can exhaust memory.
 		batchIDs := safeBatchIDs(c.Request)
@@ -42,6 +52,9 @@ func AuditMiddleware() gin.HandlerFunc {
 		}
 		if resourceName == "" {
 			resourceName = batchIDs
+		}
+		if resourceName == "" && c.Param("actionId") != "" {
+			resourceName = "agent_action:" + c.Param("actionId")
 		}
 		if name, ok := c.Get("audit_resource_name"); ok {
 			if value, valid := name.(string); valid {
@@ -71,6 +84,7 @@ func AuditMiddleware() gin.HandlerFunc {
 			}
 		}
 		auditLog := model.AuditLog{
+			RequestID:    requestID,
 			Action:       c.Request.Method,
 			ResourceType: resourceType,
 			ResourceName: resourceName,
@@ -107,6 +121,11 @@ func AuditMiddleware() gin.HandlerFunc {
 			go persist()
 		} else {
 			persist()
+			// Production JSON stdout can be shipped to an immutable external archive.
+			logger.Info("audit_event", zap.String("request_id", requestID), zap.Uint("audit_id", auditLog.ID),
+				zap.String("actor", auditLog.Username), zap.String("action", auditLog.Action),
+				zap.String("resource_type", auditLog.ResourceType), zap.String("resource_name", auditLog.ResourceName),
+				zap.Any("cluster_id", auditLog.ClusterID), zap.Bool("success", auditLog.Success))
 		}
 	}
 }

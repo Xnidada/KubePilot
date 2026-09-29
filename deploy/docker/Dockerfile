@@ -34,7 +34,7 @@ RUN apk add --no-cache ca-certificates curl && \
     install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata
 

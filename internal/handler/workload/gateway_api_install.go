@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -56,14 +54,6 @@ type gatewayAPIInstallPlan struct {
 	ManifestSHA256    string `json:"manifest_sha256"`
 }
 
-type gatewayInstallEvent struct {
-	Type    string `json:"type"` // log | done
-	Level   string `json:"level,omitempty"`
-	Message string `json:"message"`
-	Status  string `json:"status,omitempty"`
-	At      string `json:"at"`
-}
-
 func (h *Handler) GetGatewayAPIInstallPlan(c *gin.Context) {
 	_, cluster, client, ok := gatewayInstallerTarget(c)
 	if !ok {
@@ -81,7 +71,7 @@ func (h *Handler) GetGatewayAPIInstallPlan(c *gin.Context) {
 
 func (h *Handler) InstallGatewayAPI(c *gin.Context) {
 	c.Set("audit_resource_name", "envoy-gateway/"+gatewayInstallerVersion)
-	if h.kubectlExecutor == nil {
+	if h.kubectlExecutor == nil || h.db == nil {
 		response.InternalError(c, "kubectl executor unavailable")
 		return
 	}
@@ -96,8 +86,7 @@ func (h *Handler) InstallGatewayAPI(c *gin.Context) {
 		response.BadRequest(c, "请准确输入集群名称以确认安装")
 		return
 	}
-	// Do not cancel a cluster-wide apply just because the browser disconnected.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 165*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 	plan, err := buildGatewayAPIInstallPlan(ctx, cluster, client)
 	if err != nil {
@@ -108,144 +97,81 @@ func (h *Handler) InstallGatewayAPI(c *gin.Context) {
 		response.Error(c, http.StatusConflict, plan.Reason)
 		return
 	}
-	manifest, err := loadPinnedGatewayManifest(gatewayInstallerSHA256)
-	if err != nil {
-		response.InternalError(c, "校验内置官方安装清单失败: "+err.Error())
-		return
-	}
-	// Recheck before mutation. Namespace creation is an atomic claim across API replicas.
-	plan, err = buildGatewayAPIInstallPlan(ctx, cluster, client)
-	if err != nil {
-		gatewayInstallCheckError(c, err)
-		return
-	}
-	if !plan.Installable {
-		response.Error(c, http.StatusConflict, plan.Reason)
-		return
-	}
-	file, err := os.CreateTemp("", "kubepilot-envoy-gateway-*.yaml")
-	if err != nil {
-		response.InternalError(c, "创建临时安装清单失败")
-		return
-	}
-	defer os.Remove(file.Name())
-	if _, err = file.Write(manifest); err != nil {
-		file.Close()
-		response.InternalError(c, "写入临时安装清单失败")
-		return
-	}
-	if err = file.Close(); err != nil {
-		response.InternalError(c, "关闭临时安装清单失败")
-		return
-	}
-	_, err = client.Clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: gatewayInstallerNamespace, Annotations: map[string]string{
-			"kubepilot.io/gateway-api-installer": "envoy-gateway-" + gatewayInstallerVersion,
-		}},
-	}, metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
-		response.Error(c, http.StatusConflict, "安装命名空间已存在，请刷新检查；不会覆盖已有资源")
-		return
-	}
-	if err != nil {
-		gatewayInstallCheckError(c, err)
-		return
-	}
-	h.runGatewayInstall(c, ctx, clusterID, client.Clientset, file.Name())
-}
-
-// runGatewayInstall starts after the namespace claim; tests can exercise its log stream without touching a cluster.
-func (h *Handler) runGatewayInstall(c *gin.Context, ctx context.Context, clusterID uint, client kubernetes.Interface, manifestPath string) {
-	stream := strings.Contains(c.GetHeader("Accept"), "text/event-stream")
-	if stream {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("X-Accel-Buffering", "no")
-		c.Writer.Flush()
-	}
-	logs := make([]gatewayInstallEvent, 0, 20)
-	emit := func(level, message string) {
-		event := gatewayInstallEvent{Type: "log", Level: level, Message: gatewayInstallLogText(message), At: time.Now().UTC().Format(time.RFC3339)}
-		logs = append(logs, event)
-		if stream {
-			writeGatewayInstallEvent(c, event)
-		}
-	}
-	finish := func(status, message string, statusCode int) {
-		if stream {
-			if status == "failed" {
-				c.Set("audit_success", false)
-			}
-			writeGatewayInstallEvent(c, gatewayInstallEvent{Type: "done", Status: status, Message: message, At: time.Now().UTC().Format(time.RFC3339)})
+	job := model.GatewayInstallJob{ClusterID: clusterID, UserID: c.GetUint("user_id"), Status: "pending", Message: "等待安装工作进程"}
+	if err := h.db.Create(&job).Error; err != nil {
+		var previous model.GatewayInstallJob
+		if h.db.Where("cluster_id = ?", clusterID).First(&previous).Error != nil || previous.Status != "failed" {
+			response.Error(c, http.StatusConflict, "该集群已有安装任务；请先查看任务状态，不会重复安装")
 			return
 		}
-		code := 0
-		if statusCode >= 400 {
-			code = statusCode
+		// The preflight above proves no CRD/namespace exists, so retrying an
+		// earlier failure cannot duplicate a partially applied installation.
+		claim := h.db.Model(&previous).Where("status = ?", "failed").Updates(map[string]any{
+			"status": "pending", "message": "安全预检通过，重新排队", "lease_until": nil, "finished_at": nil, "user_id": c.GetUint("user_id"),
+		})
+		if claim.Error != nil || claim.RowsAffected != 1 {
+			response.Error(c, http.StatusConflict, "安装任务状态已变化，请刷新后重试")
+			return
 		}
-		data := gin.H{"status": status, "logs": logs}
-		if status == "ready" {
-			data["controller"] = "Envoy Gateway"
-			data["version"] = gatewayInstallerVersion
-		} else if status == "pending" {
-			data["detail"] = message
-		}
-		c.JSON(statusCode, response.Response{Code: code, Message: message, Data: data})
+		job = previous
+		job.Status = "pending"
+		_ = h.db.Create(&model.GatewayInstallLog{JobID: job.ID, Level: "info", Message: "失败任务经重新预检后重新排队", CreatedAt: time.Now().UTC()}).Error
 	}
-	emit("success", "预检通过；已创建 envoy-gateway-system 命名空间")
-	emit("info", "开始应用 Envoy Gateway v1.9.1 与 Gateway API v1.6.1 官方清单（server-side apply）")
+	c.Set("audit_resource_name", fmt.Sprintf("gateway_install_job:%d", job.ID))
+	go h.runGatewayInstallJob(job.ID)
+	c.JSON(http.StatusAccepted, response.Response{Data: gin.H{"job_id": job.ID, "status": job.Status}, Message: "安装任务已创建"})
+}
+
+// runGatewayInstall is shared by the background worker and its unit tests.
+func (h *Handler) runGatewayInstall(ctx context.Context, clusterID uint, client kubernetes.Interface, manifestPath string, emit func(string, string)) (string, string) {
 	type applyResult struct {
-		success        bool
-		output, errMsg string
-		err            error
+		success bool
+		stderr  string
+		err     error
 	}
 	results := make(chan applyResult, 1)
 	go func() {
-		success, output, errMsg, err := h.kubectlExecutor.ExecuteKubectl(ctx, clusterID, []string{"apply", "--server-side", "-f", manifestPath})
-		results <- applyResult{success, output, errMsg, err}
+		args := []string{"apply", "--server-side", "-f", manifestPath}
+		if executor, ok := h.kubectlExecutor.(interface {
+			ExecuteKubectlStream(context.Context, uint, []string, func(string, string)) (bool, error)
+		}); ok {
+			success, err := executor.ExecuteKubectlStream(ctx, clusterID, args, emit)
+			results <- applyResult{success: success, err: err}
+			return
+		}
+		success, output, stderr, err := h.kubectlExecutor.ExecuteKubectl(ctx, clusterID, args)
+		if strings.TrimSpace(output) != "" {
+			emit("info", "kubectl apply 输出:\n"+output)
+		}
+		if strings.TrimSpace(stderr) != "" {
+			emit("error", stderr)
+		}
+		results <- applyResult{success: success, stderr: stderr, err: err}
 	}()
 	progress := time.NewTicker(15 * time.Second)
 	defer progress.Stop()
 	var result applyResult
-	for applying := true; applying; {
+	for {
 		select {
 		case result = <-results:
-			applying = false
+			goto applied
 		case <-progress.C:
 			emit("info", "kubectl apply 仍在执行，等待集群 API 返回结果")
 		case <-ctx.Done():
-			message := "安装请求超时；可能已有部分资源，请先检查集群状态，勿重复提交"
-			emit("error", message)
-			finish("failed", message, http.StatusGatewayTimeout)
-			return
+			return "failed", "安装超时；可能已有部分资源，请先检查集群状态，勿重复提交"
 		}
 	}
-	success, output, errMsg, err := result.success, result.output, result.errMsg, result.err
-	if strings.TrimSpace(output) != "" {
-		emit("info", "kubectl apply 输出:\n"+output)
-	}
-	if err != nil || !success {
-		message := "安装清单应用失败；可能已有部分资源，请检查后手动恢复: " + gatewayInstallFailure(err, errMsg)
-		emit("error", message)
-		finish("failed", message, http.StatusInternalServerError)
-		return
+applied:
+	if result.err != nil || !result.success {
+		return "failed", "安装清单应用失败；可能已有部分资源，请手动恢复: " + gatewayInstallFailure(result.err, result.stderr)
 	}
 	emit("success", "清单应用完成，开始检查 Envoy Gateway Deployment")
 	ready, reason := waitGatewayController(ctx, client, func(message string) { emit("info", message) })
 	if !ready {
-		message := "安装清单已应用，但控制器尚未就绪：" + reason
-		emit("warning", message)
-		finish("pending", message, http.StatusAccepted)
-		return
+		return "pending_controller", "安装清单已应用，但控制器尚未就绪：" + reason
 	}
 	emit("success", "Envoy Gateway Deployment 已就绪")
-	finish("ready", "Envoy Gateway 与 Gateway API CRD 已安装，控制器就绪", http.StatusOK)
-}
-
-func writeGatewayInstallEvent(c *gin.Context, event gatewayInstallEvent) {
-	data, _ := json.Marshal(event)
-	fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-	c.Writer.Flush()
+	return "ready", "Envoy Gateway 与 Gateway API CRD 已安装，控制器就绪"
 }
 
 func gatewayInstallLogText(message string) string {
@@ -443,6 +369,9 @@ func gatewayInstallFailure(err error, stderr string) string {
 	message := strings.TrimSpace(stderr)
 	if message == "" && err != nil {
 		message = err.Error()
+	}
+	if message == "" {
+		message = "kubectl apply failed without diagnostics"
 	}
 	if len(message) > 1200 {
 		message = message[:1200] + "…"

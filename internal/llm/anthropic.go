@@ -61,7 +61,15 @@ type AnthropicResponse struct {
 
 // AnthropicStreamResponse Anthropic流式响应格式
 type AnthropicStreamResponse struct {
-	Type  string `json:"type"`
+	Type    string `json:"type"`
+	Message struct {
+		Usage struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+	Usage struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 	Delta struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -304,6 +312,7 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
+		usage := Usage{}
 
 		reader := bufio.NewReader(resp.Body)
 		for {
@@ -327,13 +336,18 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 
 				var streamResp AnthropicStreamResponse
 				if err := json.Unmarshal([]byte(data), &streamResp); err == nil {
-					if streamResp.Type == "content_block_delta" {
+					if streamResp.Type == "message_start" {
+						usage.PromptTokens = streamResp.Message.Usage.InputTokens
+					} else if streamResp.Type == "message_delta" {
+						usage.CompletionTokens = streamResp.Usage.OutputTokens
+					} else if streamResp.Type == "content_block_delta" {
 						ch <- StreamChunk{
 							Content: streamResp.Delta.Text,
 							Done:    false,
 						}
 					} else if streamResp.Type == "message_stop" {
-						ch <- StreamChunk{Content: "", Done: true}
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+						ch <- StreamChunk{Content: "", Done: true, Usage: &usage}
 						break
 					}
 				}

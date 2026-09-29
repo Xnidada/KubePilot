@@ -70,6 +70,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	clusterHandler := cluster.NewHandler(clusterSvc)
 	workloadHandler := workload.NewHandler()
 	workloadHandler.SetKubectlExecutor(k8s.NewKubectlExecutor(encryptKey))
+	workloadHandler.StartGatewayInstallWorker()
 	systemHandler := system.NewHandler(model.DB)
 	alertHandler := alert.NewHandler(model.DB)
 	oauthHandler := NewOAuthHandler(model.DB, authSvc, cacheInstance, encryptKey)
@@ -117,6 +118,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 			c.Next()
 		})
 		protected.Use(middleware.PolicyAuthzMiddleware(authorizer))
+		protected.Use(middleware.ProductionWriteGate(model.DB))
 		{
 			// User profile
 			protected.GET("/profile", authHandler.GetProfile)
@@ -198,6 +200,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 
 				// Audit logs
 				systemGroup.GET("/audit-logs", systemHandler.GetAuditLogs)
+				systemGroup.GET("/audit-logs/export", systemHandler.ExportAuditLogs)
 
 				// Login logs
 				systemGroup.GET("/login-logs", systemHandler.GetLoginLogs)
@@ -318,6 +321,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 				workloads.DELETE("/ingresses/:ns/:name", workloadHandler.DeleteIngress)
 				workloads.GET("/gateway-api", workloadHandler.ListGatewayAPI)
 				workloads.GET("/gateway-api/install-plan", workloadHandler.GetGatewayAPIInstallPlan)
+				workloads.GET("/gateway-api/install-job", workloadHandler.GetGatewayInstallJob)
 				workloads.POST("/gateway-api/install", workloadHandler.InstallGatewayAPI)
 
 				// PV
@@ -499,9 +503,16 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 	})
 	r.GET("/ready", func(c *gin.Context) {
 		sqlDB, err := model.DB.DB()
-		if err == nil { err = sqlDB.PingContext(c.Request.Context()) }
-		if err == nil { _, err = cacheInstance.Exists(c.Request.Context(), "kubepilot:readiness") }
-		if err != nil { c.JSON(503, gin.H{"status": "unavailable"}); return }
+		if err == nil {
+			err = sqlDB.PingContext(c.Request.Context())
+		}
+		if err == nil {
+			_, err = cacheInstance.Exists(c.Request.Context(), "kubepilot:readiness")
+		}
+		if err != nil {
+			c.JSON(503, gin.H{"status": "unavailable"})
+			return
+		}
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
@@ -512,6 +523,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 		middleware.AuthMiddleware(jwtManager),
 		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
 		middleware.PolicyAuthzMiddleware(authorizer),
+		middleware.ProductionWriteGate(model.DB),
 		webSocketTicketHandler.IssuePod,
 	)
 	r.POST(
@@ -519,6 +531,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 		middleware.AuthMiddleware(jwtManager),
 		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
 		middleware.PolicyAuthzMiddleware(authorizer),
+		middleware.ProductionWriteGate(model.DB),
 		webSocketTicketHandler.IssueNode,
 	)
 
@@ -529,6 +542,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "pod"),
 		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
 		middleware.PolicyAuthzMiddleware(authorizer),
+		middleware.ProductionWriteGate(model.DB),
 		workloadHandler.PodTerminal,
 	)
 	r.GET(
@@ -536,6 +550,7 @@ func Setup(cfg *config.Config, cacheInstance cache.Cache, modReg *module.Registr
 		middleware.WebSocketTicketAuthMiddleware(webSocketTicketManager, "node"),
 		func(c *gin.Context) { c.Set("authz_grant_resolver", authorizer); c.Next() },
 		middleware.PolicyAuthzMiddleware(authorizer),
+		middleware.ProductionWriteGate(model.DB),
 		workloadHandler.NodeShell,
 	)
 

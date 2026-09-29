@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
+	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -62,18 +63,18 @@ func (h *Handler) CreateBackupSchedule(c *gin.Context) {
 		return
 	}
 
-		if req.TTL == "" {
-			req.TTL = "720h" // 30 天
-		}
+	if req.TTL == "" {
+		req.TTL = "720h" // 30 天
+	}
 
-		if err := ValidateCron(req.Schedule); err != nil {
-			response.BadRequest(c, "invalid cron schedule: "+err.Error())
-			return
-		}
-		if strings.TrimSpace(req.Schedule) == "" {
-			response.BadRequest(c, "invalid cron schedule: empty cron expression")
-			return
-		}
+	if err := ValidateCron(req.Schedule); err != nil {
+		response.BadRequest(c, "invalid cron schedule: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Schedule) == "" {
+		response.BadRequest(c, "invalid cron schedule: empty cron expression")
+		return
+	}
 
 	namespacesJSON, _ := json.Marshal(req.Namespaces)
 	resourcesJSON, _ := json.Marshal(req.Resources)
@@ -120,10 +121,10 @@ func (h *Handler) DeleteBackupSchedule(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
-		if h.scheduler != nil {
-			h.scheduler.Remove(schedule.ID)
-		}
-		response.SuccessWithMessage(c, "schedule deleted", nil)
+	if h.scheduler != nil {
+		h.scheduler.Remove(schedule.ID)
+	}
+	response.SuccessWithMessage(c, "schedule deleted", nil)
 }
 
 // UpdateBackupSchedule updates a backup schedule. Schedule: omit=no change, ""=clear cron.
@@ -139,13 +140,13 @@ func (h *Handler) UpdateBackupSchedule(c *gin.Context) {
 	}
 
 	var req struct {
-		Name            string  `json:"name"`
+		Name            string    `json:"name"`
 		Namespaces      *[]string `json:"namespaces"`
 		Resources       *[]string `json:"resources"`
-		Schedule        *string `json:"schedule"`
-		TTL             string  `json:"ttl"`
-		StorageLocation string  `json:"storage_location"`
-		Status          *string `json:"status"`
+		Schedule        *string   `json:"schedule"`
+		TTL             string    `json:"ttl"`
+		StorageLocation string    `json:"storage_location"`
+		Status          *string   `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -322,12 +323,12 @@ func (h *Handler) CreateBackup(c *gin.Context) {
 
 	now := time.Now()
 	record := model.BackupRecord{
-		ClusterID:   req.ClusterID,
-		BackupName:  req.BackupName,
-		Namespaces:  string(namespacesJSON),
-		Resources:   string(resourcesJSON),
-		Status:      "pending",
-		StartedAt:   now,
+		ClusterID:  req.ClusterID,
+		BackupName: req.BackupName,
+		Namespaces: string(namespacesJSON),
+		Resources:  string(resourcesJSON),
+		Status:     "pending",
+		StartedAt:  now,
 	}
 
 	if err := h.db.Create(&record).Error; err != nil {
@@ -366,13 +367,13 @@ func (h *Handler) RunScheduledBackup(schedule *model.BackupSchedule) {
 	now := time.Now()
 	sid := schedule.ID
 	record := model.BackupRecord{
-		ScheduleID:  &sid,
-		ClusterID:   schedule.ClusterID,
-		BackupName:  fmt.Sprintf("%s-%d", schedule.Name, now.Unix()),
-		Namespaces:  schedule.Namespaces,
-		Resources:   schedule.Resources,
-		Status:      "pending",
-		StartedAt:   now,
+		ScheduleID: &sid,
+		ClusterID:  schedule.ClusterID,
+		BackupName: fmt.Sprintf("%s-%d", schedule.Name, now.Unix()),
+		Namespaces: schedule.Namespaces,
+		Resources:  schedule.Resources,
+		Status:     "pending",
+		StartedAt:  now,
 	}
 	if err := h.db.Create(&record).Error; err != nil {
 		return
@@ -407,9 +408,9 @@ func (h *Handler) GetBackupRecord(c *gin.Context) {
 // CreateRestore 创建恢复
 func (h *Handler) CreateRestore(c *gin.Context) {
 	var req struct {
-		BackupID    uint     `json:"backup_id" binding:"required"`
-		ClusterID   uint     `json:"cluster_id" binding:"required"`
-		Namespaces  []string `json:"namespaces"`
+		BackupID   uint     `json:"backup_id" binding:"required"`
+		ClusterID  uint     `json:"cluster_id" binding:"required"`
+		Namespaces []string `json:"namespaces"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -425,6 +426,9 @@ func (h *Handler) CreateRestore(c *gin.Context) {
 		return
 	}
 	if !authz.EnsureScope(c, "backups", "execute", req.ClusterID, "*") {
+		return
+	}
+	if !middleware.AllowProductionWrite(c, h.db, req.ClusterID) {
 		return
 	}
 

@@ -18,12 +18,15 @@ type OpenAIClient struct {
 
 // OpenAIRequest OpenAI请求格式
 type OpenAIRequest struct {
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Tools       []ToolDefinition `json:"tools,omitempty"`
-	Temperature float64          `json:"temperature,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
+	Model         string           `json:"model"`
+	Messages      []Message        `json:"messages"`
+	Tools         []ToolDefinition `json:"tools,omitempty"`
+	Temperature   float64          `json:"temperature,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	StreamOptions *struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options,omitempty"`
 }
 
 // OpenAIResponse OpenAI响应格式
@@ -50,6 +53,7 @@ type OpenAIStreamResponse struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // NewOpenAIClient 创建OpenAI客户端
@@ -164,6 +168,9 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 		Temperature: temperature,
 		MaxTokens:   maxTokens,
 		Stream:      true,
+		StreamOptions: &struct {
+			IncludeUsage bool `json:"include_usage"`
+		}{IncludeUsage: true},
 	}
 
 	reqBody, err := json.Marshal(openAIReq)
@@ -180,6 +187,17 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 
 	resp, err := c.doStreamRequest(httpReq)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "stream_options") {
+		// OpenAI-compatible servers may not implement usage in streams.
+		openAIReq.StreamOptions = nil
+		reqBody, _ = json.Marshal(openAIReq)
+		httpReq, err = http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(reqBody))
+		if err == nil {
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+			resp, err = c.doStreamRequest(httpReq)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +234,9 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 
 				var streamResp OpenAIStreamResponse
 				if err := json.Unmarshal([]byte(data), &streamResp); err == nil {
+					if streamResp.Usage != nil {
+						ch <- StreamChunk{Usage: streamResp.Usage}
+					}
 					if len(streamResp.Choices) > 0 {
 						ch <- StreamChunk{
 							Content: streamResp.Choices[0].Delta.Content,

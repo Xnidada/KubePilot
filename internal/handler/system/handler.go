@@ -2,7 +2,9 @@ package system
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"math/big"
+	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -553,6 +555,41 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	}
 
 	response.PageSuccess(c, logs, total, page, size)
+}
+
+// ExportAuditLogs streams bounded, cursor-ordered metadata for an external
+// archive. Raw request/response bodies are deliberately never exported.
+func (h *Handler) ExportAuditLogs(c *gin.Context) {
+	afterID, err := strconv.ParseUint(c.DefaultQuery("after_id", "0"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid after_id")
+		return
+	}
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "500"))
+	if err != nil || limit < 1 || limit > 1000 {
+		response.BadRequest(c, "limit must be between 1 and 1000")
+		return
+	}
+	var rows []model.AuditLog
+	if err := h.db.Select("id", "request_id", "user_id", "username", "action", "resource_type", "resource_name", "cluster_id", "namespace", "response_code", "latency", "ip", "success", "created_at").
+		Where("id > ?", afterID).Order("id ASC").Limit(limit).Find(&rows).Error; err != nil {
+		response.InternalError(c, "failed to export audit logs")
+		return
+	}
+	nextID := afterID
+	if len(rows) > 0 {
+		nextID = uint64(rows[len(rows)-1].ID)
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("X-Next-Audit-ID", strconv.FormatUint(nextID, 10))
+	c.Status(http.StatusOK)
+	encoder := json.NewEncoder(c.Writer)
+	for _, row := range rows {
+		if err := encoder.Encode(row); err != nil {
+			return
+		}
+	}
 }
 
 // GetLoginLogs 获取登入日志

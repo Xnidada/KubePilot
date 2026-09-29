@@ -6,6 +6,7 @@ import (
 
 type AuditLog struct {
 	ID           uint      `json:"id" gorm:"primaryKey"`
+	RequestID    string    `json:"request_id" gorm:"size:32;index"`
 	UserID       *uint     `json:"user_id" gorm:"index"`
 	Username     string    `json:"username" gorm:"size:64"`
 	Action       string    `json:"action" gorm:"size:32;not null;index"` // create, update, delete, get, list, exec

@@ -11,7 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
+	"gorm.io/gorm"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -29,10 +31,11 @@ type KubectlExecutor interface {
 
 type Handler struct {
 	kubectlExecutor KubectlExecutor
+	db              *gorm.DB
 }
 
 func NewHandler() *Handler {
-	return &Handler{}
+	return &Handler{db: model.DB}
 }
 
 func (h *Handler) SetKubectlExecutor(executor KubectlExecutor) {

@@ -189,12 +189,16 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 		if err == nil {
 			var b strings.Builder
 			completed := false
+			var streamedUsage llm.Usage
 			for chunk := range ch {
 				if chunk.Error != "" {
 					err = fmt.Errorf("%s", chunk.Error)
 					break
 				}
 				b.WriteString(chunk.Content)
+				if chunk.Usage != nil {
+					streamedUsage = *chunk.Usage
+				}
 				if chunk.Done {
 					completed = true
 					break
@@ -207,6 +211,12 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 				err = fmt.Errorf("empty stream")
 			}
 			if err == nil {
+				if streamedUsage.TotalTokens > 0 {
+					res.Usage.PromptTokens += streamedUsage.PromptTokens
+					res.Usage.CompletionTokens += streamedUsage.CompletionTokens
+					res.Usage.TotalTokens += streamedUsage.TotalTokens
+					s.persistTokenUsage(userID, conversationID, streamedUsage, "agent_final")
+				}
 				out := strings.TrimSpace(b.String())
 				if len(res.Pending) > 0 {
 					out = stripFakeAgentActionBlocks(out)

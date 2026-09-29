@@ -6,7 +6,9 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -41,19 +43,19 @@ func (h *Handler) ListTenants(c *gin.Context) {
 		h.db.Model(&model.TenantNamespace{}).Where("tenant_id = ?", t.ID).Count(&nsCount)
 
 		result = append(result, gin.H{
-			"id":             t.ID,
-			"name":           t.Name,
-			"display_name":   t.DisplayName,
-			"description":    t.Description,
-			"max_cpu":        t.MaxCPU,
-			"max_memory":     t.MaxMemory,
-			"max_gpu":        t.MaxGPU,
-			"max_namespaces": t.MaxNamespaces,
-			"max_pods":       t.MaxPods,
-			"status":         t.Status,
-			"member_count":   memberCount,
+			"id":              t.ID,
+			"name":            t.Name,
+			"display_name":    t.DisplayName,
+			"description":     t.Description,
+			"max_cpu":         t.MaxCPU,
+			"max_memory":      t.MaxMemory,
+			"max_gpu":         t.MaxGPU,
+			"max_namespaces":  t.MaxNamespaces,
+			"max_pods":        t.MaxPods,
+			"status":          t.Status,
+			"member_count":    memberCount,
 			"namespace_count": nsCount,
-			"created_at":     t.CreatedAt,
+			"created_at":      t.CreatedAt,
 		})
 	}
 
@@ -277,6 +279,12 @@ func (h *Handler) CreateTenantNamespace(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if !authz.EnsureScope(c, "namespaces", "create", req.ClusterID, "*") {
+		return
+	}
+	if !middleware.AllowProductionWrite(c, h.db, req.ClusterID) {
+		return
+	}
 
 	// 检查租户命名空间数量限制
 	var tenant model.Tenant
@@ -361,6 +369,12 @@ func (h *Handler) DeleteTenantNamespace(c *gin.Context) {
 	var ns model.TenantNamespace
 	if err := h.db.Where("id = ? AND tenant_id = ?", nsID, tenantID).First(&ns).Error; err != nil {
 		response.NotFound(c, "namespace not found")
+		return
+	}
+	if !authz.EnsureScope(c, "namespaces", "delete", ns.ClusterID, "*") {
+		return
+	}
+	if !middleware.AllowProductionWrite(c, h.db, ns.ClusterID) {
 		return
 	}
 

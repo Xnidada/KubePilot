@@ -1,12 +1,15 @@
 package k8s
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/model"
@@ -16,6 +19,72 @@ import (
 // KubectlExecutor kubectl命令执行器
 type KubectlExecutor struct {
 	encryptKey string
+}
+
+// ExecuteKubectlStream emits each stdout/stderr line while kubectl is running.
+// It is used for durable installer logs; existing callers keep the buffered API.
+func (e *KubectlExecutor) ExecuteKubectlStream(ctx context.Context, clusterID uint, args []string, emit func(string, string)) (bool, error) {
+	kubeconfig, err := e.getKubeconfig(clusterID)
+	if err != nil {
+		return false, err
+	}
+	file, err := os.CreateTemp("", "kubeconfig-*.yaml")
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(0600); err != nil {
+		file.Close()
+		return false, err
+	}
+	if _, err := file.WriteString(kubeconfig); err != nil {
+		file.Close()
+		return false, err
+	}
+	if err := file.Close(); err != nil {
+		return false, err
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig", file.Name()}, args...)...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return false, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	var wg sync.WaitGroup
+	var readErr error
+	var readMu sync.Mutex
+	for _, source := range []struct {
+		name   string
+		reader io.Reader
+	}{{"info", stdout}, {"error", stderr}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scanner := bufio.NewScanner(source.reader)
+			scanner.Buffer(make([]byte, 4096), 128<<10)
+			for scanner.Scan() {
+				emit(source.name, scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				emit("error", "kubectl output read failed: "+err.Error())
+				readMu.Lock()
+				readErr = err
+				readMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	err = cmd.Wait()
+	if err == nil {
+		err = readErr
+	}
+	return err == nil, err
 }
 
 // NewKubectlExecutor 创建执行器

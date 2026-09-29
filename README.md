@@ -127,7 +127,7 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - 会话按所有者和集群隔离；`admin` / `aiviewer` 可只读浏览其他用户（包括 admin）的对话，但不能用别人的 `conversation_id` 继续执行 Agent 或修改对话
   - 短暂故障的只读工具最多补试 2 次（指数退避）；确认后的写操作重试前核验集群实际状态，无法确认未变更时停止，避免重复写入
   - 模型/流式中断保留已完成的工具结果；失败轨迹支持「重试此查询」（仅只读工具），整轮失败支持「重试本轮」
-  - Agent 暂存写操作在生产集群可由 AI 设置开启双人审批（默认关闭）；关闭时仍需发起人确认，并保留诊断证据、预览、安全限制、执行观察和失败回滚。已进入待审批状态的变更仍须完成审批或取消。变更中心显示诊断证据摘要、预览差异、审批/观察/回滚状态，支持取消并导出审计 JSON。自动回滚目前只覆盖 Deployment 创建、扩缩容、更新；生产自动通道拒绝删除、任意 YAML、hostPath 挂载和环境变量值变更。平台其他手工写接口尚未统一纳入该审批链
+  - 生产集群双人审批可由 AI 设置开启，默认关闭。开启后直接写入 API、交互终端、租户命名空间及调度任务被阻止，防止绕过审批；仅安全回滚的 Agent 暂存 Deployment 变更可走双人审批链，其他资源须走独立变更预案。关闭时手工操作仍受原有 RBAC/集群授权约束，Agent 写入仍需发起人确认、预览和安全校验。已进入待审批状态的变更仍须审批或取消。变更中心提供证据、差异、观察、回滚及审计导出。生产自动通道拒绝删除、任意 YAML、hostPath 和环境变量值变更
 - **上下文与长期记忆** - `conversation_states` 保存目标、待办与经白名单提取的短期资源状态（带来源/置信度/有效期），结合最近消息构造上下文；清空或删除会话时一并清除状态与工具轨迹，并取消待确认写操作。`agent_memories` 仅检索用户偏好和人工填写核验来源的运维知识，按用户/集群与 TTL 过滤；旧版自动生成的“已验证知识”保留供查看/遗忘，但不再注入提示词。历史记忆不是实时集群状态，使用前仍需调用工具核实
 - **记忆中心**（`/aiops/memories`）- 查看来源、置信度、有效期和最近 100 条操作审计，手动新增、固定/取消固定、单条或批量遗忘本人未固定的记忆。已验证运维知识要求核验来源，默认 30 天有效；页面显示 Prompt Token、同轮重复工具调用、记忆召回、用户纠正估算、端到端延迟和人工审核的错误陈述率
 - **AI 设置** - 管理 LLM 配置及默认模型；删除当前默认配置时会切换到其他配置，唯一的默认配置不可删除。输入/输出单价按美元／百万 Token 展示，并在每次用量写入时快照价格与费用；无快照的历史 Token 单独标为未计价，估算值不是实际账单
@@ -138,16 +138,16 @@ KubePilot 是一个企业级 Kubernetes 智能运维管理平台：多集群统�
   - YAML 翻译 - YAML 配置中英文翻译
   - 日志问诊 - 粘贴或拉取日志后给出排查建议
 - **受限 MCP 服务** - `/api/v1/aiops/mcp` 提供无状态 Streamable HTTP，只开放 `list_workloads`（Pod/Deployment/Service 状态）和 `list_events`；每次请求使用现有用户 Bearer JWT，并同时校验 AI 查看权限、对应资源查看权限及指定集群/命名空间授权。必须指定具体命名空间；不开放写操作、Secret、Pod 完整 YAML 或日志。工具调用只记录元数据审计，不记录查询结果/令牌。
-- **Gateway API 专用视图与安装入口** - 网络菜单下查看 GatewayClass、Gateway、HTTPRoute，以及集群提供时的 GRPCRoute、ReferenceGrant；展示关联关系、控制器 Conditions、核心 CRD 与 Envoy Gateway Deployment 状态。读取使用 `custom_resources:view` 并按集群/命名空间授权过滤。集群管理员可在空白集群预览并确认安装固定的 Gateway API v1.6.1 + Envoy Gateway v1.9.1 清单（内置官方发布清单并校验 SHA-256、服务端应用并等待控制器就绪）；安装阶段、受限长度的 `kubectl apply` 输出和控制器就绪进度会实时显示在前端弹窗，并可复制。不覆盖已有/托管 CRD、已有安装命名空间或部分安装资源，不创建 GatewayClass/Gateway。Envoy Gateway 支持 Kubernetes v1.33–v1.36；自动安装还要求运行时 `kubectl` 与目标集群相差不超过 1 个次版本（随镜像提供的 v1.35 覆盖 v1.34–v1.36），但不要求应用容器访问 GitHub。失败后的部分资源需人工核查与恢复，生产环境须遵守组织变更审批流程。
+- **Gateway API 专用视图与安装入口** - 网络菜单下查看 GatewayClass、Gateway、HTTPRoute，以及集群提供时的 GRPCRoute、ReferenceGrant；展示关联关系、控制器 Conditions、核心 CRD 与 Envoy Gateway Deployment 状态。读取使用 `custom_resources:view` 并按集群/命名空间授权过滤。集群管理员可在空白集群预览并确认安装固定的 Gateway API v1.6.1 + Envoy Gateway v1.9.1 清单（内置官方发布清单并校验 SHA-256）。安装请求创建数据库持久化任务；后台执行与 HTTP 连接分离，多个副本通过租约认领，副本重启后可恢复固定清单的服务端应用。`kubectl apply` 逐行输出和就绪进度入库，前端轮询展示，关闭/刷新页面后仍可查看。不会覆盖已有/托管 CRD 或其他安装命名空间；失败后的部分资源需人工核查。Envoy Gateway 支持 Kubernetes v1.33–v1.36，运行时 `kubectl` 与集群相差不超过 1 个次版本，安装无需应用容器访问 GitHub。生产双人审批开启时，此直接安装入口会被阻止，需独立变更预案。
 
-> 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。当前流式最终总结未回传 Token 用量，所以 Prompt Token 与费用只覆盖已上报的调用。敏感内容识别为防护规则，仍需人工核查。
+> 指标口径：记忆召回率只表示检索命中，不保证答案正确；用户纠正率按消息关键词粗略估算；错误陈述率需 AI 设置编辑权限的人工审核样本，未审核前显示“未评估”。OpenAI/Anthropic 流式最终总结在提供方返回 Token 用量时计入统计与费用；不支持流式用量的兼容接口不估造数值，因此仍可能低估。敏感内容识别为防护规则，仍需人工核查。
 
 ### 🔒 安全特性
 - JWT 认证 + 平台 RBAC 与集群/命名空间授权 fail-closed（角色决定「能做什么」，集群授权决定「在哪做」）
 - 用户组与有效权限预览
 - 两步验证 (2FA/TOTP)，支持备份码
 - SSO/OAuth2（GitHub、GitLab、Google 等）
-- 审计日志（敏感数据自动脱敏）
+- 审计日志只记录元数据，不保留请求体；每个请求返回 `X-Request-ID`，变更可按动作 ID 关联，支持游标式 NDJSON 导出与 JSON 标准输出外部归档
 - WebSocket 连接认证；Webhook/告警出站 SSRF 校验
 
 ### 🔧 运维与系统模块
@@ -390,6 +390,7 @@ POST   /api/v1/clusters/:id/health # 健康检查
 GET    /api/v1/clusters/:id/workloads/gateway-api?ns=default # Gateway API 只读视图（ns 可省略）
 GET    /api/v1/clusters/:id/workloads/gateway-api/install-plan # 集群管理员查看安装预检与固定清单
 POST   /api/v1/clusters/:id/workloads/gateway-api/install      # 集群管理员确认安装（JSON: confirm_cluster）
+GET    /api/v1/clusters/:id/workloads/gateway-api/install-job  # 安装任务与持久化日志
 ```
 
 ### 任务调度
@@ -416,6 +417,7 @@ POST   /api/v1/aiops/memories/:id/pin      # 固定/取消固定
 DELETE /api/v1/aiops/memories/:id          # 遗忘单条记忆
 POST   /api/v1/aiops/memories/batch-forget # 批量遗忘，body: {"ids":[1,2]}
 GET    /api/v1/aiops/memory-metrics        # 上下文质量指标
+GET    /api/v1/system/audit-logs/export?after_id=0&limit=500 # 游标式审计元数据 NDJSON
 GET    /api/v1/aiops/memory-metrics/review-samples # 待审核回答（AI 设置编辑权限）
 PUT    /api/v1/aiops/memory-metrics/:id/review # 标注错误陈述（AI 设置编辑权限）
 DELETE /api/v1/aiops/configs/:id          # 删除 LLM 配置

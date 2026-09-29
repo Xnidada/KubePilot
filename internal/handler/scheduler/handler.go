@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/kubepilot/kubepilot/internal/k8s"
 	"github.com/kubepilot/kubepilot/internal/authz"
+	"github.com/kubepilot/kubepilot/internal/k8s"
+	"github.com/kubepilot/kubepilot/internal/middleware"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	"gorm.io/gorm"
@@ -47,22 +48,22 @@ func (h *Handler) ListQueues(c *gin.Context) {
 		h.db.Model(&model.Task{}).Where("queue_id = ? AND status IN (?)", q.ID, []string{"pending", "queued"}).Count(&pendingCount)
 
 		result = append(result, gin.H{
-			"id":          q.ID,
-			"name":        q.Name,
-			"display_name": q.DisplayName,
-			"description": q.Description,
-			"priority":    q.Priority,
-			"weight":      q.Weight,
-			"max_cpu":     q.MaxCPU,
-			"max_memory":  q.MaxMemory,
-			"max_gpu":     q.MaxGPU,
-			"max_tasks":   q.MaxTasks,
-			"policy":      q.Policy,
-			"preemption":  q.Preemption,
-			"status":      q.Status,
+			"id":            q.ID,
+			"name":          q.Name,
+			"display_name":  q.DisplayName,
+			"description":   q.Description,
+			"priority":      q.Priority,
+			"weight":        q.Weight,
+			"max_cpu":       q.MaxCPU,
+			"max_memory":    q.MaxMemory,
+			"max_gpu":       q.MaxGPU,
+			"max_tasks":     q.MaxTasks,
+			"policy":        q.Policy,
+			"preemption":    q.Preemption,
+			"status":        q.Status,
 			"running_tasks": runningCount,
 			"pending_tasks": pendingCount,
-			"created_at":  q.CreatedAt,
+			"created_at":    q.CreatedAt,
 		})
 	}
 
@@ -318,6 +319,9 @@ func (h *Handler) CreateTask(c *gin.Context) {
 	if !authz.EnsureScope(c, "scheduler", "create", req.ClusterID, req.Namespace) {
 		return
 	}
+	if !middleware.AllowProductionWrite(c, h.db, req.ClusterID) {
+		return
+	}
 	if req.Replicas == 0 {
 		req.Replicas = 1
 	}
@@ -436,6 +440,9 @@ func (h *Handler) CancelTask(c *gin.Context) {
 	if !authz.EnsureScope(c, "scheduler", "execute", task.ClusterID, task.Namespace) {
 		return
 	}
+	if !middleware.AllowProductionWrite(c, h.db, task.ClusterID) {
+		return
+	}
 
 	if task.Status == "succeeded" || task.Status == "failed" || task.Status == "cancelled" {
 		response.BadRequest(c, "task already completed")
@@ -470,6 +477,9 @@ func (h *Handler) RetryTask(c *gin.Context) {
 		return
 	}
 	if !authz.EnsureScope(c, "scheduler", "execute", task.ClusterID, task.Namespace) {
+		return
+	}
+	if !middleware.AllowProductionWrite(c, h.db, task.ClusterID) {
 		return
 	}
 
@@ -508,6 +518,9 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 		return
 	}
 	if !authz.EnsureScope(c, "scheduler", "delete", task.ClusterID, task.Namespace) {
+		return
+	}
+	if !middleware.AllowProductionWrite(c, h.db, task.ClusterID) {
 		return
 	}
 
@@ -600,18 +613,18 @@ func (h *Handler) CreateReservation(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	var req struct {
-		Name        string    `json:"name" binding:"required"`
-		QueueID     uint      `json:"queue_id" binding:"required"`
-		ClusterID   uint      `json:"cluster_id" binding:"required"`
-		CPU         string    `json:"cpu"`
-		Memory      string    `json:"memory"`
-		GPU         int       `json:"gpu"`
-		GPUType     string    `json:"gpu_type"`
-		StartTime   time.Time `json:"start_time" binding:"required"`
-		EndTime     time.Time `json:"end_time" binding:"required"`
-		Recurring   bool      `json:"recurring"`
-		CronExpr    string    `json:"cron_expr"`
-		NodeName    string    `json:"node_name"`
+		Name         string            `json:"name" binding:"required"`
+		QueueID      uint              `json:"queue_id" binding:"required"`
+		ClusterID    uint              `json:"cluster_id" binding:"required"`
+		CPU          string            `json:"cpu"`
+		Memory       string            `json:"memory"`
+		GPU          int               `json:"gpu"`
+		GPUType      string            `json:"gpu_type"`
+		StartTime    time.Time         `json:"start_time" binding:"required"`
+		EndTime      time.Time         `json:"end_time" binding:"required"`
+		Recurring    bool              `json:"recurring"`
+		CronExpr     string            `json:"cron_expr"`
+		NodeName     string            `json:"node_name"`
 		NodeSelector map[string]string `json:"node_selector"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -672,6 +685,16 @@ func (h *Handler) DeleteReservation(c *gin.Context) {
 // executeTask 执行任务
 func (h *Handler) executeTask(task *model.Task) {
 	ctx := context.Background()
+	blocked, policyErr := model.ProductionWriteBlocked(h.db, task.ClusterID)
+	if policyErr != nil || blocked {
+		task.Status = "failed"
+		task.Message = "生产变更策略禁止直接执行，或策略检查失败"
+		now := time.Now()
+		task.CompletedAt = &now
+		h.db.Save(task)
+		h.addTaskLog(task.ID, "error", task.Message)
+		return
+	}
 
 	// 更新状态为 queued
 	task.Status = "queued"
