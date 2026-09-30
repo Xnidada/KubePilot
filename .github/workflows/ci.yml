@@ -16,8 +16,8 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=1'
-      GOPATH: ${{ github.workspace }}/.gopath
-      GOCACHE: ${{ github.workspace }}/.gocache
+      GOPATH: ${{ github.workspace }}/../.gopath
+      GOCACHE: ${{ github.workspace }}/../.gocache
       HTTP_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
       HTTPS_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
     steps:
@@ -25,6 +25,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.8'
+          cache: ${{ github.event_name == 'pull_request' }}
           cache-dependency-path: go.sum
       - run: go test ./...
 
