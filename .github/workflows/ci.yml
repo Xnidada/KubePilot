@@ -18,7 +18,8 @@ jobs:
       GOFLAGS: '-p=1'
       GOPATH: ${{ github.workspace }}/.gopath
       GOCACHE: ${{ github.workspace }}/.gocache
-      GOPROXY: ${{ github.event_name == 'pull_request' && 'https://proxy.golang.org' || 'https://goproxy.cn' }}
+      HTTP_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
+      HTTPS_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -29,6 +30,9 @@ jobs:
 
   frontend:
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'k8s-master' }}
+    env:
+      HTTP_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
+      HTTPS_PROXY: ${{ github.event_name != 'pull_request' && secrets.CI_PROXY_URL || '' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
