@@ -153,6 +153,10 @@ server_dry_run: ok`, params.Namespace, params.Name, params.Name, params.Namespac
 		if err != nil {
 			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
 		}
+		if err := client.Clientset.AppsV1().Deployments(params.Namespace).Delete(ctx, params.Name,
+			metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
+		}
 		replicas := int32(0)
 		if deploy.Spec.Replicas != nil {
 			replicas = *deploy.Spec.Replicas
@@ -176,6 +180,10 @@ impact:
 		if err != nil {
 			return "", fmt.Errorf("service %s/%s not found", params.Namespace, params.Name)
 		}
+		if err := client.Clientset.CoreV1().Services(params.Namespace).Delete(ctx, params.Name,
+			metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
+		}
 		return fmt.Sprintf(`[dry-run] DELETE Service %s/%s
 impact:
   - type: %s
@@ -183,53 +191,63 @@ impact:
   - selector: %v
   - ports: %v`, params.Namespace, params.Name, svc.Spec.Type, svc.Spec.ClusterIP, svc.Spec.Selector, svc.Spec.Ports), nil
 
-		case "delete_pod":
-			pod, err := client.Clientset.CoreV1().Pods(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
-			if err != nil {
-				return "", fmt.Errorf("pod %s/%s not found", params.Namespace, params.Name)
+	case "delete_pod":
+		pod, err := client.Clientset.CoreV1().Pods(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("pod %s/%s not found", params.Namespace, params.Name)
+		}
+		if err := client.Clientset.CoreV1().Pods(params.Namespace).Delete(ctx, params.Name,
+			metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
+		}
+		owners := make([]string, 0, len(pod.OwnerReferences))
+		deployOwner := ""
+		rsOwner := ""
+		for _, o := range pod.OwnerReferences {
+			owners = append(owners, fmt.Sprintf("%s/%s", o.Kind, o.Name))
+			if o.Kind == "ReplicaSet" {
+				rsOwner = o.Name
 			}
-			owners := make([]string, 0, len(pod.OwnerReferences))
-			deployOwner := ""
-			rsOwner := ""
-			for _, o := range pod.OwnerReferences {
-				owners = append(owners, fmt.Sprintf("%s/%s", o.Kind, o.Name))
-				if o.Kind == "ReplicaSet" {
-					rsOwner = o.Name
-				}
-				if o.Kind == "Deployment" {
-					deployOwner = o.Name
-				}
+			if o.Kind == "Deployment" {
+				deployOwner = o.Name
 			}
-			if rsOwner != "" && deployOwner == "" {
-				if rs, rsErr := client.Clientset.AppsV1().ReplicaSets(params.Namespace).Get(ctx, rsOwner, metav1.GetOptions{}); rsErr == nil {
-					for _, o := range rs.OwnerReferences {
-						if o.Kind == "Deployment" {
-							deployOwner = o.Name
-							owners = append(owners, fmt.Sprintf("Deployment/%s", o.Name))
-							break
-						}
+		}
+		if rsOwner != "" && deployOwner == "" {
+			if rs, rsErr := client.Clientset.AppsV1().ReplicaSets(params.Namespace).Get(ctx, rsOwner, metav1.GetOptions{}); rsErr == nil {
+				for _, o := range rs.OwnerReferences {
+					if o.Kind == "Deployment" {
+						deployOwner = o.Name
+						owners = append(owners, fmt.Sprintf("Deployment/%s", o.Name))
+						break
 					}
 				}
 			}
-			note := "note: standalone Pod — delete will persist"
-			if deployOwner != "" {
-				note = fmt.Sprintf("WARNING: 该 Pod 由 Deployment/%s 管理。删除单个 Pod 后控制器会立刻重建新实例，工作负载看起来“没删掉”。若要彻底移除，请改用 delete_deployment（name=%s）。", deployOwner, deployOwner)
-			} else if rsOwner != "" {
-				note = fmt.Sprintf("WARNING: 该 Pod 由 ReplicaSet/%s 管理，删除后可能被立即重建。", rsOwner)
-			}
-			return fmt.Sprintf(`[dry-run] DELETE Pod %s/%s
+		}
+		note := "note: standalone Pod — delete will persist"
+		if deployOwner != "" {
+			note = fmt.Sprintf("WARNING: 该 Pod 由 Deployment/%s 管理。删除单个 Pod 后控制器会立刻重建新实例，工作负载看起来“没删掉”。若要彻底移除，请改用 delete_deployment（name=%s）。", deployOwner, deployOwner)
+		} else if rsOwner != "" {
+			note = fmt.Sprintf("WARNING: 该 Pod 由 ReplicaSet/%s 管理，删除后可能被立即重建。", rsOwner)
+		}
+		return fmt.Sprintf(`[dry-run] DELETE Pod %s/%s
 impact:
   - phase: %s
   - node: %s
   - owners: %v
   - labels: %v
 %s`,
-				params.Namespace, params.Name, pod.Status.Phase, pod.Spec.NodeName, owners, pod.Labels, note), nil
+			params.Namespace, params.Name, pod.Status.Phase, pod.Spec.NodeName, owners, pod.Labels, note), nil
 
 	case "scale_deployment":
 		deploy, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
 		if err != nil {
 			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
+		}
+		preview := deploy.DeepCopy()
+		preview.Spec.Replicas = &params.Replicas
+		if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, preview,
+			metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		current := int32(0)
 		if deploy.Spec.Replicas != nil {
@@ -253,8 +271,9 @@ status_snapshot:
 			deploy.Status.ReadyReplicas, deploy.Status.AvailableReplicas, deploy.Status.UpdatedReplicas, deploy.Status.UnavailableReplicas), nil
 
 	case "create_configmap":
-		if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
-			return "", fmt.Errorf("configmap %s/%s already exists", params.Namespace, params.Name)
+		if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Create(ctx, buildConfigMapObject(params),
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		keys := make([]string, 0, len(params.Data))
 		for k := range params.Data {
@@ -263,8 +282,9 @@ status_snapshot:
 		return fmt.Sprintf("[dry-run] CREATE ConfigMap %s/%s\n  data keys: %v\nserver_dry_run: ok", params.Namespace, params.Name, keys), nil
 
 	case "create_secret":
-		if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
-			return "", fmt.Errorf("secret %s/%s already exists", params.Namespace, params.Name)
+		if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Create(ctx, buildSecretObject(params),
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		st := params.SecretType
 		if st == "" {
@@ -280,6 +300,14 @@ status_snapshot:
 		deploy, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{})
 		if err != nil {
 			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
+		}
+		preview := deploy.DeepCopy()
+		if _, err := updateDeploymentObject(preview, params); err != nil {
+			return "", err
+		}
+		if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, preview,
+			metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		var diffLines []string
 		if params.NewImage != "" && len(deploy.Spec.Template.Spec.Containers) > 0 {
@@ -297,17 +325,22 @@ status_snapshot:
 		if len(params.ResourceLimits) > 0 {
 			diffLines = append(diffLines, fmt.Sprintf("  + resource limits: %v", params.ResourceLimits))
 		}
-		return fmt.Sprintf("[dry-run] UPDATE Deployment %s/%s\ndiff:\n%s", params.Namespace, params.Name, strings.Join(diffLines, "\n")), nil
+		return fmt.Sprintf("[dry-run] UPDATE Deployment %s/%s\ndiff:\n%s\nserver_dry_run: ok", params.Namespace, params.Name, strings.Join(diffLines, "\n")), nil
 
 	case "create_namespace":
-		if _, err := client.Clientset.CoreV1().Namespaces().Get(ctx, params.Name, metav1.GetOptions{}); err == nil {
-			return "", fmt.Errorf("namespace %s already exists", params.Name)
+		if _, err := client.Clientset.CoreV1().Namespaces().Create(ctx, buildNamespaceObject(params.Name),
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		return fmt.Sprintf("[dry-run] CREATE Namespace %s\nserver_dry_run: ok", params.Name), nil
 
 	case "create_ingress":
 		if _, err := client.Clientset.CoreV1().Services(params.Namespace).Get(ctx, params.BackendService, metav1.GetOptions{}); err != nil {
 			return "", fmt.Errorf("backend service %s/%s not found", params.Namespace, params.BackendService)
+		}
+		if _, err := client.Clientset.NetworkingV1().Ingresses(params.Namespace).Create(ctx, buildIngressObject(params),
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
 		}
 		ingPath := params.Path
 		if ingPath == "" {
@@ -323,6 +356,10 @@ status_snapshot:
 		if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Get(ctx, params.Name, metav1.GetOptions{}); err != nil {
 			return "", fmt.Errorf("deployment %s/%s not found for HPA target", params.Namespace, params.Name)
 		}
+		if _, err := client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(params.Namespace).Create(ctx, buildHPAObject(params),
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
+		}
 		minR := params.MinReplicas
 		if minR <= 0 {
 			minR = 1
@@ -330,6 +367,14 @@ status_snapshot:
 		return fmt.Sprintf("[dry-run] CREATE HPA for Deployment %s/%s\n  minReplicas: %d\n  maxReplicas: %d\n  targetCPU: %d%%\nserver_dry_run: ok", params.Namespace, params.Name, minR, params.MaxReplicas, params.TargetCPU), nil
 
 	case "create_pvc":
+		pvc, err := buildPVCObject(params)
+		if err != nil {
+			return "", fmt.Errorf("invalid PVC parameters: %w", err)
+		}
+		if _, err := client.Clientset.CoreV1().PersistentVolumeClaims(params.Namespace).Create(ctx, pvc,
+			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
+			return "", fmt.Errorf("server dry-run failed: %w", err)
+		}
 		sc := params.StorageClass
 		if sc == "" {
 			sc = "(default)"
@@ -343,7 +388,7 @@ status_snapshot:
 	case "apply_yaml":
 		return s.dryRunApplyYAML(ctx, clusterID, params)
 
-		default:
+	default:
 		return "", fmt.Errorf("unsupported action: %s", params.Action)
 	}
 }
@@ -438,7 +483,11 @@ func buildServiceObject(params StagedActionParams) *corev1.Service {
 
 func (s *Service) ExecuteStagedAction(ctx context.Context, action *model.AgentAction) (*ExecuteResult, error) {
 	var params StagedActionParams
-	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
+	opened, err := s.openActionParameters(action.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("cannot decrypt staged parameters: %w", err)
+	}
+	if err := json.Unmarshal(opened, &params); err != nil {
 		return nil, fmt.Errorf("invalid staged parameters: %w", err)
 	}
 
@@ -472,7 +521,7 @@ func (s *Service) ExecuteStagedAction(ctx context.Context, action *model.AgentAc
 	case "apply_yaml":
 		return s.ExecuteApplyYAML(ctx, action.ClusterID, params)
 
-		default:
+	default:
 		return nil, fmt.Errorf("unsupported action: %s", params.Action)
 	}
 }

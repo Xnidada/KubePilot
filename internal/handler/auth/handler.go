@@ -55,7 +55,12 @@ func (h *Handler) Login(c *gin.Context) {
 	h.recordLoginLog(user.ID, user.Username, clientIP, c.Request.UserAgent(), true)
 
 	// 检查是否需要两步验证（验证通过后再发 JWT）
-	if CheckTwoFactorRequired(h.db, user.ID) {
+	requires2FA, err := CheckTwoFactorRequired(h.db, user.ID)
+	if err != nil {
+		response.InternalError(c, "failed to check 2FA status")
+		return
+	}
+	if requires2FA {
 		pending, err := h.issueTwoFAPending(c.Request.Context(), user.ID)
 		if err != nil {
 			response.InternalError(c, "failed to create 2FA session")

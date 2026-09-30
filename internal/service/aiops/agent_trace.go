@@ -10,7 +10,7 @@ import (
 )
 
 // persistAgentToolTrace stores one agent round's tool invocations for observability.
-func (s *Service) persistAgentToolTrace(userID, clusterID, conversationID uint, userMsg string, trace []ToolTraceItem, pending []PendingActionInfo) {
+func (s *Service) persistAgentToolTrace(userID, clusterID, conversationID uint, trace []ToolTraceItem, pending []PendingActionInfo) {
 	if s.db == nil || len(trace) == 0 {
 		return
 	}
@@ -33,9 +33,8 @@ func (s *Service) persistAgentToolTrace(userID, clusterID, conversationID uint, 
 		pendingIDs = append(pendingIDs, p.ID)
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
-		"tools":        rows,
-		"pending_ids":  pendingIDs,
-		"user_message": truncateRunes(userMsg, 500),
+		"tools":       rows,
+		"pending_ids": pendingIDs,
 	})
 	rec := model.AgentToolTrace{
 		UserID:         userID,

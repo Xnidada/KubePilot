@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/authz"
 	"github.com/kubepilot/kubepilot/internal/model"
+	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
 	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	"gorm.io/gorm"
@@ -132,7 +133,11 @@ func diagnosticTool(name string) bool {
 
 func (h *Handler) productionChangeEvidence(action model.AgentAction) (string, error) {
 	var params aiopsService.StagedActionParams
-	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
+	opened, err := crypto.OpenSecret(action.Parameters, h.encryptKey)
+	if err != nil {
+		return "", fmt.Errorf("cannot decrypt staged change: %w", err)
+	}
+	if err := json.Unmarshal([]byte(opened), &params); err != nil {
 		return "", fmt.Errorf("invalid staged change: %w", err)
 	}
 	if !aiopsService.ProductionAutoRollbackSupported(params.Action) {
@@ -182,12 +187,12 @@ func (h *Handler) AgentListChanges(c *gin.Context) {
 	approved := make([]gin.H, 0, len(pending))
 	for _, action := range pending {
 		if h.canReviewChange(c, action) {
-			approved = append(approved, publicChange(action))
+			approved = append(approved, h.publicChange(action))
 		}
 	}
 	myChanges := make([]gin.H, 0, len(own))
 	for _, action := range own {
-		myChanges = append(myChanges, publicChange(action))
+		myChanges = append(myChanges, h.publicChange(action))
 	}
 	response.Success(c, gin.H{"mine": myChanges, "awaiting_my_approval": approved})
 }
@@ -314,16 +319,21 @@ func (h *Handler) AgentExportChange(c *gin.Context) {
 		response.InternalError(c, "failed to read audit")
 		return
 	}
-	sum := sha256.Sum256([]byte(action.Parameters))
+	opened, err := crypto.OpenSecret(action.Parameters, h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to decrypt change parameters")
+		return
+	}
+	sum := sha256.Sum256([]byte(opened))
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=kubepilot-change-%d.json", action.ID))
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{"change": publicChange(action), "parameters_sha256": hex.EncodeToString(sum[:]), "audit": audits})
+	c.JSON(http.StatusOK, gin.H{"change": h.publicChange(action), "parameters_sha256": hex.EncodeToString(sum[:]), "audit": audits})
 }
 
-func publicChange(a model.AgentAction) gin.H {
+func (h *Handler) publicChange(a model.AgentAction) gin.H {
 	return gin.H{
 		"id": a.ID, "user_id": a.UserID, "cluster_id": a.ClusterID, "conversation_id": a.ConversationID,
-		"action": stagedActionKind(a), "resource_name": a.ResourceName, "namespace": a.Namespace,
+		"action": h.stagedActionKind(a), "resource_name": a.ResourceName, "namespace": a.Namespace,
 		"status": a.Status, "dry_run": a.DryRunResult, "evidence": a.Evidence,
 		"resource_uid": a.ResourceUID, "base_generation": a.BaseGeneration,
 		"result": a.Result, "observation": a.Observation, "rollback_result": a.RollbackResult,
@@ -332,11 +342,12 @@ func publicChange(a model.AgentAction) gin.H {
 	}
 }
 
-func stagedActionKind(action model.AgentAction) string {
+func (h *Handler) stagedActionKind(action model.AgentAction) string {
 	var params struct {
 		Action string `json:"action"`
 	}
-	if json.Unmarshal([]byte(action.Parameters), &params) == nil && params.Action != "" {
+	opened, err := crypto.OpenSecret(action.Parameters, h.encryptKey)
+	if err == nil && json.Unmarshal([]byte(opened), &params) == nil && params.Action != "" {
 		return params.Action
 	}
 	return action.ResourceType

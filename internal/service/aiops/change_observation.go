@@ -52,7 +52,11 @@ func (s *Service) DeploymentPrecondition(ctx context.Context, clusterID uint, pa
 
 func (s *Service) VerifyDeploymentPrecondition(ctx context.Context, action *model.AgentAction) error {
 	var params StagedActionParams
-	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
+	opened, err := s.openActionParameters(action.Parameters)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(opened, &params); err != nil {
 		return err
 	}
 	if !ProductionAutoRollbackSupported(params.Action) {
@@ -74,7 +78,11 @@ func (s *Service) VerifyDeploymentPrecondition(ctx context.Context, action *mode
 // ExecuteObservedDeploymentChange waits for rollout health and compensates on failure.
 func (s *Service) ExecuteObservedDeploymentChange(ctx context.Context, action *model.AgentAction) (*ExecuteResult, string, string, error) {
 	var params StagedActionParams
-	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
+	opened, err := s.openActionParameters(action.Parameters)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := json.Unmarshal(opened, &params); err != nil {
 		return nil, "", "", err
 	}
 	if !ProductionAutoRollbackSupported(params.Action) {

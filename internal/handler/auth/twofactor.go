@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,8 +35,8 @@ func NewTwoFactorHandler(db *gorm.DB, authSvc *authService.Service, cacheInstanc
 
 // SetupRequest 初始化两步验证请求
 type SetupResponse struct {
-	Secret    string   `json:"secret"`
-	QRCodeURL string   `json:"qr_code_url"`
+	Secret      string   `json:"secret"`
+	QRCodeURL   string   `json:"qr_code_url"`
 	BackupCodes []string `json:"backup_codes"`
 }
 
@@ -324,10 +325,13 @@ func validateBackupCode(tf *model.UserTwoFactor, code string) bool {
 }
 
 // CheckTwoFactorRequired 检查用户是否需要两步验证
-func CheckTwoFactorRequired(db *gorm.DB, userID uint) bool {
+func CheckTwoFactorRequired(db *gorm.DB, userID uint) (bool, error) {
 	var tf model.UserTwoFactor
 	if err := db.Where("user_id = ? AND is_enabled = ?", userID, true).First(&tf).Error; err != nil {
-		return false
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
-	return true
+	return true, nil
 }

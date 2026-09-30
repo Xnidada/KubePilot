@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/k8s"
+	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -486,11 +487,7 @@ func (s *Service) ExecuteCreateConfigMap(ctx context.Context, clusterID uint, pa
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
-		Data:       params.Data,
-	}
-	if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+	if _, err := client.Clientset.CoreV1().ConfigMaps(params.Namespace).Create(ctx, buildConfigMapObject(params), metav1.CreateOptions{}); err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 ConfigMap 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("ConfigMap %s/%s 创建成功", params.Namespace, params.Name)}, nil
@@ -502,20 +499,7 @@ func (s *Service) ExecuteCreateSecret(ctx context.Context, clusterID uint, param
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	st := params.SecretType
-	if st == "" {
-		st = "Opaque"
-	}
-	data := make(map[string][]byte)
-	for k, v := range params.Data {
-		data[k] = []byte(v)
-	}
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
-		Type:       corev1.SecretType(st),
-		Data:       data,
-	}
-	if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
+	if _, err := client.Clientset.CoreV1().Secrets(params.Namespace).Create(ctx, buildSecretObject(params), metav1.CreateOptions{}); err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Secret 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Secret %s/%s 创建成功", params.Namespace, params.Name)}, nil
@@ -531,8 +515,22 @@ func (s *Service) ExecuteUpdateDeployment(ctx context.Context, clusterID uint, p
 	if err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("获取 Deployment 失败: %v", err)}, nil
 	}
+	changes, err := updateDeploymentObject(deploy, params)
+	if err != nil {
+		return &ExecuteResult{Success: false, Message: err.Error()}, nil
+	}
+	if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("更新 Deployment 失败: %v", err)}, nil
+	}
+	return &ExecuteResult{
+		Success: true,
+		Message: fmt.Sprintf("Deployment %s/%s 更新成功: %s", params.Namespace, params.Name, strings.Join(changes, "; ")),
+	}, nil
+}
+
+func updateDeploymentObject(deploy *appsv1.Deployment, params StagedActionParams) ([]string, error) {
 	if len(deploy.Spec.Template.Spec.Containers) == 0 {
-		return &ExecuteResult{Success: false, Message: "Deployment has no containers"}, nil
+		return nil, fmt.Errorf("Deployment has no containers")
 	}
 	container := &deploy.Spec.Template.Spec.Containers[0]
 	var changes []string
@@ -569,19 +567,13 @@ func (s *Service) ExecuteUpdateDeployment(ctx context.Context, clusterID uint, p
 		for k, v := range params.ResourceLimits {
 			q, err := resource.ParseQuantity(v)
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("invalid %s resource limit: %w", k, err)
 			}
 			container.Resources.Limits[corev1.ResourceName(k)] = q
 		}
 		changes = append(changes, fmt.Sprintf("resource_limits updated: %v", params.ResourceLimits))
 	}
-	if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
-		return &ExecuteResult{Success: false, Message: fmt.Sprintf("更新 Deployment 失败: %v", err)}, nil
-	}
-	return &ExecuteResult{
-		Success: true,
-		Message: fmt.Sprintf("Deployment %s/%s 更新成功: %s", params.Namespace, params.Name, strings.Join(changes, "; ")),
-	}, nil
+	return changes, nil
 }
 
 // ExecuteCreateNamespace creates a Namespace
@@ -590,8 +582,7 @@ func (s *Service) ExecuteCreateNamespace(ctx context.Context, clusterID uint, na
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if _, err := client.Clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil {
+	if _, err := client.Clientset.CoreV1().Namespaces().Create(ctx, buildNamespaceObject(name), metav1.CreateOptions{}); err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Namespace 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Namespace %s 创建成功", name)}, nil
@@ -603,38 +594,7 @@ func (s *Service) ExecuteCreateIngress(ctx context.Context, clusterID uint, para
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	ingPath := params.Path
-	if ingPath == "" {
-		ingPath = "/"
-	}
-	bPort := params.BackendPort
-	if bPort <= 0 {
-		bPort = 80
-	}
-	pathType := networkingv1.PathTypePrefix
-	ing := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
-		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{{
-				Host: params.Host,
-				IngressRuleValue: networkingv1.IngressRuleValue{
-					HTTP: &networkingv1.HTTPIngressRuleValue{
-						Paths: []networkingv1.HTTPIngressPath{{
-							Path:     ingPath,
-							PathType: &pathType,
-							Backend: networkingv1.IngressBackend{
-								Service: &networkingv1.IngressServiceBackend{
-									Name: params.BackendService,
-									Port: networkingv1.ServiceBackendPort{Number: bPort},
-								},
-							},
-						}},
-					},
-				},
-			}},
-		},
-	}
-	if _, err := client.Clientset.NetworkingV1().Ingresses(params.Namespace).Create(ctx, ing, metav1.CreateOptions{}); err != nil {
+	if _, err := client.Clientset.NetworkingV1().Ingresses(params.Namespace).Create(ctx, buildIngressObject(params), metav1.CreateOptions{}); err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 Ingress 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("Ingress %s/%s 创建成功", params.Namespace, params.Name)}, nil
@@ -646,34 +606,12 @@ func (s *Service) ExecuteCreateHPA(ctx context.Context, clusterID uint, params S
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
+	if _, err := client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(params.Namespace).Create(ctx, buildHPAObject(params), metav1.CreateOptions{}); err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 HPA 失败: %v", err)}, nil
+	}
 	minR := params.MinReplicas
 	if minR <= 0 {
 		minR = 1
-	}
-	hpa := &autoscalingv2.HorizontalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{Name: params.Name + "-hpa", Namespace: params.Namespace},
-		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Name:       params.Name,
-			},
-			MinReplicas: &minR,
-			MaxReplicas: params.MaxReplicas,
-			Metrics: []autoscalingv2.MetricSpec{{
-				Type: autoscalingv2.ResourceMetricSourceType,
-				Resource: &autoscalingv2.ResourceMetricSource{
-					Name: corev1.ResourceCPU,
-					Target: autoscalingv2.MetricTarget{
-						Type:               autoscalingv2.UtilizationMetricType,
-						AverageUtilization: &params.TargetCPU,
-					},
-				},
-			}},
-		},
-	}
-	if _, err := client.Clientset.AutoscalingV2().HorizontalPodAutoscalers(params.Namespace).Create(ctx, hpa, metav1.CreateOptions{}); err != nil {
-		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 HPA 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("HPA %s/%s-hpa 创建成功 (min=%d max=%d cpu=%d%%)", params.Namespace, params.Name, minR, params.MaxReplicas, params.TargetCPU)}, nil
 }
@@ -684,32 +622,96 @@ func (s *Service) ExecuteCreatePVC(ctx context.Context, clusterID uint, params S
 	if err != nil {
 		return nil, fmt.Errorf("cluster not connected: %w", err)
 	}
-	am := params.AccessModes
-	if len(am) == 0 {
-		am = []string{"ReadWriteOnce"}
-	}
-	accessModes := make([]corev1.PersistentVolumeAccessMode, 0, len(am))
-	for _, a := range am {
-		accessModes = append(accessModes, corev1.PersistentVolumeAccessMode(a))
-	}
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: accessModes,
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(params.StorageSize),
-				},
-			},
-		},
-	}
-	if params.StorageClass != "" {
-		pvc.Spec.StorageClassName = &params.StorageClass
+	pvc, err := buildPVCObject(params)
+	if err != nil {
+		return &ExecuteResult{Success: false, Message: fmt.Sprintf("PVC 参数无效: %v", err)}, nil
 	}
 	if _, err := client.Clientset.CoreV1().PersistentVolumeClaims(params.Namespace).Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
 		return &ExecuteResult{Success: false, Message: fmt.Sprintf("创建 PVC 失败: %v", err)}, nil
 	}
 	return &ExecuteResult{Success: true, Message: fmt.Sprintf("PVC %s/%s 创建成功 (%s)", params.Namespace, params.Name, params.StorageSize)}, nil
+}
+
+func buildConfigMapObject(params StagedActionParams) *corev1.ConfigMap {
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace}, Data: params.Data}
+}
+
+func buildSecretObject(params StagedActionParams) *corev1.Secret {
+	secretType := params.SecretType
+	if secretType == "" {
+		secretType = "Opaque"
+	}
+	data := make(map[string][]byte, len(params.Data))
+	for key, value := range params.Data {
+		data[key] = []byte(value)
+	}
+	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace}, Type: corev1.SecretType(secretType), Data: data}
+}
+
+func buildNamespaceObject(name string) *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+}
+
+func buildIngressObject(params StagedActionParams) *networkingv1.Ingress {
+	path := params.Path
+	if path == "" {
+		path = "/"
+	}
+	port := params.BackendPort
+	if port <= 0 {
+		port = 80
+	}
+	pathType := networkingv1.PathTypePrefix
+	return &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{{
+			Host: params.Host,
+			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+				Paths: []networkingv1.HTTPIngressPath{{Path: path, PathType: &pathType, Backend: networkingv1.IngressBackend{
+					Service: &networkingv1.IngressServiceBackend{Name: params.BackendService, Port: networkingv1.ServiceBackendPort{Number: port}},
+				}}},
+			}},
+		}}},
+	}
+}
+
+func buildHPAObject(params StagedActionParams) *autoscalingv2.HorizontalPodAutoscaler {
+	minReplicas := params.MinReplicas
+	if minReplicas <= 0 {
+		minReplicas = 1
+	}
+	return &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: params.Name + "-hpa", Namespace: params.Namespace},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: params.Name},
+			MinReplicas:    &minReplicas, MaxReplicas: params.MaxReplicas,
+			Metrics: []autoscalingv2.MetricSpec{{Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{Name: corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: &params.TargetCPU}}}},
+		},
+	}
+}
+
+func buildPVCObject(params StagedActionParams) (*corev1.PersistentVolumeClaim, error) {
+	quantity, err := resource.ParseQuantity(params.StorageSize)
+	if err != nil {
+		return nil, err
+	}
+	modes := params.AccessModes
+	if len(modes) == 0 {
+		modes = []string{"ReadWriteOnce"}
+	}
+	accessModes := make([]corev1.PersistentVolumeAccessMode, 0, len(modes))
+	for _, mode := range modes {
+		accessModes = append(accessModes, corev1.PersistentVolumeAccessMode(mode))
+	}
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: params.Name, Namespace: params.Namespace},
+		Spec: corev1.PersistentVolumeClaimSpec{AccessModes: accessModes,
+			Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: quantity}}}}
+	if params.StorageClass != "" {
+		pvc.Spec.StorageClassName = &params.StorageClass
+	}
+	return pvc, nil
 }
 
 // ExecuteApplyYAML applies arbitrary Kubernetes YAML via dynamic client

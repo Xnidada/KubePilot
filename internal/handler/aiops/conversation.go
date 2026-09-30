@@ -70,8 +70,15 @@ func (h *Handler) validateAgentConversation(c *gin.Context, conversationID, clus
 
 	// Older conversations were created before a cluster was selected. Bind such
 	// a conversation on its first Agent use, after owner verification above.
-	if err := h.db.Model(conversation).Update("cluster_id", clusterID).Error; err != nil {
+	result := h.db.Model(&model.ChatConversation{}).
+		Where("id = ? AND user_id = ? AND cluster_id IS NULL", conversation.ID, c.GetUint("user_id")).
+		Update("cluster_id", clusterID)
+	if result.Error != nil {
 		response.InternalError(c, "failed to bind conversation to cluster")
+		return false
+	}
+	if result.RowsAffected != 1 {
+		response.BadRequest(c, "conversation belongs to a different cluster")
 		return false
 	}
 	return true
@@ -231,12 +238,16 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 	if req.Title != "" {
 		updates["title"] = req.Title
 	}
-	if req.ClusterID != nil {
-		updates["cluster_id"] = req.ClusterID
+	if req.ClusterID != nil && (conversation.ClusterID == nil || *req.ClusterID != *conversation.ClusterID) {
+		response.BadRequest(c, "conversation cluster cannot be changed; create a new conversation")
+		return
 	}
 
 	if len(updates) > 0 {
-		h.db.Model(conversation).Updates(updates)
+		if err := h.db.Model(conversation).Updates(updates).Error; err != nil {
+			response.InternalError(c, "failed to update conversation")
+			return
+		}
 	}
 
 	response.SuccessWithMessage(c, "conversation updated", nil)

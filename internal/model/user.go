@@ -171,7 +171,7 @@ type AgentAction struct {
 	Namespace      string     `json:"namespace" gorm:"size:64"`
 	ClusterID      uint       `json:"cluster_id"`
 	Description    string     `json:"description" gorm:"type:text"`
-	Parameters     string     `json:"parameters" gorm:"type:text"` // JSON
+	Parameters     string     `json:"-" gorm:"type:text"` // sealed JSON
 	DryRunResult   string     `json:"dry_run_result" gorm:"type:text"`
 	ResourceUID    string     `json:"resource_uid" gorm:"size:64"`
 	BaseGeneration int64      `json:"base_generation"`

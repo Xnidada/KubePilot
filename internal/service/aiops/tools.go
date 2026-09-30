@@ -3,7 +3,6 @@ package aiops
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -952,17 +951,26 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	}
 	paramBytes, _ := json.Marshal(params)
 	if conversationID > 0 {
-		var existing model.AgentAction
-		err := s.db.Where("conversation_id = ? AND user_id = ? AND cluster_id = ? AND status = ? AND parameters = ?",
-			conversationID, userID, clusterID, "pending", string(paramBytes)).Order("id DESC").First(&existing).Error
-		if err == nil {
-			return &PendingActionInfo{ID: existing.ID, ActionID: existing.ID, Action: params.Action,
-				Name: params.Name, Namespace: params.Namespace, Description: existing.Description,
-				DryRun: existing.DryRunResult, NeedConfirm: true, Status: "pending", ClusterID: clusterID}, existing.DryRunResult, nil
-		}
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		var existing []model.AgentAction
+		if err := s.db.Where("conversation_id = ? AND user_id = ? AND cluster_id = ? AND status = ?",
+			conversationID, userID, clusterID, "pending").Order("id DESC").Find(&existing).Error; err != nil {
 			return nil, "", fmt.Errorf("failed to check staged action: %w", err)
 		}
+		for _, action := range existing {
+			opened, err := s.openActionParameters(action.Parameters)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read staged action: %w", err)
+			}
+			if string(opened) == string(paramBytes) {
+				return &PendingActionInfo{ID: action.ID, ActionID: action.ID, Action: params.Action,
+					Name: params.Name, Namespace: params.Namespace, Description: action.Description,
+					DryRun: action.DryRunResult, NeedConfirm: true, Status: "pending", ClusterID: clusterID}, action.DryRunResult, nil
+			}
+		}
+	}
+	sealedParams, err := s.sealActionParameters(string(paramBytes))
+	if err != nil {
+		return nil, "", err
 	}
 	// Supersede earlier pending create for the same resource in this conversation.
 	if conversationID > 0 && (params.Action == "create_deployment" || params.Action == "create_service") {
@@ -972,7 +980,7 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 			Update("status", "cancelled").Error
 	}
 	desc := strings.TrimSpace(description)
-	if desc == "" {
+	if desc == "" || params.Action == "create_secret" || params.Action == "apply_yaml" || len(params.Data) > 0 || len(params.EnvVars) > 0 {
 		desc = fmt.Sprintf("%s %s/%s", params.Action, params.Namespace, params.Name)
 	}
 	actionType := "update"
@@ -992,7 +1000,7 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 		Namespace:      params.Namespace,
 		ClusterID:      clusterID,
 		Description:    desc,
-		Parameters:     string(paramBytes),
+		Parameters:     sealedParams,
 		DryRunResult:   dry,
 		ResourceUID:    resourceUID,
 		BaseGeneration: baseGeneration,

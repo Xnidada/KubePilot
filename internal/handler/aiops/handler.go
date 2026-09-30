@@ -1093,6 +1093,15 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	}
 
 	paramBytes, _ := json.Marshal(params)
+	if h.encryptKey == "" {
+		response.InternalError(c, "action encryption key is not configured")
+		return
+	}
+	sealedParams, err := crypto.SealSecret(string(paramBytes), h.encryptKey)
+	if err != nil {
+		response.InternalError(c, "failed to protect staged parameters")
+		return
+	}
 	userID, _ := c.Get("user_id")
 	actionType, resourceType := stagedActionMeta(req.Action)
 	action := model.AgentAction{
@@ -1103,7 +1112,7 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		Namespace:      req.Namespace,
 		ClusterID:      req.ClusterID,
 		Description:    fmt.Sprintf("%s %s/%s", req.Action, req.Namespace, req.Name),
-		Parameters:     string(paramBytes),
+		Parameters:     sealedParams,
 		DryRunResult:   dryRun,
 		ResourceUID:    resourceUID,
 		BaseGeneration: baseGeneration,

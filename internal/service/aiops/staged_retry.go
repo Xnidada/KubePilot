@@ -285,7 +285,11 @@ func actionOutcomeObserved(params StagedActionParams, before, after *unstructure
 // check proves the prior attempt did not change any tracked resource.
 func (s *Service) ExecuteStagedActionWithRetry(ctx context.Context, action *model.AgentAction) (*ExecuteResult, error) {
 	var params StagedActionParams
-	if err := json.Unmarshal([]byte(action.Parameters), &params); err != nil {
+	opened, err := s.openActionParameters(action.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("cannot decrypt staged parameters: %w", err)
+	}
+	if err := json.Unmarshal(opened, &params); err != nil {
 		return nil, fmt.Errorf("invalid staged parameters: %w", err)
 	}
 	dyn, resources, err := snapshotActionResources(ctx, action.ClusterID, params)

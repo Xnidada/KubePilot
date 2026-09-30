@@ -1431,7 +1431,7 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 		})
 	}
 
-	s.persistAgentToolTrace(userID, clusterID, conversationID, message, res.Trace, res.Pending)
+	s.persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
 
 	return &AgentChatResponse{
 		Content:        res.Content,

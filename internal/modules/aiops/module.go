@@ -138,6 +138,9 @@ func (m *Module) Start(ctx context.Context, host *module.Host) error {
 				}
 			}
 		}
+		if err := aiopsService.MigrateAgentActionSecrets(m.db, host.EncryptKey); err != nil {
+			return err
+		}
 	}
 	return nil
 }

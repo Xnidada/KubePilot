@@ -86,7 +86,7 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 	if conversationID > 0 {
 		msgID, _ = s.persistAssistantMessage(conversationID, res.Content, res.Trace, res.Pending)
 	}
-	s.persistAgentToolTrace(userID, clusterID, conversationID, message, res.Trace, res.Pending)
+	s.persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
 	s.refreshConversationState(userID, clusterID, conversationID, message, res.Content, res.Trace, res.Pending)
 	s.persistAgentRunMetric(userID, clusterID, conversationID, msgID, message, res.Usage, res.Trace, startedAt, res.MemoryHits)
 
@@ -305,7 +305,13 @@ func (s *Service) ListPendingActions(userID, conversationID uint) ([]PendingActi
 	out := make([]PendingActionInfo, 0, len(rows))
 	for _, r := range rows {
 		var params StagedActionParams
-		_ = json.Unmarshal([]byte(r.Parameters), &params)
+		opened, err := s.openActionParameters(r.Parameters)
+		if err != nil {
+			return nil, fmt.Errorf("cannot decrypt staged action %d: %w", r.ID, err)
+		}
+		if err := json.Unmarshal(opened, &params); err != nil {
+			return nil, fmt.Errorf("invalid staged action %d: %w", r.ID, err)
+		}
 		kind := params.Action
 		if kind == "" {
 			kind = r.ResourceType
@@ -498,20 +504,16 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 						args = enrichMutationArgsWithUserHints(message, args)
 					}
 					if emit != nil {
-						emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
+						emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: safeAgentTraceArgs(name, args)})
 					}
 					started := time.Now()
 					exec := retryAgentTool(gCtx, name, func() toolExecResult {
 						return s.executeAgentTool(gCtx, userID, clusterID, conversationID, name, args)
 					})
-					argsLimit := 500
-					if isRetryableQueryTool(name) {
-						argsLimit = 8192
-					}
 					item := ToolTraceItem{
 						Name:       name,
-						Args:       truncateRunes(args, argsLimit),
-						Result:     truncateRunes(exec.Content, toolResultMaxChars),
+						Args:       safeAgentTraceArgs(name, args),
+						Result:     safeAgentTraceResult(name, exec.Content, exec.IsError),
 						IsError:    exec.IsError,
 						DurationMs: time.Since(started).Milliseconds(),
 					}
@@ -547,7 +549,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				args = enrichMutationArgsWithUserHints(message, args)
 			}
 			if emit != nil {
-				emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: truncateRunes(args, 500)})
+				emit(AgentStreamEvent{Type: "tool_start", Name: name, Args: safeAgentTraceArgs(name, args)})
 			}
 			started := time.Now()
 			exec := retryAgentTool(chatCtx, name, func() toolExecResult {
@@ -555,8 +557,8 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 			})
 			item := ToolTraceItem{
 				Name:       name,
-				Args:       truncateRunes(args, 500),
-				Result:     truncateRunes(exec.Content, toolResultMaxChars),
+				Args:       safeAgentTraceArgs(name, args),
+				Result:     safeAgentTraceResult(name, exec.Content, exec.IsError),
 				IsError:    exec.IsError,
 				DurationMs: time.Since(started).Milliseconds(),
 			}
@@ -594,7 +596,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 				} else {
 					r.Exec.Content += "\n[修正上限] 该资源已失败三次，请停止尝试，向用户说明原始错误与所需信息。"
 				}
-				r.Item.Result = truncateRunes(r.Exec.Content, toolResultMaxChars)
+				r.Item.Result = safeAgentTraceResult(r.Item.Name, r.Exec.Content, true)
 			}
 			trace = append(trace, r.Item)
 			if len(r.Exec.PendingList) > 0 {
