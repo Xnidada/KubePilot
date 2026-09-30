@@ -48,14 +48,14 @@ func (s *Service) persistAgentToolTrace(userID, clusterID, conversationID uint, 
 }
 
 // persistTokenUsage records token consumption for an AI interaction.
-func (s *Service) persistTokenUsage(userID, conversationID uint, usage llm.Usage, chatType string) {
+func (s *Service) persistTokenUsage(ctx context.Context, userID, conversationID uint, usage llm.Usage, chatType string) {
 	if s.db == nil || usage.TotalTokens == 0 {
 		return
 	}
 	// Snapshot pricing when usage occurs: later config edits/deletion must not
 	// rewrite historical costs. Rows without a config remain explicitly unpriced.
-	var cfg model.LLMConfig
-	priced := s.db.Where("is_active = ?", true).Order("id DESC").First(&cfg).Error == nil
+	snapshot, _ := ctx.Value(runtimeConfigKey{}).(runtimeConfig)
+	cfg := snapshot.config
 	rec := model.TokenUsageLog{
 		UserID:           userID,
 		ConversationID:   conversationID,
@@ -65,7 +65,7 @@ func (s *Service) persistTokenUsage(userID, conversationID uint, usage llm.Usage
 		ChatType:         chatType,
 		CreatedAt:        time.Now(),
 	}
-	if priced {
+	if cfg != nil {
 		cost := usageCostEstimate(usage.PromptTokens, usage.CompletionTokens, cfg.InputPricePerM, cfg.OutputPricePerM)
 		rec.LLMConfigID = cfg.ID
 		rec.Provider = cfg.Provider

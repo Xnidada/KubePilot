@@ -306,7 +306,10 @@ func (h *Handler) GetLLMConfig(c *gin.Context) {
 
 // GetLLMConfigByID 获取指定ID的LLM配置
 func (h *Handler) GetLLMConfigByID(c *gin.Context) {
-	id := c.Param("id")
+	id, ok := numericPathID(c, "id")
+	if !ok {
+		return
+	}
 
 	var config model.LLMConfig
 	if err := h.db.First(&config, id).Error; err != nil {
@@ -405,9 +408,6 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 		return
 	}
 
-	// 将所有现有配置设为非活跃
-	h.db.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false)
-
 	// 创建新配置
 	config := model.LLMConfig{
 		Provider:        req.Provider,
@@ -422,22 +422,14 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 		OutputPricePerM: req.OutputPricePerM,
 	}
 
-	if err := h.db.Create(&config).Error; err != nil {
+	if err := model.WithLLMConfigWrite(h.db.WithContext(c.Request.Context()), func(tx *gorm.DB) error {
+		if err := tx.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false).Error; err != nil {
+			return err
+		}
+		return tx.Create(&config).Error
+	}); err != nil {
 		response.InternalError(c, "failed to save config: "+err.Error())
 		return
-	}
-
-	// 更新服务配置
-	if h.service != nil {
-		h.service.UpdateConfig(&llm.LLMConfig{
-			Provider:    llm.LLMProvider(req.Provider),
-			APIKey:      req.APIKey,
-			BaseURL:     req.BaseURL,
-			Model:       req.Model,
-			Temperature: req.Temperature,
-			MaxTokens:   req.MaxTokens,
-			Timeout:     req.Timeout,
-		})
 	}
 
 	response.SuccessWithMessage(c, "LLM config saved successfully", gin.H{
@@ -449,7 +441,10 @@ func (h *Handler) SaveLLMConfig(c *gin.Context) {
 
 // UpdateLLMConfig 更新LLM配置
 func (h *Handler) UpdateLLMConfig(c *gin.Context) {
-	id := c.Param("id")
+	id, ok := numericPathID(c, "id")
+	if !ok {
+		return
+	}
 
 	var config model.LLMConfig
 	if err := h.db.First(&config, id).Error; err != nil {
@@ -474,57 +469,52 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	}
 
 	// 更新字段
+	updates := make(map[string]any)
 	if req.APIKey != "" {
 		sealed, err := crypto.SealSecret(req.APIKey, h.encryptKey)
 		if err != nil {
 			response.InternalError(c, "failed to encrypt LLM key")
 			return
 		}
-		config.APIKey = sealed
+		updates["api_key"] = sealed
 	}
 	if req.BaseURL != "" {
-		config.BaseURL = req.BaseURL
+		updates["base_url"] = req.BaseURL
 	}
 	if req.Model != "" {
-		config.Model = req.Model
+		updates["model"] = req.Model
 	}
 	if req.Temperature > 0 {
-		config.Temperature = req.Temperature
+		updates["temperature"] = req.Temperature
 	}
 	if req.MaxTokens > 0 {
-		config.MaxTokens = req.MaxTokens
+		updates["max_tokens"] = req.MaxTokens
 	}
 	if req.Timeout > 0 {
-		config.Timeout = req.Timeout
+		updates["timeout"] = req.Timeout
 	}
 	if req.InputPricePerM != nil {
-		config.InputPricePerM = *req.InputPricePerM
+		updates["input_price_per_m"] = *req.InputPricePerM
 	}
 	if req.OutputPricePerM != nil {
-		config.OutputPricePerM = *req.OutputPricePerM
+		updates["output_price_per_m"] = *req.OutputPricePerM
 	}
 
-	if err := h.db.Save(&config).Error; err != nil {
+	if err := model.WithLLMConfigWrite(h.db.WithContext(c.Request.Context()), func(tx *gorm.DB) error {
+		if len(updates) == 0 {
+			return nil
+		}
+		result := tx.Model(&model.LLMConfig{}).Where("id = ?", config.ID).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	}); err != nil {
 		response.InternalError(c, "failed to update config")
 		return
-	}
-
-	// 如果是当前活跃配置，更新服务
-	if config.IsActive && h.service != nil {
-		apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
-		if err != nil {
-			response.InternalError(c, "failed to decrypt LLM key")
-			return
-		}
-		h.service.UpdateConfig(&llm.LLMConfig{
-			Provider:    llm.LLMProvider(config.Provider),
-			APIKey:      apiKey,
-			BaseURL:     config.BaseURL,
-			Model:       config.Model,
-			Temperature: config.Temperature,
-			MaxTokens:   config.MaxTokens,
-			Timeout:     config.Timeout,
-		})
 	}
 
 	response.SuccessWithMessage(c, "config updated", nil)
@@ -532,31 +522,24 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 
 // DeleteLLMConfig 删除LLM配置
 func (h *Handler) DeleteLLMConfig(c *gin.Context) {
-	id := c.Param("id")
-
-	var config model.LLMConfig
-	if err := h.db.First(&config, id).Error; err != nil {
-		response.NotFound(c, "config not found")
+	id, ok := numericPathID(c, "id")
+	if !ok {
 		return
 	}
-
-	var replacement model.LLMConfig
-	if config.IsActive {
-		// Keep an active runtime configuration at all times. The replacement is
-		// selected before deleting, then promoted atomically with the deletion.
-		if err := h.db.Where("id <> ?", config.ID).Order("id DESC").First(&replacement).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				response.BadRequest(c, "cannot delete the only LLM config; create another config first")
-				return
-			}
-			response.InternalError(c, "failed to select replacement config")
-			return
+	err := model.WithLLMConfigWrite(h.db.WithContext(c.Request.Context()), func(tx *gorm.DB) error {
+		var config model.LLMConfig
+		if err := tx.First(&config, id).Error; err != nil {
+			return err
 		}
-	}
-
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		if config.IsActive {
-			if err := tx.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false).Error; err != nil {
+			var replacement model.LLMConfig
+			if err := tx.Where("id <> ?", id).Order("id DESC").First(&replacement).Error; err != nil {
+				return fmt.Errorf("cannot delete the only LLM config; create another config first")
+			}
+			if _, err := crypto.OpenSecret(replacement.APIKey, h.encryptKey); err != nil {
+				return fmt.Errorf("replacement key unavailable")
+			}
+			if err := tx.Model(&config).Update("is_active", false).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&replacement).Update("is_active", true).Error; err != nil {
@@ -564,72 +547,37 @@ func (h *Handler) DeleteLLMConfig(c *gin.Context) {
 			}
 		}
 		return tx.Delete(&config).Error
-	}); err != nil {
-		response.InternalError(c, "failed to delete config")
+	})
+	if err != nil {
+		response.BadRequest(c, "failed to delete config: "+err.Error())
 		return
 	}
-
-	if config.IsActive && h.service != nil {
-		apiKey, err := crypto.OpenSecret(replacement.APIKey, h.encryptKey)
-		if err != nil {
-			response.InternalError(c, "config deleted but replacement LLM key is unavailable")
-			return
-		}
-		if err := h.service.UpdateConfig(&llm.LLMConfig{
-			Provider:    llm.LLMProvider(replacement.Provider),
-			APIKey:      apiKey,
-			BaseURL:     replacement.BaseURL,
-			Model:       replacement.Model,
-			Temperature: replacement.Temperature,
-			MaxTokens:   replacement.MaxTokens,
-			Timeout:     replacement.Timeout,
-		}); err != nil {
-			response.InternalError(c, "config deleted but failed to activate replacement: "+err.Error())
-			return
-		}
-	}
-
 	response.SuccessWithMessage(c, "config deleted", nil)
 }
 
-// SetDefaultLLMConfig 设置默认LLM配置
+// SetDefaultLLMConfig switches the default under the same lock used by create/delete.
 func (h *Handler) SetDefaultLLMConfig(c *gin.Context) {
-	id := c.Param("id")
-
-	var config model.LLMConfig
-	if err := h.db.First(&config, id).Error; err != nil {
-		response.NotFound(c, "config not found")
+	id, ok := numericPathID(c, "id")
+	if !ok {
 		return
 	}
-
-	// 将所有配置设为非活跃
-	h.db.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false)
-
-	// 设置当前配置为活跃
-	config.IsActive = true
-	if err := h.db.Save(&config).Error; err != nil {
-		response.InternalError(c, "failed to set default config")
-		return
-	}
-
-	// 更新服务配置
-	if h.service != nil {
-		apiKey, err := crypto.OpenSecret(config.APIKey, h.encryptKey)
-		if err != nil {
-			response.InternalError(c, "failed to decrypt LLM key")
-			return
+	err := model.WithLLMConfigWrite(h.db.WithContext(c.Request.Context()), func(tx *gorm.DB) error {
+		var config model.LLMConfig
+		if err := tx.First(&config, id).Error; err != nil {
+			return err
 		}
-		h.service.UpdateConfig(&llm.LLMConfig{
-			Provider:    llm.LLMProvider(config.Provider),
-			APIKey:      apiKey,
-			BaseURL:     config.BaseURL,
-			Model:       config.Model,
-			Temperature: config.Temperature,
-			MaxTokens:   config.MaxTokens,
-			Timeout:     config.Timeout,
-		})
+		if _, err := crypto.OpenSecret(config.APIKey, h.encryptKey); err != nil {
+			return err
+		}
+		if err := tx.Model(&model.LLMConfig{}).Where("is_active = ?", true).Update("is_active", false).Error; err != nil {
+			return err
+		}
+		return tx.Model(&config).Update("is_active", true).Error
+	})
+	if err != nil {
+		response.BadRequest(c, "failed to set default config")
+		return
 	}
-
 	response.SuccessWithMessage(c, "default config set", nil)
 }
 
@@ -872,7 +820,10 @@ func (h *Handler) AgentConfirmAction(c *gin.Context) {
 		return
 	}
 
-	actionID := c.Param("actionId")
+	actionID, ok := numericPathID(c, "actionId")
+	if !ok {
+		return
+	}
 	var action model.AgentAction
 	if err := h.db.First(&action, actionID).Error; err != nil {
 		response.NotFound(c, "action not found")
@@ -1123,7 +1074,7 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		cid := req.ConversationID
 		action.ConversationID = &cid
 	}
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
+	if err := aiops.WithConversationWrite(c.Request.Context(), h.db, req.ConversationID, func(tx *gorm.DB) error {
 		if err := tx.Create(&action).Error; err != nil {
 			return err
 		}
@@ -1482,4 +1433,14 @@ func (h *Handler) GetTokenUsageRecent(c *gin.Context) {
 		return
 	}
 	response.Success(c, logs)
+}
+
+func numericPathID(c *gin.Context, name string) (uint, bool) {
+	raw := c.Param(name)
+	id, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "invalid "+name)
+		return 0, false
+	}
+	return uint(id), true
 }

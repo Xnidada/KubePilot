@@ -285,7 +285,7 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Model(&user).Update("password", hashedPassword).Error; err != nil {
+	if err := h.db.Model(&user).Updates(map[string]any{"password": hashedPassword, "session_version": gorm.Expr("session_version + 1")}).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}

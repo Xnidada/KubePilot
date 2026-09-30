@@ -192,7 +192,17 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 		response.Unauthorized(c, "2FA session expired or invalid; please login again")
 		return
 	}
-	uid64, err := strconv.ParseUint(rawUID, 10, 64)
+	parts := strings.Split(rawUID, ":")
+	if len(parts) != 2 {
+		response.Unauthorized(c, "2FA session invalid; please login again")
+		return
+	}
+	version, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		response.Unauthorized(c, "2FA session invalid")
+		return
+	}
+	uid64, err := strconv.ParseUint(parts[0], 10, 64)
 	if err != nil || uid64 == 0 {
 		response.Unauthorized(c, "2FA session invalid")
 		return
@@ -201,6 +211,11 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 
 	if h.authService == nil {
 		response.InternalError(c, "auth service not configured for 2FA login")
+		return
+	}
+	var user model.User
+	if err := h.db.WithContext(c.Request.Context()).Select("id", "status", "session_version").First(&user, userID).Error; err != nil || user.Status != 1 || user.SessionVersion != version {
+		response.Unauthorized(c, "2FA session revoked; please login again")
 		return
 	}
 	backupUsed, err := consumeTwoFactorCode(h.db.WithContext(c.Request.Context()), userID, req.Code)
@@ -212,7 +227,7 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 		response.InternalError(c, "failed to persist 2FA verification")
 		return
 	}
-	result, err := h.authService.GenerateTokenForUser(userID)
+	result, err := h.authService.GenerateTokenForUser(userID, version)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return

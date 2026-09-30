@@ -122,28 +122,27 @@ func (h *Handler) CreateMemory(c *gin.Context) {
 	response.Created(c, m)
 }
 
-func (h *Handler) ownerMemory(c *gin.Context) (*model.AgentMemory, bool) {
+func (h *Handler) PinMemory(c *gin.Context) {
 	uid := c.MustGet("user_id").(uint)
 	var m model.AgentMemory
-	if err := h.db.Where("id = ? AND user_id = ?", c.Param("id"), uid).First(&m).Error; err != nil {
-		response.NotFound(c, "memory not found")
-		return nil, false
-	}
-	return &m, true
-}
-func (h *Handler) PinMemory(c *gin.Context) {
-	m, ok := h.ownerMemory(c)
-	if !ok {
-		return
-	}
-	uid := c.MustGet("user_id").(uint)
-	m.IsPinned = !m.IsPinned
 	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(m).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ?", c.Param("id"), uid).First(&m).Error; err != nil {
 			return err
+		}
+		m.IsPinned = !m.IsPinned
+		result := tx.Model(&model.AgentMemory{}).Where("id = ? AND user_id = ?", m.ID, uid).Update("is_pinned", m.IsPinned)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
 		}
 		return tx.Create(&model.AgentMemoryAudit{MemoryID: m.ID, ActorID: uid, Action: "pin", Detail: strconv.FormatBool(m.IsPinned)}).Error
 	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "memory not found")
+			return
+		}
 		response.InternalError(c, "failed to update memory")
 		return
 	}

@@ -8,9 +8,10 @@ import (
 )
 
 type Claims struct {
-	UserID   uint   `json:"user_id"`
-	Username string `json:"username"`
-	RoleID   uint   `json:"role_id"`
+	UserID         uint   `json:"user_id"`
+	Username       string `json:"username"`
+	RoleID         uint   `json:"role_id"`
+	SessionVersion uint64 `json:"session_version"`
 	jwt.RegisteredClaims
 }
 
@@ -28,11 +29,12 @@ func NewJWTManager(secret string, expireTime time.Duration, issuer string) *JWTM
 	}
 }
 
-func (j *JWTManager) GenerateToken(userID uint, username string, roleID uint) (string, error) {
+func (j *JWTManager) GenerateToken(userID uint, username string, roleID uint, version uint64) (string, error) {
 	claims := Claims{
-		UserID:   userID,
-		Username: username,
-		RoleID:   roleID,
+		UserID:         userID,
+		Username:       username,
+		RoleID:         roleID,
+		SessionVersion: version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.expireTime)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -74,5 +76,5 @@ func (j *JWTManager) RefreshToken(tokenString string) (string, error) {
 		return tokenString, nil
 	}
 
-	return j.GenerateToken(claims.UserID, claims.Username, claims.RoleID)
+	return j.GenerateToken(claims.UserID, claims.Username, claims.RoleID, claims.SessionVersion)
 }

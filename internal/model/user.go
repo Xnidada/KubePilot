@@ -7,20 +7,21 @@ import (
 )
 
 type User struct {
-	ID        uint           `json:"id" gorm:"primaryKey"`
-	Username  string         `json:"username" gorm:"uniqueIndex;size:64;not null"`
-	Email     string         `json:"email" gorm:"uniqueIndex;size:128;not null"`
-	Password  string         `json:"-" gorm:"size:256;not null"`
-	RealName  string         `json:"real_name" gorm:"size:64"`
-	Phone     string         `json:"phone" gorm:"size:20"`
-	Avatar    string         `json:"avatar" gorm:"size:256"`
-	Status    int            `json:"status" gorm:"default:1"` // 1:active, 0:disabled
-	RoleID    uint           `json:"role_id" gorm:"index"`
-	Role      Role           `json:"role" gorm:"foreignKey:RoleID"`
-	LastLogin *time.Time     `json:"last_login"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	ID             uint           `json:"id" gorm:"primaryKey"`
+	Username       string         `json:"username" gorm:"uniqueIndex;size:64;not null"`
+	Email          string         `json:"email" gorm:"uniqueIndex;size:128;not null"`
+	Password       string         `json:"-" gorm:"size:256;not null"`
+	SessionVersion uint64         `json:"-" gorm:"not null;default:0"`
+	RealName       string         `json:"real_name" gorm:"size:64"`
+	Phone          string         `json:"phone" gorm:"size:20"`
+	Avatar         string         `json:"avatar" gorm:"size:256"`
+	Status         int            `json:"status" gorm:"default:1"` // 1:active, 0:disabled
+	RoleID         uint           `json:"role_id" gorm:"index"`
+	Role           Role           `json:"role" gorm:"foreignKey:RoleID"`
+	LastLogin      *time.Time     `json:"last_login"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 func (User) TableName() string {
@@ -59,16 +60,17 @@ func (UserCluster) TableName() string {
 
 // ChatConversation 对话会话
 type ChatConversation struct {
-	ID          uint      `json:"id" gorm:"primaryKey"`
-	UserID      uint      `json:"user_id" gorm:"index;not null"`
-	User        User      `json:"user" gorm:"foreignKey:UserID"`
-	Title       string    `json:"title" gorm:"size:256;not null"`
-	ClusterID   *uint     `json:"cluster_id"`
-	Cluster     *Cluster  `json:"cluster" gorm:"foreignKey:ClusterID"`
-	LLMConfigID *uint     `json:"llm_config_id"`
-	IsArchived  bool      `json:"is_archived" gorm:"default:false"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	UserID         uint      `json:"user_id" gorm:"index;not null"`
+	User           User      `json:"user" gorm:"foreignKey:UserID"`
+	Title          string    `json:"title" gorm:"size:256;not null"`
+	ClusterID      *uint     `json:"cluster_id"`
+	Cluster        *Cluster  `json:"cluster" gorm:"foreignKey:ClusterID"`
+	LLMConfigID    *uint     `json:"llm_config_id"`
+	IsArchived     bool      `json:"is_archived" gorm:"default:false"`
+	ContextVersion uint64    `json:"context_version" gorm:"not null;default:0"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (ChatConversation) TableName() string {

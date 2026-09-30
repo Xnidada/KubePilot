@@ -37,11 +37,12 @@ func (h *WebSocketTicketHandler) issue(c *gin.Context, kind, namespace, resource
 	}
 
 	ticket, ttl, err := h.manager.Issue(c.Request.Context(), wsticket.Claims{
-		UserID:       userID.(uint),
-		Kind:         kind,
-		ClusterID:    uint(clusterID),
-		Namespace:    namespace,
-		ResourceName: resourceName,
+		UserID:         userID.(uint),
+		SessionVersion: c.GetUint64("session_version"),
+		Kind:           kind,
+		ClusterID:      uint(clusterID),
+		Namespace:      namespace,
+		ResourceName:   resourceName,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": "failed to issue websocket ticket"})

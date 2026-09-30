@@ -50,15 +50,24 @@ type agentEmitFunc func(AgentStreamEvent)
 
 // AgentChatStream runs the tool loop and emits SSE-friendly events.
 // When conversationID > 0, persists the assistant message with extras before done.
-func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conversationID uint, message string, retry bool, emit agentEmitFunc) error {
-	startedAt := time.Now()
+func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conversationID uint, message string, retry bool, emit agentEmitFunc) (retErr error) {
 	if emit == nil {
 		emit = func(AgentStreamEvent) {}
 	}
-	if s.llmClient == nil {
-		emit(AgentStreamEvent{Type: "error", Message: "LLM service not configured"})
-		return fmt.Errorf("LLM service not configured")
+	defer func() {
+		if retErr != nil {
+			emit(AgentStreamEvent{Type: "error", Message: retErr.Error()})
+		}
+	}()
+	ctx, runErr := s.captureConversationRun(ctx, userID, conversationID)
+	if runErr != nil {
+		return runErr
 	}
+	ctx, _, configErr := s.requestLLM(ctx)
+	if configErr != nil {
+		return configErr
+	}
+	startedAt := time.Now()
 	if retry && conversationID > 0 {
 		if handled, err := s.resumeAgentTurn(ctx, userID, clusterID, conversationID, message, emit); handled {
 			return err
@@ -69,7 +78,6 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 
 	res, err := s.runAgentToolLoop(ctx, userID, clusterID, conversationID, message, emit)
 	if err != nil {
-		emit(AgentStreamEvent{Type: "error", Message: err.Error()})
 		return err
 	}
 
@@ -83,11 +91,21 @@ func (s *Service) AgentChatStream(ctx context.Context, userID, clusterID, conver
 	}
 
 	var msgID uint
-	if conversationID > 0 {
-		msgID, _ = s.persistAssistantMessage(conversationID, res.Content, res.Trace, res.Pending)
+	if err := WithConversationWrite(ctx, s.db, conversationID, func(tx *gorm.DB) error {
+		scoped := &Service{db: tx}
+		if conversationID > 0 {
+			var err error
+			msgID, err = scoped.persistAssistantMessage(conversationID, res.Content, res.Trace, res.Pending)
+			if err != nil {
+				return err
+			}
+		}
+		scoped.persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
+		scoped.refreshConversationState(userID, clusterID, conversationID, message, res.Content, res.Trace, res.Pending)
+		return nil
+	}); err != nil {
+		return err
 	}
-	s.persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
-	s.refreshConversationState(userID, clusterID, conversationID, message, res.Content, res.Trace, res.Pending)
 	s.persistAgentRunMetric(userID, clusterID, conversationID, msgID, message, res.Usage, res.Trace, startedAt, res.MemoryHits)
 
 	emit(AgentStreamEvent{
@@ -140,11 +158,14 @@ func (s *Service) resumeAgentTurn(ctx context.Context, userID, clusterID, conver
 		res := &agentLoopResult{Content: content, Pending: pending, Trace: extras.ToolTrace}
 		answer, err := s.streamFinalViaLLM(ctx, userID, clusterID, conversationID, message, res, emit)
 		if err != nil {
-			emit(AgentStreamEvent{Type: "error", Message: err.Error()})
 			return true, err
 		}
 		content = answer
-		_ = s.db.Model(&model.ChatMessage{}).Where("id = ? AND conversation_id = ?", last.ID, conversationID).Update("content", content).Error
+		if err := WithConversationWrite(ctx, s.db, conversationID, func(tx *gorm.DB) error {
+			return tx.Model(&model.ChatMessage{}).Where("id = ? AND conversation_id = ?", last.ID, conversationID).Update("content", content).Error
+		}); err != nil {
+			return true, err
+		}
 	} else if strings.HasPrefix(content, "❌ AI 请求失败") {
 		return false, nil
 	} else if err := streamContentDeltas(ctx, content, emit); err != nil {
@@ -156,8 +177,12 @@ func (s *Service) resumeAgentTurn(ctx context.Context, userID, clusterID, conver
 
 // streamFinalViaLLM re-asks without tools for a true token stream when tools already ran.
 func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conversationID uint, userMsg string, res *agentLoopResult, emit agentEmitFunc) (string, error) {
-	if s.llmClient == nil || len(res.Trace) == 0 {
+	if len(res.Trace) == 0 {
 		return "", fmt.Errorf("skip")
+	}
+	ctx, client, configErr := s.requestLLM(ctx)
+	if configErr != nil {
+		return "", configErr
 	}
 	clusterContext, _ := s.getClusterContext(clusterID)
 	system := agentSystemPrompt
@@ -185,7 +210,7 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		ch, err := s.llmClient.ChatStream(ctx, request)
+		ch, err := client.ChatStream(ctx, request)
 		if err == nil {
 			var b strings.Builder
 			completed := false
@@ -215,7 +240,7 @@ func (s *Service) streamFinalViaLLM(ctx context.Context, userID, clusterID, conv
 					res.Usage.PromptTokens += streamedUsage.PromptTokens
 					res.Usage.CompletionTokens += streamedUsage.CompletionTokens
 					res.Usage.TotalTokens += streamedUsage.TotalTokens
-					s.persistTokenUsage(userID, conversationID, streamedUsage, "agent_final")
+					s.persistTokenUsage(ctx, userID, conversationID, streamedUsage, "agent_final")
 				}
 				out := strings.TrimSpace(b.String())
 				if len(res.Pending) > 0 {
@@ -359,6 +384,10 @@ func (s *Service) CancelPendingActions(userID, conversationID uint, actionIDs []
 }
 
 func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conversationID uint, message string, emit agentEmitFunc) (*agentLoopResult, error) {
+	ctx, client, configErr := s.requestLLM(ctx)
+	if configErr != nil {
+		return nil, configErr
+	}
 	clusterContext, _ := s.getClusterContext(clusterID)
 
 	system := agentSystemPrompt
@@ -413,7 +442,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		if emit != nil {
 			emit(AgentStreamEvent{Type: "status", Status: "thinking"})
 		}
-		resp, err := s.llmClient.Chat(chatCtx, &llm.ChatRequest{
+		resp, err := client.Chat(chatCtx, &llm.ChatRequest{
 			Messages:  messages,
 			Tools:     tools,
 			MaxTokens: 4096,
@@ -635,7 +664,7 @@ func (s *Service) runAgentToolLoop(ctx context.Context, userID, clusterID, conve
 		finalContent = stripFakeAgentActionBlocks(finalContent)
 	}
 	pending = s.dropIncompleteMountDeployments(message, pending)
-	s.persistTokenUsage(userID, conversationID, totalUsage, "agent")
+	s.persistTokenUsage(ctx, userID, conversationID, totalUsage, "agent")
 
 	return &agentLoopResult{Content: finalContent, Pending: pending, Trace: trace, Usage: totalUsage, MemoryHits: memoryHits}, nil
 }

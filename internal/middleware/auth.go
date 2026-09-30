@@ -61,7 +61,7 @@ func WebSocketTicketAuthMiddleware(manager *wsticket.Manager, kind string) gin.H
 			c.Abort()
 			return
 		}
-		if !authenticateUser(c, claims.UserID) {
+		if !authenticateUser(c, claims.UserID, claims.SessionVersion) {
 			return
 		}
 		c.Next()
@@ -76,13 +76,13 @@ func authenticateToken(c *gin.Context, jwtManager *utils.JWTManager, token strin
 		return false
 	}
 
-	return authenticateUser(c, claims.UserID)
+	return authenticateUser(c, claims.UserID, claims.SessionVersion)
 }
 
-func authenticateUser(c *gin.Context, userID uint) bool {
+func authenticateUser(c *gin.Context, userID uint, version uint64) bool {
 	var user model.User
-	if err := model.DB.Select("id", "username", "role_id", "status").First(&user, userID).Error; err != nil || user.Status != 1 {
-		response.Unauthorized(c, "user is disabled or no longer exists")
+	if err := model.DB.Select("id", "username", "role_id", "status", "session_version").First(&user, userID).Error; err != nil || user.Status != 1 || user.SessionVersion != version {
+		response.Unauthorized(c, "session revoked or user unavailable; please login again")
 		c.Abort()
 		return false
 	}
@@ -90,5 +90,6 @@ func authenticateUser(c *gin.Context, userID uint) bool {
 	c.Set("user_id", user.ID)
 	c.Set("username", user.Username)
 	c.Set("role_id", user.RoleID)
+	c.Set("session_version", user.SessionVersion)
 	return true
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/kubepilot/kubepilot/internal/llm"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/cache"
-	"github.com/kubepilot/kubepilot/internal/pkg/crypto"
 	"gorm.io/gorm"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -50,22 +49,9 @@ func NewService(db *gorm.DB, llmConfig *llm.LLMConfig, encryptKey string, cacheI
 		svc.cache = cacheInstance[0]
 	}
 
-	// 尝试从数据库加载配置
-	var dbConfig model.LLMConfig
-	if err := db.Where("is_active = ?", true).Order("id desc").First(&dbConfig).Error; err == nil {
-		apiKey, keyErr := crypto.OpenSecret(dbConfig.APIKey, encryptKey)
-		if keyErr != nil {
-			return nil, fmt.Errorf("decrypt active LLM key: %w", keyErr)
-		}
-		// 使用数据库配置
-		llmConfig = &llm.LLMConfig{
-			Provider:    llm.LLMProvider(dbConfig.Provider),
-			APIKey:      apiKey,
-			BaseURL:     dbConfig.BaseURL,
-			Model:       dbConfig.Model,
-			Temperature: dbConfig.Temperature,
-			MaxTokens:   dbConfig.MaxTokens,
-			Timeout:     dbConfig.Timeout,
+	if db != nil {
+		if err := model.EnsureSingleActiveLLMConfig(db); err != nil {
+			return nil, err
 		}
 	}
 
@@ -82,19 +68,10 @@ func NewService(db *gorm.DB, llmConfig *llm.LLMConfig, encryptKey string, cacheI
 	return svc, nil
 }
 
-// UpdateConfig 更新LLM配置
-func (s *Service) UpdateConfig(cfg *llm.LLMConfig) error {
-	client, err := llm.NewClient(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create LLM client: %w", err)
-	}
-	s.llmClient = client
-	return nil
-}
-
-// IsConfigured 检查是否已配置
+// IsConfigured checks the current committed default, not a process-local cache.
 func (s *Service) IsConfigured() bool {
-	return s.llmClient != nil
+	_, _, err := s.requestLLM(context.Background())
+	return err == nil
 }
 
 // Chat 对话请求
@@ -112,8 +89,9 @@ type ChatResponse struct {
 
 // Chat 智能对话
 func (s *Service) Chat(ctx context.Context, userID uint, req *ChatRequest) (*ChatResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured. Please set LLM API key in config")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// 获取用户的对话历史
@@ -132,7 +110,7 @@ func (s *Service) Chat(ctx context.Context, userID uint, req *ChatRequest) (*Cha
 	messages := llm.BuildMessages(history, message)
 
 	// 调用LLM
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{
+	resp, err := client.Chat(ctx, &llm.ChatRequest{
 		Messages: messages,
 	})
 	if err != nil {
@@ -200,8 +178,9 @@ func (s *Service) saveChatHistoryToCache(ctx context.Context, userID, clusterID 
 
 // ChatStream 流式对话
 func (s *Service) ChatStream(ctx context.Context, userID uint, req *ChatRequest) (<-chan llm.StreamChunk, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured. Please set LLM API key in config")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// 获取用户的对话历史
@@ -220,7 +199,7 @@ func (s *Service) ChatStream(ctx context.Context, userID uint, req *ChatRequest)
 	messages := llm.BuildMessages(history, message)
 
 	// 调用LLM流式API
-	ch, err := s.llmClient.ChatStream(ctx, &llm.ChatRequest{
+	ch, err := client.ChatStream(ctx, &llm.ChatRequest{
 		Messages: messages,
 		Stream:   true,
 	})
@@ -290,8 +269,9 @@ type DiagnosisResponse struct {
 
 // Diagnose 智能诊断
 func (s *Service) Diagnose(ctx context.Context, req *DiagnosisRequest) (*DiagnosisResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured. Please set LLM API key in config")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	problem := req.Problem
@@ -312,7 +292,7 @@ func (s *Service) Diagnose(ctx context.Context, req *DiagnosisRequest) (*Diagnos
 	}
 
 	// 调用LLM
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{
+	resp, err := client.Chat(ctx, &llm.ChatRequest{
 		Messages:  messages,
 		MaxTokens: 1024,
 	})
@@ -748,8 +728,9 @@ type ExplainResponse struct {
 
 // ExplainText 划词解释
 func (s *Service) ExplainText(ctx context.Context, req *ExplainRequest) (*ExplainResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	systemPrompt := `你是 KubePilot AI 助手，专门解释 Kubernetes 相关的概念、命令、配置和错误信息。
@@ -777,7 +758,7 @@ func (s *Service) ExplainText(ctx context.Context, req *ExplainRequest) (*Explai
 		{Role: "user", Content: userPrompt},
 	}
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{Messages: messages})
+	resp, err := client.Chat(ctx, &llm.ChatRequest{Messages: messages})
 	if err != nil {
 		return nil, fmt.Errorf("explanation failed: %w", err)
 	}
@@ -789,8 +770,9 @@ func (s *Service) ExplainText(ctx context.Context, req *ExplainRequest) (*Explai
 
 // ExplainTextStream 流式划词解释
 func (s *Service) ExplainTextStream(ctx context.Context, req *ExplainRequest) (<-chan llm.StreamChunk, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	systemPrompt := `你是 KubePilot AI 助手，专门解释 Kubernetes 相关的概念、命令、配置和错误信息。
@@ -806,7 +788,7 @@ func (s *Service) ExplainTextStream(ctx context.Context, req *ExplainRequest) (<
 		{Role: "user", Content: userPrompt},
 	}
 
-	return s.llmClient.ChatStream(ctx, &llm.ChatRequest{
+	return client.ChatStream(ctx, &llm.ChatRequest{
 		Messages: messages,
 		Stream:   true,
 	})
@@ -832,8 +814,9 @@ type ResourceGuideResponse struct {
 
 // GetResourceGuide 资源指南
 func (s *Service) GetResourceGuide(ctx context.Context, req *ResourceGuideRequest) (*ResourceGuideResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// 获取资源详细信息
@@ -882,7 +865,7 @@ func (s *Service) GetResourceGuide(ctx context.Context, req *ResourceGuideReques
 		{Role: "user", Content: userPrompt},
 	}
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{
+	resp, err := client.Chat(ctx, &llm.ChatRequest{
 		Messages: messages,
 	})
 	if err != nil {
@@ -1089,8 +1072,9 @@ type TranslateYAMLResponse struct {
 
 // TranslateYAML YAML 翻译
 func (s *Service) TranslateYAML(ctx context.Context, req *TranslateYAMLRequest) (*TranslateYAMLResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	direction := "to_chinese"
@@ -1121,7 +1105,7 @@ func (s *Service) TranslateYAML(ctx context.Context, req *TranslateYAMLRequest) 
 		{Role: "user", Content: userPrompt},
 	}
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{Messages: messages})
+	resp, err := client.Chat(ctx, &llm.ChatRequest{Messages: messages})
 	if err != nil {
 		return nil, fmt.Errorf("translation failed: %w", err)
 	}
@@ -1151,8 +1135,9 @@ type AnalyzeDescribeResponse struct {
 
 // AnalyzeDescribe Describe 解读
 func (s *Service) AnalyzeDescribe(ctx context.Context, req *AnalyzeDescribeRequest) (*AnalyzeDescribeResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	describeOutput := req.Describe
@@ -1205,7 +1190,7 @@ Describe 输出:
 		{Role: "user", Content: userPrompt},
 	}
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{Messages: messages})
+	resp, err := client.Chat(ctx, &llm.ChatRequest{Messages: messages})
 	if err != nil {
 		return nil, fmt.Errorf("describe analysis failed: %w", err)
 	}
@@ -1264,8 +1249,9 @@ type AnalyzeLogsResponse struct {
 
 // AnalyzeLogs 日志问诊
 func (s *Service) AnalyzeLogs(ctx context.Context, req *AnalyzeLogsRequest) (*AnalyzeLogsResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, client, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	logContent := req.Logs
@@ -1331,7 +1317,7 @@ func (s *Service) AnalyzeLogs(ctx context.Context, req *AnalyzeLogsRequest) (*An
 		{Role: "user", Content: userPrompt},
 	}
 
-	resp, err := s.llmClient.Chat(ctx, &llm.ChatRequest{Messages: messages})
+	resp, err := client.Chat(ctx, &llm.ChatRequest{Messages: messages})
 	if err != nil {
 		return nil, fmt.Errorf("log analysis failed: %w", err)
 	}
@@ -1447,8 +1433,13 @@ const agentSystemPrompt = `你是 KubePilot AI Agent，只能通过【原生工�
 
 // AgentChat Agent对话（原生 Tool Calling 循环）
 func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, message string, conversationID uint) (*AgentChatResponse, error) {
-	if s.llmClient == nil {
-		return nil, fmt.Errorf("LLM service not configured")
+	ctx, runErr := s.captureConversationRun(ctx, userID, conversationID)
+	if runErr != nil {
+		return nil, runErr
+	}
+	ctx, _, err := s.requestLLM(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	res, err := s.runAgentToolLoop(ctx, userID, clusterID, conversationID, message, nil)
@@ -1470,7 +1461,12 @@ func (s *Service) AgentChat(ctx context.Context, userID uint, clusterID uint, me
 		})
 	}
 
-	s.persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
+	if err := WithConversationWrite(ctx, s.db, conversationID, func(tx *gorm.DB) error {
+		(&Service{db: tx}).persistAgentToolTrace(userID, clusterID, conversationID, res.Trace, res.Pending)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	return &AgentChatResponse{
 		Content:        res.Content,

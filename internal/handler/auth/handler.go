@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -61,7 +60,7 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 	if requires2FA {
-		pending, err := h.issueTwoFAPending(c.Request.Context(), user.ID)
+		pending, err := h.issueTwoFAPending(c.Request.Context(), user.ID, user.SessionVersion)
 		if err != nil {
 			response.InternalError(c, "failed to create 2FA session")
 			return
@@ -74,7 +73,7 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.GenerateTokenForUser(user.ID)
+	result, err := h.service.GenerateTokenForUser(user.ID, user.SessionVersion)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -101,7 +100,7 @@ func (h *Handler) recordLoginLog(userID uint, username, ip, userAgent string, su
 	}
 }
 
-func (h *Handler) issueTwoFAPending(ctx context.Context, userID uint) (string, error) {
+func (h *Handler) issueTwoFAPending(ctx context.Context, userID uint, version uint64) (string, error) {
 	if h.cache == nil {
 		return "", fmt.Errorf("cache not configured")
 	}
@@ -111,7 +110,7 @@ func (h *Handler) issueTwoFAPending(ctx context.Context, userID uint) (string, e
 	}
 	token := hex.EncodeToString(buf)
 	key := "2fa:pending:" + token
-	if err := h.cache.Set(ctx, key, strconv.FormatUint(uint64(userID), 10), twoFAPendingTTL); err != nil {
+	if err := h.cache.Set(ctx, key, fmt.Sprintf("%d:%d", userID, version), twoFAPendingTTL); err != nil {
 		return "", err
 	}
 	return token, nil

@@ -60,7 +60,7 @@ func (s *Service) Login(req *LoginRequest) (*LoginResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.GenerateTokenForUser(user.ID)
+	return s.GenerateTokenForUser(user.ID, user.SessionVersion)
 }
 
 // Authenticate verifies username/password and returns the user without issuing a JWT.
@@ -165,12 +165,19 @@ func (s *Service) ChangePassword(userID uint, oldPassword, newPassword string) e
 		return err
 	}
 
-	user.Password = hashedPassword
-	return s.userRepo.Update(user)
+	result := s.db.Model(&model.User{}).Where("id = ? AND password = ?", userID, user.Password).
+		Updates(map[string]any{"password": hashedPassword, "session_version": gorm.Expr("session_version + 1")})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("password changed concurrently; please login again")
+	}
+	return nil
 }
 
 // GenerateTokenForUser 为指定用户生成 JWT token（用于 2FA 验证后）
-func (s *Service) GenerateTokenForUser(userID uint) (*LoginResponse, error) {
+func (s *Service) GenerateTokenForUser(userID uint, expectedVersion ...uint64) (*LoginResponse, error) {
 	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return nil, err
@@ -179,7 +186,10 @@ func (s *Service) GenerateTokenForUser(userID uint) (*LoginResponse, error) {
 		return nil, errors.New("account is disabled")
 	}
 
-	token, err := s.jwtManager.GenerateToken(user.ID, user.Username, user.RoleID)
+	if len(expectedVersion) > 0 && user.SessionVersion != expectedVersion[0] {
+		return nil, errors.New("login session revoked; please login again")
+	}
+	token, err := s.jwtManager.GenerateToken(user.ID, user.Username, user.RoleID, user.SessionVersion)
 	if err != nil {
 		return nil, err
 	}

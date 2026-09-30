@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kubepilot/kubepilot/internal/model"
 	"github.com/kubepilot/kubepilot/internal/pkg/response"
+	aiopsService "github.com/kubepilot/kubepilot/internal/service/aiops"
 	"gorm.io/gorm"
 )
 
@@ -61,6 +62,7 @@ func (h *Handler) validateAgentConversation(c *gin.Context, conversationID, clus
 			response.BadRequest(c, "conversation belongs to a different cluster")
 			return false
 		}
+		c.Request = c.Request.WithContext(aiopsService.WithConversationVersion(c.Request.Context(), conversation))
 		return true
 	}
 
@@ -77,6 +79,7 @@ func (h *Handler) validateAgentConversation(c *gin.Context, conversationID, clus
 		response.BadRequest(c, "unbound conversation contains messages or belongs to a different cluster; create a new conversation")
 		return false
 	}
+	c.Request = c.Request.WithContext(aiopsService.WithConversationVersion(c.Request.Context(), conversation))
 	return true
 }
 
@@ -290,6 +293,14 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 // Long-term memories and historical usage metrics are managed separately;
 // clearing a conversation removes only replayable context and pending writes.
 func clearConversationContent(tx *gorm.DB, conversationID, actorID uint) error {
+	result := tx.Model(&model.ChatConversation{}).Where("id = ? AND user_id = ?", conversationID, actorID).
+		Update("context_version", gorm.Expr("context_version + 1"))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
 	var actions []model.AgentAction
 	if err := tx.Where("conversation_id = ? AND user_id = ? AND status IN ?", conversationID, actorID, []string{"pending", "approval_pending", "approved"}).Find(&actions).Error; err != nil {
 		return err

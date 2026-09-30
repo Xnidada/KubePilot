@@ -968,13 +968,6 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	if err != nil {
 		return nil, "", err
 	}
-	// Supersede earlier pending create for the same resource in this conversation.
-	if conversationID > 0 && (params.Action == "create_deployment" || params.Action == "create_service") {
-		_ = s.db.Model(&model.AgentAction{}).
-			Where("conversation_id = ? AND status = ? AND resource_type = ? AND resource_name = ? AND namespace = ?",
-				conversationID, "pending", params.Action, params.Name, params.Namespace).
-			Update("status", "cancelled").Error
-	}
 	desc := strings.TrimSpace(description)
 	if desc == "" || params.Action == "create_secret" || params.Action == "apply_yaml" || len(params.Data) > 0 || len(params.EnvVars) > 0 {
 		desc = fmt.Sprintf("%s %s/%s", params.Action, params.Namespace, params.Name)
@@ -1007,7 +1000,12 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 		cid := conversationID
 		rec.ConversationID = &cid
 	}
-	if err := s.db.Transaction(func(tx *gorm.DB) error {
+	if err := WithConversationWrite(ctx, s.db, conversationID, func(tx *gorm.DB) error {
+		if conversationID > 0 && (params.Action == "create_deployment" || params.Action == "create_service") {
+			if err := tx.Model(&model.AgentAction{}).Where("conversation_id = ? AND user_id = ? AND cluster_id = ? AND status = ? AND resource_type = ? AND resource_name = ? AND namespace = ?", conversationID, userID, clusterID, "pending", params.Action, params.Name, params.Namespace).Update("status", "cancelled").Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Create(&rec).Error; err != nil {
 			return err
 		}

@@ -17,11 +17,12 @@ const (
 )
 
 type Claims struct {
-	UserID       uint   `json:"user_id"`
-	Kind         string `json:"kind"`
-	ClusterID    uint   `json:"cluster_id"`
-	Namespace    string `json:"namespace,omitempty"`
-	ResourceName string `json:"resource_name"`
+	UserID         uint   `json:"user_id"`
+	SessionVersion uint64 `json:"session_version"`
+	Kind           string `json:"kind"`
+	ClusterID      uint   `json:"cluster_id"`
+	Namespace      string `json:"namespace,omitempty"`
+	ResourceName   string `json:"resource_name"`
 }
 
 type Manager struct {
