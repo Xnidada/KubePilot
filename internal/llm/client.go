@@ -87,6 +87,18 @@ type StreamChunk struct {
 	Usage   *Usage `json:"usage,omitempty"`
 }
 
+func sendStreamChunk(ctx context.Context, ch chan<- StreamChunk, chunk StreamChunk) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case ch <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // LLMConfig LLM配置
 type LLMConfig struct {
 	Provider    LLMProvider `json:"provider"`

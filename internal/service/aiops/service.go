@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kubepilot/kubepilot/internal/k8s"
@@ -24,16 +25,23 @@ import (
 type Service struct {
 	db            *gorm.DB
 	llmClient     llm.Client
-	chatHistories map[uint][]llm.Message // userID -> chat history (fallback)
-	cache         cache.Cache            // 缓存实例
-	encryptKey    string                 // 用于解密kubeconfig
+	historyMu     sync.RWMutex
+	chatHistories map[chatHistoryKey][]llm.Message
+	cache         cache.Cache // 缓存实例
+	encryptKey    string      // 用于解密kubeconfig
+}
+
+type chatHistoryKey struct{ userID, clusterID uint }
+
+func chatHistoryCacheKey(userID, clusterID uint) string {
+	return fmt.Sprintf("chat:history:%d:%d", userID, clusterID)
 }
 
 // NewService 创建AIOps服务
 func NewService(db *gorm.DB, llmConfig *llm.LLMConfig, encryptKey string, cacheInstance ...cache.Cache) (*Service, error) {
 	svc := &Service{
 		db:            db,
-		chatHistories: make(map[uint][]llm.Message),
+		chatHistories: make(map[chatHistoryKey][]llm.Message),
 		encryptKey:    encryptKey,
 	}
 
@@ -109,7 +117,7 @@ func (s *Service) Chat(ctx context.Context, userID uint, req *ChatRequest) (*Cha
 	}
 
 	// 获取用户的对话历史
-	history := s.getChatHistory(ctx, userID)
+	history := s.getChatHistory(ctx, userID, req.ClusterID)
 
 	// 如果有集群上下文，添加到消息中
 	message := req.Message
@@ -141,10 +149,10 @@ func (s *Service) Chat(ctx context.Context, userID uint, req *ChatRequest) (*Cha
 	}
 
 	// 保存历史
-	s.saveChatHistoryToCache(ctx, userID, history)
+	s.saveChatHistoryToCache(ctx, userID, req.ClusterID, history)
 
 	// 保存到数据库
-	s.saveChatHistory(userID, req.Message, resp.Content)
+	s.saveChatHistory(userID, req.ClusterID, req.Message, resp.Content)
 
 	return &ChatResponse{
 		Content: resp.Content,
@@ -153,10 +161,10 @@ func (s *Service) Chat(ctx context.Context, userID uint, req *ChatRequest) (*Cha
 }
 
 // getChatHistory 获取对话历史
-func (s *Service) getChatHistory(ctx context.Context, userID uint) []llm.Message {
+func (s *Service) getChatHistory(ctx context.Context, userID, clusterID uint) []llm.Message {
 	// 优先从缓存获取
 	if s.cache != nil {
-		key := fmt.Sprintf("chat:history:%d", userID)
+		key := chatHistoryCacheKey(userID, clusterID)
 		data, err := s.cache.Get(ctx, key)
 		if err == nil {
 			var history []llm.Message
@@ -167,20 +175,27 @@ func (s *Service) getChatHistory(ctx context.Context, userID uint) []llm.Message
 	}
 
 	// 回退到内存
-	return s.chatHistories[userID]
+	s.historyMu.RLock()
+	defer s.historyMu.RUnlock()
+	return append([]llm.Message(nil), s.chatHistories[chatHistoryKey{userID, clusterID}]...)
 }
 
 // saveChatHistoryToCache 保存对话历史到缓存
-func (s *Service) saveChatHistoryToCache(ctx context.Context, userID uint, history []llm.Message) {
+func (s *Service) saveChatHistoryToCache(ctx context.Context, userID, clusterID uint, history []llm.Message) {
 	// 保存到缓存
 	if s.cache != nil {
-		key := fmt.Sprintf("chat:history:%d", userID)
+		key := chatHistoryCacheKey(userID, clusterID)
 		data, _ := json.Marshal(history)
 		s.cache.Set(ctx, key, string(data), 24*time.Hour)
 	}
 
 	// 同时保存到内存作为备份
-	s.chatHistories[userID] = history
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if s.chatHistories == nil {
+		s.chatHistories = make(map[chatHistoryKey][]llm.Message)
+	}
+	s.chatHistories[chatHistoryKey{userID, clusterID}] = append([]llm.Message(nil), history...)
 }
 
 // ChatStream 流式对话
@@ -190,7 +205,7 @@ func (s *Service) ChatStream(ctx context.Context, userID uint, req *ChatRequest)
 	}
 
 	// 获取用户的对话历史
-	history := s.chatHistories[userID]
+	history := s.getChatHistory(ctx, userID, req.ClusterID)
 
 	// 如果有集群上下文，添加到消息中
 	message := req.Message
@@ -213,30 +228,46 @@ func (s *Service) ChatStream(ctx context.Context, userID uint, req *ChatRequest)
 		return nil, fmt.Errorf("LLM stream failed: %w", err)
 	}
 
-	// 异步更新历史
+	// One reader owns the LLM channel; forward every chunk to the HTTP caller.
+	out := make(chan llm.StreamChunk)
 	go func() {
+		defer close(out)
 		var fullContent string
+		var failed, completed bool
 		for chunk := range ch {
 			fullContent += chunk.Content
-			if chunk.Done {
+			failed = failed || chunk.Error != ""
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
+			if chunk.Done && !failed && !completed {
+				completed = true
 				// 更新对话历史
 				history = append(history, llm.Message{Role: "user", Content: req.Message})
 				history = append(history, llm.Message{Role: "assistant", Content: fullContent})
 				if len(history) > 20 {
 					history = history[len(history)-20:]
 				}
-				s.chatHistories[userID] = history
-				s.saveChatHistory(userID, req.Message, fullContent)
+				s.saveChatHistoryToCache(ctx, userID, req.ClusterID, history)
+				s.saveChatHistory(userID, req.ClusterID, req.Message, fullContent)
 			}
 		}
 	}()
 
-	return ch, nil
+	return out, nil
 }
 
 // ClearHistory 清除对话历史
 func (s *Service) ClearHistory(userID uint) {
-	delete(s.chatHistories, userID)
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	for key := range s.chatHistories {
+		if key.userID == userID {
+			delete(s.chatHistories, key)
+		}
+	}
 }
 
 // DiagnosisRequest 诊断请求
@@ -653,7 +684,7 @@ func (s *Service) parseDiagnosisResponse(content string) *DiagnosisResponse {
 }
 
 // saveChatHistory 保存对话历史到 chat_conversations / chat_messages
-func (s *Service) saveChatHistory(userID uint, userMsg, assistantMsg string) {
+func (s *Service) saveChatHistory(userID, clusterID uint, userMsg, assistantMsg string) {
 	if s.db == nil || userID == 0 {
 		return
 	}
@@ -669,12 +700,20 @@ func (s *Service) saveChatHistory(userID uint, userMsg, assistantMsg string) {
 	var conv model.ChatConversation
 	// Reuse the latest non-archived conversation updated within 2 hours, else create.
 	cutoff := time.Now().Add(-2 * time.Hour)
-	err := s.db.Where("user_id = ? AND is_archived = ? AND updated_at >= ?", userID, false, cutoff).
-		Order("updated_at DESC").First(&conv).Error
+	query := s.db.Where("user_id = ? AND is_archived = ? AND updated_at >= ?", userID, false, cutoff)
+	if clusterID == 0 {
+		query = query.Where("cluster_id IS NULL")
+	} else {
+		query = query.Where("cluster_id = ?", clusterID)
+	}
+	err := query.Order("updated_at DESC").First(&conv).Error
 	if err != nil {
 		conv = model.ChatConversation{
 			UserID: userID,
 			Title:  title,
+		}
+		if clusterID > 0 {
+			conv.ClusterID = &clusterID
 		}
 		if err := s.db.Create(&conv).Error; err != nil {
 			return

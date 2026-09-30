@@ -941,11 +941,7 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 	if err := validateMutationParams(params); err != nil {
 		return nil, "", err
 	}
-	dry, err := s.DryRunStagedAction(ctx, clusterID, params)
-	if err != nil {
-		return nil, "", err
-	}
-	resourceUID, baseGeneration, err := s.DeploymentPrecondition(ctx, clusterID, params)
+	dry, resourceUID, baseGeneration, err := s.PreviewStagedAction(ctx, clusterID, params)
 	if err != nil {
 		return nil, "", err
 	}
@@ -961,7 +957,7 @@ func (s *Service) stageOneMutation(ctx context.Context, userID, clusterID, conve
 			if err != nil {
 				return nil, "", fmt.Errorf("failed to read staged action: %w", err)
 			}
-			if string(opened) == string(paramBytes) {
+			if string(opened) == string(paramBytes) && action.ResourceUID == resourceUID && action.BaseGeneration == baseGeneration {
 				return &PendingActionInfo{ID: action.ID, ActionID: action.ID, Action: params.Action,
 					Name: params.Name, Namespace: params.Namespace, Description: action.Description,
 					DryRun: action.DryRunResult, NeedConfirm: true, Status: "pending", ClusterID: clusterID}, action.DryRunResult, nil

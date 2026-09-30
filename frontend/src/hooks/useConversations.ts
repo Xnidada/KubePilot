@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { message } from 'antd'
 import * as conversationApi from '../api/conversation'
 
@@ -26,8 +26,19 @@ export interface Conversation {
 
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([])
-  const [activeId, setActiveId] = useState<number | null>(null)
+  const [activeId, setActiveIdState] = useState<number | null>(null)
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null)
+  const activeIdRef = useRef<number | null>(null)
+  const detailRequestRef = useRef(0)
+  const isActiveConversation = useCallback((id: number) => activeIdRef.current === id, [])
+  const setActiveId = useCallback((id: number | null) => {
+    if (activeIdRef.current === id) return
+    activeIdRef.current = id
+    detailRequestRef.current++
+    setActiveConversation(null)
+    setActiveIdState(id)
+  }, [])
+  useEffect(() => () => { detailRequestRef.current++ }, [])
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [batchDeleting, setBatchDeleting] = useState(false)
   const [messageBatchDeleting, setMessageBatchDeleting] = useState(false)
@@ -47,9 +58,11 @@ export function useConversations() {
   }, [])
 
   const fetchConversationDetail = useCallback(async (id: number) => {
+    if (activeIdRef.current !== id) return
+    const request = ++detailRequestRef.current
     try {
       const res = await conversationApi.getConversation(id)
-      if (res.code === 0) {
+      if (res.code === 0 && activeIdRef.current === id && detailRequestRef.current === request) {
         setActiveConversation(res.data as Conversation)
       }
     } catch (error) {
@@ -69,9 +82,9 @@ export function useConversations() {
     }
   }, [activeId, fetchConversationDetail])
 
-  const createConversation = useCallback(async (title?: string) => {
+  const createConversation = useCallback(async (title?: string, clusterId?: number) => {
     try {
-      const res = await conversationApi.createConversation({ title: title || '新对话' })
+      const res = await conversationApi.createConversation({ title: title || '新对话', cluster_id: clusterId })
       if (res.code === 0) {
         await fetchConversations()
         setActiveId(res.data.id)
@@ -83,11 +96,11 @@ export function useConversations() {
       message.error(error?.message || '创建会话失败')
     }
     return null
-  }, [fetchConversations])
+  }, [fetchConversations, setActiveId])
 
   const selectConversation = useCallback((id: number) => {
     setActiveId(id)
-  }, [])
+  }, [setActiveId])
 
   const addMessage = useCallback(async (conversationId: number, role: 'user' | 'assistant', content: string) => {
     try {
@@ -205,7 +218,7 @@ export function useConversations() {
       const remaining = conversations.filter(c => c.id !== id)
       setConversations(remaining)
 
-      if (activeId === id) {
+      if (activeIdRef.current === id) {
         const next = remaining[0]
         setActiveId(next ? next.id : null)
         if (!next) setActiveConversation(null)
@@ -221,7 +234,7 @@ export function useConversations() {
     } finally {
       setDeletingId(null)
     }
-  }, [activeId, conversations, fetchConversations])
+  }, [conversations, fetchConversations, setActiveId])
 
   const deleteConversations = useCallback(async (ids: number[]) => {
     const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
@@ -246,7 +259,7 @@ export function useConversations() {
       const remaining = conversations.filter(c => !deleted.has(c.id))
       setConversations(remaining)
 
-      if (activeId && deleted.has(activeId)) {
+      if (activeIdRef.current && deleted.has(activeIdRef.current)) {
         const next = remaining[0]
         setActiveId(next ? next.id : null)
         if (!next) setActiveConversation(null)
@@ -263,14 +276,14 @@ export function useConversations() {
     } finally {
       setBatchDeleting(false)
     }
-  }, [activeId, conversations, fetchConversations])
+  }, [conversations, fetchConversations, setActiveId])
 
   const renameConversation = useCallback(async (id: number, title: string) => {
     try {
       await conversationApi.updateConversation(id, { title })
       setConversations(prev => prev.map(c => (c.id === id ? { ...c, title } : c)))
       if (activeConversation?.id === id) {
-        setActiveConversation(prev => (prev ? { ...prev, title } : prev))
+        setActiveConversation(prev => (prev?.id === id ? { ...prev, title } : prev))
       }
       message.success('已重命名')
       return true
@@ -300,5 +313,6 @@ export function useConversations() {
     renameConversation,
     fetchConversations,
     fetchConversationDetail,
+    isActiveConversation,
   }
 }

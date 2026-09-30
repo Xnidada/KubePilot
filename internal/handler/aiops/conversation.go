@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// canBrowseAllConversations allows admins and AI read-only roles (aiviewer) to
+// canBrowseAllConversations allows admins and the explicit aiviewer role to
 // inspect other users' Agent conversations. Mutating APIs stay owner-scoped.
 func (h *Handler) canBrowseAllConversations(c *gin.Context) bool {
 	roleID, ok := c.Get("role_id")
@@ -20,15 +20,11 @@ func (h *Handler) canBrowseAllConversations(c *gin.Context) bool {
 	if err := h.db.First(&role, roleID).Error; err != nil {
 		return false
 	}
-	if role.IsSystem || role.Name == "admin" || role.Name == "aiviewer" {
-		return true
-	}
-	permissions, err := model.ParsePermissions(role.Permissions)
-	if err != nil {
-		return false
-	}
-	// Generic AI read-only pattern: view without execute.
-	return permissions.HasPermission("aiops", "view") && !permissions.HasPermission("aiops", "execute")
+	return canBrowseEveryConversation(role)
+}
+
+func canBrowseEveryConversation(role model.Role) bool {
+	return role.IsSystem || role.Name == "admin" || role.Name == "aiviewer"
 }
 
 func (h *Handler) loadConversation(c *gin.Context, convID string, forWrite bool) (*model.ChatConversation, bool) {
@@ -68,17 +64,17 @@ func (h *Handler) validateAgentConversation(c *gin.Context, conversationID, clus
 		return true
 	}
 
-	// Older conversations were created before a cluster was selected. Bind such
-	// a conversation on its first Agent use, after owner verification above.
+	// A populated legacy conversation may mix several clusters. Only an empty
+	// conversation can be safely bound on its first Agent use.
 	result := h.db.Model(&model.ChatConversation{}).
-		Where("id = ? AND user_id = ? AND cluster_id IS NULL", conversation.ID, c.GetUint("user_id")).
+		Where("id = ? AND user_id = ? AND cluster_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_messages WHERE conversation_id = chat_conversations.id)", conversation.ID, c.GetUint("user_id")).
 		Update("cluster_id", clusterID)
 	if result.Error != nil {
 		response.InternalError(c, "failed to bind conversation to cluster")
 		return false
 	}
 	if result.RowsAffected != 1 {
-		response.BadRequest(c, "conversation belongs to a different cluster")
+		response.BadRequest(c, "unbound conversation contains messages or belongs to a different cluster; create a new conversation")
 		return false
 	}
 	return true
@@ -295,11 +291,11 @@ func (h *Handler) ClearConversation(c *gin.Context) {
 // clearing a conversation removes only replayable context and pending writes.
 func clearConversationContent(tx *gorm.DB, conversationID, actorID uint) error {
 	var actions []model.AgentAction
-	if err := tx.Where("conversation_id = ? AND status IN ?", conversationID, []string{"pending", "approval_pending", "approved"}).Find(&actions).Error; err != nil {
+	if err := tx.Where("conversation_id = ? AND user_id = ? AND status IN ?", conversationID, actorID, []string{"pending", "approval_pending", "approved"}).Find(&actions).Error; err != nil {
 		return err
 	}
 	for _, action := range actions {
-		result := tx.Model(&model.AgentAction{}).Where("id = ? AND status = ?", action.ID, action.Status).Update("status", "cancelled")
+		result := tx.Model(&model.AgentAction{}).Where("id = ? AND user_id = ? AND status = ?", action.ID, actorID, action.Status).Update("status", "cancelled")
 		if result.Error != nil {
 			return result.Error
 		}

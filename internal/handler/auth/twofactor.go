@@ -115,8 +115,11 @@ func (h *TwoFactorHandler) VerifyAndEnable(c *gin.Context) {
 	}
 
 	// 启用两步验证
-	tf.IsEnabled = true
-	h.db.Save(&tf)
+	result := h.db.Model(&model.UserTwoFactor{}).Where("id = ? AND secret = ?", tf.ID, tf.Secret).Update("is_enabled", true)
+	if result.Error != nil || result.RowsAffected != 1 {
+		response.InternalError(c, "启用两步验证失败，请重试")
+		return
+	}
 
 	response.SuccessWithMessage(c, "两步验证已启用", nil)
 }
@@ -145,8 +148,11 @@ func (h *TwoFactorHandler) Disable(c *gin.Context) {
 	}
 
 	// 禁用
-	tf.IsEnabled = false
-	h.db.Save(&tf)
+	result := h.db.Model(&model.UserTwoFactor{}).Where("id = ? AND secret = ?", tf.ID, tf.Secret).Update("is_enabled", false)
+	if result.Error != nil || result.RowsAffected != 1 {
+		response.InternalError(c, "禁用两步验证失败，请重试")
+		return
+	}
 
 	response.SuccessWithMessage(c, "两步验证已禁用", nil)
 }
@@ -193,37 +199,17 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 	}
 	userID := uint(uid64)
 
-	var tf model.UserTwoFactor
-	if err := h.db.Where("user_id = ? AND is_enabled = ?", userID, true).First(&tf).Error; err != nil {
-		response.NotFound(c, "两步验证未启用")
-		return
-	}
-
-	verified := false
-	backupUsed := false
-
-	// 先尝试 TOTP code
-	if validateTOTP(tf.Secret, req.Code) {
-		verified = true
-	} else if validateBackupCode(&tf, req.Code) {
-		// 尝试备份码
-		verified = true
-		backupUsed = true
-	}
-
-	if !verified {
-		// 验证失败后需重新登录拿新的 pending_token（Take 已消费）
-		response.BadRequest(c, "验证码错误，请重新登录后再试")
-		return
-	}
-
-	// 更新最后使用时间
-	now := time.Now()
-	tf.LastUsedAt = &now
-	h.db.Save(&tf)
-
 	if h.authService == nil {
 		response.InternalError(c, "auth service not configured for 2FA login")
+		return
+	}
+	backupUsed, err := consumeTwoFactorCode(h.db.WithContext(c.Request.Context()), userID, req.Code)
+	if errors.Is(err, errInvalidTwoFactorCode) || errors.Is(err, gorm.ErrRecordNotFound) {
+		response.BadRequest(c, "验证码错误、已使用或配置已变更，请重新登录后再试")
+		return
+	}
+	if err != nil {
+		response.InternalError(c, "failed to persist 2FA verification")
 		return
 	}
 	result, err := h.authService.GenerateTokenForUser(userID)
@@ -238,6 +224,39 @@ func (h *TwoFactorHandler) LoginVerify(c *gin.Context) {
 		"expires_at":       result.ExpiresAt,
 		"user":             result.User,
 	})
+}
+
+var errInvalidTwoFactorCode = errors.New("invalid or already consumed 2FA code")
+
+func consumeTwoFactorCode(db *gorm.DB, userID uint, code string) (bool, error) {
+	var tf model.UserTwoFactor
+	if err := db.Where("user_id = ? AND is_enabled = ?", userID, true).First(&tf).Error; err != nil {
+		return false, err
+	}
+	originalCodes := tf.BackupCodes
+	backupUsed := false
+	if !validateTOTP(tf.Secret, code) {
+		if !validateBackupCode(&tf, code) {
+			return false, errInvalidTwoFactorCode
+		}
+		backupUsed = true
+	}
+	// Compare-and-swap makes a backup code single-use across sessions/replicas.
+	// TOTP logins update only the timestamp, never restore an old backup list.
+	query := db.Model(&model.UserTwoFactor{}).Where("id = ? AND user_id = ? AND is_enabled = ? AND secret = ?", tf.ID, userID, true, tf.Secret)
+	updates := map[string]any{"last_used_at": time.Now()}
+	if backupUsed {
+		query = query.Where("backup_codes = ?", originalCodes)
+		updates["backup_codes"] = tf.BackupCodes
+	}
+	result := query.Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return false, errInvalidTwoFactorCode
+	}
+	return backupUsed, nil
 }
 
 // ==================== TOTP 算法实现 ====================

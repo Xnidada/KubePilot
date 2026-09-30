@@ -78,6 +78,9 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		response.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
+	if req.ClusterID > 0 && !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, "*") {
+		return
+	}
 
 	ch, err := h.service.ChatStream(c.Request.Context(), userID.(uint), &req)
 	if err != nil {
@@ -1051,6 +1054,9 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 	if !authz.EnsureScope(c, "aiops", "execute", req.ClusterID, req.Namespace) {
 		return
 	}
+	if !h.validateAgentConversation(c, req.ConversationID, req.ClusterID) {
+		return
+	}
 	if req.Image == "" {
 		req.Image = "nginx:latest"
 	}
@@ -1081,14 +1087,9 @@ func (h *Handler) AgentExecute(c *gin.Context) {
 		Selector:       req.Selector,
 		HostPathMounts: req.HostPathMounts,
 	}
-	dryRun, err := h.service.DryRunStagedAction(c.Request.Context(), req.ClusterID, params)
+	dryRun, resourceUID, baseGeneration, err := h.service.PreviewStagedAction(c.Request.Context(), req.ClusterID, params)
 	if err != nil {
 		response.BadRequest(c, "dry-run failed: "+err.Error())
-		return
-	}
-	resourceUID, baseGeneration, err := h.service.DeploymentPrecondition(c.Request.Context(), req.ClusterID, params)
-	if err != nil {
-		response.BadRequest(c, "resource snapshot failed: "+err.Error())
 		return
 	}
 

@@ -15,6 +15,14 @@ func TestDeploymentReadyAndProductionRollbackAllowlist(t *testing.T) {
 		t.Fatal("stale generation considered ready")
 	}
 	d.Status.ObservedGeneration = 3
+	if deploymentReady(d) {
+		t.Fatal("old ready replicas must not count as a completed rollout")
+	}
+	d.Status.UpdatedReplicas = 1
+	if deploymentReady(d) {
+		t.Fatal("partially updated deployment considered ready")
+	}
+	d.Status.UpdatedReplicas = 2
 	if !deploymentReady(d) {
 		t.Fatal("ready deployment rejected")
 	}

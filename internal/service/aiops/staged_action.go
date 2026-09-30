@@ -62,6 +62,22 @@ type StagedActionParams struct {
 // DryRunStagedAction returns a field-level impact preview.
 // Create paths use server-side DryRunAll when possible.
 func (s *Service) DryRunStagedAction(ctx context.Context, clusterID uint, params StagedActionParams) (string, error) {
+	return s.dryRunStagedAction(ctx, clusterID, params, nil)
+}
+
+type deploymentSnapshot struct {
+	uid        string
+	generation int64
+}
+
+// PreviewStagedAction captures the identity from the exact object used by dry-run.
+func (s *Service) PreviewStagedAction(ctx context.Context, clusterID uint, params StagedActionParams) (string, string, int64, error) {
+	var snapshot deploymentSnapshot
+	preview, err := s.dryRunStagedAction(ctx, clusterID, params, &snapshot)
+	return preview, snapshot.uid, snapshot.generation, err
+}
+
+func (s *Service) dryRunStagedAction(ctx context.Context, clusterID uint, params StagedActionParams, snapshot *deploymentSnapshot) (string, error) {
 	client, err := k8s.Manager.GetClient(clusterID)
 	if err != nil {
 		return "", fmt.Errorf("cluster not connected: %w", err)
@@ -244,6 +260,9 @@ impact:
 			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
 		}
 		preview := deploy.DeepCopy()
+		if snapshot != nil {
+			*snapshot = deploymentSnapshot{string(deploy.UID), deploy.Generation}
+		}
 		preview.Spec.Replicas = &params.Replicas
 		if _, err := client.Clientset.AppsV1().Deployments(params.Namespace).Update(ctx, preview,
 			metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldValidation: "Strict"}); err != nil {
@@ -302,6 +321,9 @@ status_snapshot:
 			return "", fmt.Errorf("deployment %s/%s not found", params.Namespace, params.Name)
 		}
 		preview := deploy.DeepCopy()
+		if snapshot != nil {
+			*snapshot = deploymentSnapshot{string(deploy.UID), deploy.Generation}
+		}
 		if _, err := updateDeploymentObject(preview, params); err != nil {
 			return "", err
 		}

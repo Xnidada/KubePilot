@@ -213,9 +213,9 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
-					ch <- StreamChunk{Error: "LLM stream ended before [DONE]"}
+					sendStreamChunk(ctx, ch, StreamChunk{Error: "LLM stream ended before [DONE]"})
 				} else {
-					ch <- StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)}
+					sendStreamChunk(ctx, ch, StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)})
 				}
 				break
 			}
@@ -228,19 +228,23 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (<-chan
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				if data == "[DONE]" {
-					ch <- StreamChunk{Content: "", Done: true}
+					sendStreamChunk(ctx, ch, StreamChunk{Content: "", Done: true})
 					break
 				}
 
 				var streamResp OpenAIStreamResponse
 				if err := json.Unmarshal([]byte(data), &streamResp); err == nil {
 					if streamResp.Usage != nil {
-						ch <- StreamChunk{Usage: streamResp.Usage}
+						if !sendStreamChunk(ctx, ch, StreamChunk{Usage: streamResp.Usage}) {
+							return
+						}
 					}
 					if len(streamResp.Choices) > 0 {
-						ch <- StreamChunk{
+						if !sendStreamChunk(ctx, ch, StreamChunk{
 							Content: streamResp.Choices[0].Delta.Content,
 							Done:    false,
+						}) {
+							return
 						}
 					}
 				}

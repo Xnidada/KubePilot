@@ -359,6 +359,7 @@ const AIAgent: React.FC = () => {
     deleteConversations,
     renameConversation,
     fetchConversationDetail,
+    isActiveConversation,
   } = useConversations()
 
   const [inputValue, setInputValue] = useState('')
@@ -522,8 +523,8 @@ const AIAgent: React.FC = () => {
     }
 
     let currentId = activeId
-    if (!currentId) {
-      currentId = await createConversation()
+    if (!currentId || activeConversation?.cluster_id !== selectedCluster) {
+      currentId = await createConversation(undefined, selectedCluster)
       if (!currentId) return
     }
 
@@ -534,6 +535,7 @@ const AIAgent: React.FC = () => {
     if (!retryExisting) {
       await addMessage(currentId, 'user', sendContent)
     }
+    if (!isActiveConversation(currentId)) return
     setFailedRound(null)
 
     setLoading(true)
@@ -553,6 +555,7 @@ const AIAgent: React.FC = () => {
           retry: retryExisting,
         },
         (ev) => {
+          if (!isActiveConversation(currentId!)) return
           if (ev.type === 'status') {
             setLiveAssistant((prev) =>
               prev ? { ...prev, status: ev.status || prev.status } : prev
@@ -618,8 +621,9 @@ const AIAgent: React.FC = () => {
 
       // 后端已落库助手消息；刷新详情并挂上 extras
       await fetchConversationDetail(currentId)
-      setLiveAssistant(null)
+      if (isActiveConversation(currentId)) setLiveAssistant(null)
     } catch (error: any) {
+      if (!isActiveConversation(currentId)) return
       if (error.name === 'AbortError') {
         console.log('Request aborted')
         setFailedRound({ conversationId: currentId!, clusterId: selectedCluster, content: sendContent })
@@ -658,7 +662,7 @@ const AIAgent: React.FC = () => {
       if (currentId) {
         try {
           const res = await listPendingActions(currentId)
-          setPendingActions(res.data?.pending_actions || [])
+          if (isActiveConversation(currentId)) setPendingActions(res.data?.pending_actions || [])
         } catch {
           /* ignore */
         }
@@ -800,7 +804,8 @@ const AIAgent: React.FC = () => {
   const handleCancel = async () => {
     let currentId = activeId
     if (!currentId) {
-      currentId = await createConversation()
+      if (!selectedCluster) return
+      currentId = await createConversation(undefined, selectedCluster)
       if (!currentId) return
     }
     try {
@@ -1047,7 +1052,11 @@ const AIAgent: React.FC = () => {
             message.warning('当前为只读权限，无法创建对话')
             return
           }
-          void createConversation()
+          if (!selectedCluster) {
+            message.warning('请先选择集群')
+            return
+          }
+          void createConversation(undefined, selectedCluster)
         }}
         onDelete={async (id) => {
           if (!canExecute) {

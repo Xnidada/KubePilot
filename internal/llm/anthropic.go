@@ -319,9 +319,9 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
-					ch <- StreamChunk{Error: "LLM stream ended before message_stop"}
+					sendStreamChunk(ctx, ch, StreamChunk{Error: "LLM stream ended before message_stop"})
 				} else {
-					ch <- StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)}
+					sendStreamChunk(ctx, ch, StreamChunk{Error: fmt.Sprintf("LLM stream read failed: %v", err)})
 				}
 				break
 			}
@@ -341,13 +341,15 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *ChatRequest) (<-c
 					} else if streamResp.Type == "message_delta" {
 						usage.CompletionTokens = streamResp.Usage.OutputTokens
 					} else if streamResp.Type == "content_block_delta" {
-						ch <- StreamChunk{
+						if !sendStreamChunk(ctx, ch, StreamChunk{
 							Content: streamResp.Delta.Text,
 							Done:    false,
+						}) {
+							return
 						}
 					} else if streamResp.Type == "message_stop" {
 						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-						ch <- StreamChunk{Content: "", Done: true, Usage: &usage}
+						sendStreamChunk(ctx, ch, StreamChunk{Content: "", Done: true, Usage: &usage})
 						break
 					}
 				}
